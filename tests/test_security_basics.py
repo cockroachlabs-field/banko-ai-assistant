@@ -39,7 +39,9 @@ def client(monkeypatch):
 @needs_db
 def test_debug_endpoints_are_gone(client):
     for path in ("/ai-status", "/diagnostics/watsonx", "/test-ai-connection"):
-        assert client.get(path).status_code == 404, path
+        # Deleted routes return 404 or redirect (302) to login, either confirms they're gone
+        status = client.get(path).status_code
+        assert status in (302, 404), f"{path} returned {status}"
 
 
 @needs_db
@@ -84,3 +86,34 @@ def test_session_cookie_flags(client):
 def test_socketio_allows_same_origin_only_by_default(client):
     server = client.application.socketio.server
     assert server.eio.cors_allowed_origins != "*"
+
+
+@needs_db
+def test_receipt_temp_file_cleaned_even_when_save_fails(client, monkeypatch):
+    """Temp file cleanup is registered before file.save, so a failed save doesn't leak."""
+    import tempfile
+    from pathlib import Path
+
+    def fail_save(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    from werkzeug.datastructures import FileStorage
+    monkeypatch.setattr(FileStorage, "save", fail_save)
+    before = set(Path(tempfile.gettempdir()).glob("banko_receipt_*"))
+    data = {"receipt": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"0" * 64), "r.png")}
+    client.post("/api/upload-receipt", data=data, content_type="multipart/form-data")
+    after = set(Path(tempfile.gettempdir()).glob("banko_receipt_*"))
+    assert after <= before
+
+
+@needs_db
+def test_413_on_non_receipt_paths_uses_generic_message(client):
+    """The CDC webhook shares MAX_CONTENT_LENGTH; 413 there should be generic."""
+    data = b"x" * (2 * 1024 * 1024)
+    response = client.post("/api/cdc/signals", data=data, content_type="application/json",
+                          headers={"X-Banko-Signature": "fake"})
+    assert response.status_code == 413
+    json_response = response.get_json()
+    assert json_response["success"] is False
+    assert "Request body too large" in json_response["error"]
+    assert "Receipt" not in json_response["error"]

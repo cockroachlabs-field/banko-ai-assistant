@@ -206,7 +206,7 @@ class AWSProvider(AIProvider):
                 print("2. Embedding generated (with cache support)")
                 
                 # Check vector_search_cache for cached results
-                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit)
+                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit, scope=str(user_id or ''))
                 if cached_results:
                     print(f"3. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
                     # Convert cached dict results to SearchResult objects
@@ -319,7 +319,7 @@ class AWSProvider(AIProvider):
                         'shopping_type': r.metadata.get('shopping_type') if r.metadata else 'Unknown',
                         'payment_method': r.metadata.get('payment_method') if r.metadata else 'Unknown'
                     })
-                self.cache_manager.cache_vector_search_results(query_embedding, cache_results)
+                self.cache_manager.cache_vector_search_results(query_embedding, cache_results, scope=str(user_id or ''))
                 print(f"5. ✅ Cached {len(cache_results)} results in vector_search_cache")
             
             return results

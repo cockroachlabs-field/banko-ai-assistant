@@ -363,8 +363,11 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
     @app.errorhandler(413)
     def too_large(error):
-        return jsonify({'success': False,
-                        'error': f'Receipts can be up to {config.max_upload_mb} MB'}), 413
+        if request.path == '/api/upload-receipt':
+            msg = f'Receipts can be up to {config.max_upload_mb} MB'
+        else:
+            msg = 'Request body too large'
+        return jsonify({'success': False, 'error': msg}), 413
 
     def _emit_welcome_signal(user: dict) -> None:
         """Post a welcome signal matched to the user's spending style.
@@ -529,8 +532,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     # persona fallback so curl demos and the pipeline never need a session.
     _SESSION_EXEMPT_PREFIXES = (
         '/login', '/logout', '/static/', '/api/', '/health', '/cache-stats',
-        '/cache-cleanup', '/socket.io', '/diagnostics', '/test-ai-connection',
-        '/ai-status', '/favicon',
+        '/cache-cleanup', '/socket.io', '/favicon',
     )
 
     @app.before_request
@@ -999,7 +1001,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             handle = tempfile.NamedTemporaryFile(prefix="banko_receipt_", suffix=file_ext, delete=False)
             temp_path = handle.name
             handle.close()
-            file.save(temp_path)
 
             @after_this_request
             def _remove_temp_file(response):
@@ -1008,6 +1009,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 except OSError:
                     pass
                 return response
+
+            file.save(temp_path)
 
             print(f"📄 Receipt uploaded: {file.filename} → {temp_path}")
             

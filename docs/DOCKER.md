@@ -275,6 +275,10 @@ docker inspect --format='{{.State.Health.Status}}' banko-ai
 curl http://localhost:5000/api/health
 ```
 
+### Reverse Proxy Configuration
+
+Socket.IO defaults to same-origin connections. Standard reverse proxies (nginx, haproxy, Caddy) work without extra config because the underlying engine.io honors `X-Forwarded-Host` and `X-Forwarded-Proto`. If your proxy rewrites the `Host` header without forwarding the original, set `SOCKETIO_CORS_ORIGINS` to the external origin clients will use (for example, `https://banko.example.com`).
+
 ## Troubleshooting
 
 ### View Logs

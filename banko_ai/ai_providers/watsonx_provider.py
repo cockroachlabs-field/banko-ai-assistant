@@ -111,7 +111,7 @@ class WatsonxProvider(AIProvider):
                 print("2. Embedding generated (with cache support)")
                 
                 # Check vector_search_cache for cached results
-                cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit)
+                cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit, scope=str(user_id or ''))
                 if cached_results:
                     print(f"3. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
                     # Convert cached dict results to SearchResult objects
@@ -224,7 +224,7 @@ class WatsonxProvider(AIProvider):
                             'recurring': False,
                             'tags': []
                         })
-                    self.cache_manager.cache_vector_search_results(raw_embedding, cache_results)
+                    self.cache_manager.cache_vector_search_results(raw_embedding, cache_results, scope=str(user_id or ''))
                     print(f"5. ✅ Cached {len(cache_results)} results in vector_search_cache")
                 
                 return results_list

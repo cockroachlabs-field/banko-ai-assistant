@@ -316,8 +316,7 @@ the DB isn't available.
 - **DB connection error** — confirm the single-node command above is
   running, then `cockroach sql --insecure --execute "SHOW TABLES;"`.
 - **AI provider issues** — confirm keys are exported, then hit
-  `/api/health`. For watsonx, `/diagnostics/watsonx` has connection
-  details.
+  `/api/health?refresh=1`, which reports provider and database status.
 - **Port 5000 in use (macOS)** — AirPlay Receiver claims port 5000.
   Either disable it in System Settings → AirDrop & Handoff, or run
   `banko-ai run --port 5001`.

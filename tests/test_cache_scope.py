@@ -40,3 +40,31 @@ def test_cached_search_results_never_cross_users():
     cache.cache_vector_search_results(vector, results, scope=f"{MAYA}|None|None|None|10")
     assert cache.get_cached_vector_search(vector, 1, scope=f"{MAYA}|None|None|None|10")
     assert cache.get_cached_vector_search(vector, 1, scope=f"{SAM}|None|None|None|10") is None
+
+
+def test_empty_scope_never_matches():
+    """Background threads with no scope cannot match legacy unscoped rows."""
+    from sqlalchemy import text
+
+    from banko_ai.db.engine import get_engine
+    cache = BankoCacheManager(strict_mode=False)
+    question = f"legacy question {os.getpid()}"
+
+    # Simulate a legacy row with scope = ''
+    engine = get_engine()
+    with engine.connect() as conn:
+        conn.execute(text("""
+            INSERT INTO query_cache (query_hash, query_text, response_text, ai_service, language, scope, expires_at)
+            VALUES (:hash, :query, :response, :service, :lang, '', now() + interval '1 hour')
+        """), {
+            'hash': cache._generate_hash(f"|{question}"),
+            'query': question,
+            'response': 'legacy answer',
+            'service': 'ollama',
+            'lang': 'en'
+        })
+        conn.commit()
+
+    # Background thread with no scope cannot match it
+    with user_scope(None):
+        assert cache.get_cached_response(question, ROWS, "ollama", "en") is None

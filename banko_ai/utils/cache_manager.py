@@ -264,6 +264,7 @@ class BankoCacheManager:
                 WHERE ai_service = :ai_service
                   AND language = :language
                   AND scope = :scope
+                  AND scope != ''
                   AND expense_data_hash = :expense_hash
                   AND expires_at > now()
                   AND query_embedding IS NOT NULL
@@ -282,6 +283,7 @@ class BankoCacheManager:
                 WHERE ai_service = :ai_service
                   AND language = :language
                   AND scope = :scope
+                  AND scope != ''
                   AND expires_at > now()
                   AND query_embedding IS NOT NULL
                 ORDER BY query_embedding <=> :query_embedding

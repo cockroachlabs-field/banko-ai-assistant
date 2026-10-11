@@ -2,7 +2,8 @@
 
 Caches use this to keep one user's results away from another's without
 every caller threading a user id through five providers. Flask sets it per
-request from the session; background work sets it explicitly."""
+request from the session; background threads have no scope and must pass
+one explicitly."""
 
 from __future__ import annotations
 
