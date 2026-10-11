@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from functools import lru_cache
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from .intent_classifier import AggregationIntent
 
@@ -43,14 +43,12 @@ class AggregationResult:
 
 @lru_cache(maxsize=4)
 def _distinct_categories(database_url: str) -> tuple[str, ...]:
-    eng = create_engine(database_url)
-    try:
-        with eng.connect() as c:
-            rows = c.execute(
-                text("SELECT DISTINCT shopping_type FROM expenses")).fetchall()
-        return tuple(r[0] for r in rows if r[0])
-    finally:
-        eng.dispose()
+    from ..db.engine import get_engine
+    eng = get_engine(database_url)
+    with eng.connect() as c:
+        rows = c.execute(
+            text("SELECT DISTINCT shopping_type FROM expenses")).fetchall()
+    return tuple(r[0] for r in rows if r[0])
 
 
 def resolve_category(subject: str | None, database_url: str) -> str | None:
@@ -99,23 +97,20 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
     category = resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region)
 
-    eng = create_engine(database_url)
-    try:
-        with eng.connect() as c:
-            agg = c.execute(text(f"""
-                SELECT COALESCE(SUM(expense_amount), 0),
-                       COUNT(*),
-                       MIN(expense_date), MAX(expense_date)
-                FROM expenses {where}
-            """), params).fetchone()
-            detail = c.execute(text(f"""
-                SELECT expense_date, merchant, expense_amount
-                FROM expenses {where}
-                ORDER BY expense_date DESC
-                LIMIT 25
-            """), params).fetchall()
-    finally:
-        eng.dispose()
+    eng = get_engine(database_url)
+    with eng.connect() as c:
+        agg = c.execute(text(f"""
+            SELECT COALESCE(SUM(expense_amount), 0),
+                   COUNT(*),
+                   MIN(expense_date), MAX(expense_date)
+            FROM expenses {where}
+        """), params).fetchone()
+        detail = c.execute(text(f"""
+            SELECT expense_date, merchant, expense_amount
+            FROM expenses {where}
+            ORDER BY expense_date DESC
+            LIMIT 25
+        """), params).fetchall()
 
     total = float(agg[0] or 0)
     count = int(agg[1] or 0)
@@ -157,15 +152,12 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
         FROM expenses {where_pyformat}
     """
 
-    eng = create_engine(database_url)
-    try:
-        with eng.connect() as c:
-            # Get the raw psycopg connection for client-side binding
-            raw_conn = c.connection.driver_connection
-            with psycopg.ClientCursor(raw_conn) as cur:
-                cur.execute(sql, params)
-                plan_rows = cur.fetchall()
-    finally:
-        eng.dispose()
+    eng = get_engine(database_url)
+    with eng.connect() as c:
+        # Get the raw psycopg connection for client-side binding
+        raw_conn = c.connection.driver_connection
+        with psycopg.ClientCursor(raw_conn) as cur:
+            cur.execute(sql, params)
+            plan_rows = cur.fetchall()
 
     return "\n".join(str(row[0]) for row in plan_rows)

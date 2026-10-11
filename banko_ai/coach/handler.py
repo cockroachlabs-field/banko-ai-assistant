@@ -23,9 +23,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
-
+from sqlalchemy import text
 from .signals import Signal, SignalType
 
 log = logging.getLogger("banko.coach.handler")
@@ -118,7 +116,8 @@ class SignalHandler:
                 "nudge_id": nudge_id}
 
     def _engine(self):
-        return create_engine(self.database_url, poolclass=NullPool)
+        from ..db.engine import get_engine
+        return get_engine(self.database_url)
 
     def _try_claim(self, signal: Signal) -> bool:
         """Compare-and-set on consumed_at: exactly one caller wins the
@@ -129,8 +128,7 @@ class SignalHandler:
                 "UPDATE spending_signals SET consumed_at = now() "
                 "WHERE idempotency_key = :k AND consumed_at IS NULL"
             ), {"k": signal.idempotency_key})
-        eng.dispose()
-        return result.rowcount == 1
+return result.rowcount == 1
 
     def _unclaim(self, signal: Signal) -> None:
         eng = self._engine()
@@ -139,16 +137,13 @@ class SignalHandler:
                 "UPDATE spending_signals SET consumed_at = NULL "
                 "WHERE idempotency_key = :k"
             ), {"k": signal.idempotency_key})
-        eng.dispose()
-
-    def _signal_row_exists(self, signal: Signal) -> bool:
+def _signal_row_exists(self, signal: Signal) -> bool:
         eng = self._engine()
         with eng.connect() as conn:
             row = conn.execute(text(
                 "SELECT 1 FROM spending_signals WHERE signal_id = :s"
             ), {"s": signal.signal_id}).fetchone()
-        eng.dispose()
-        return row is not None
+return row is not None
 
     def _persist_nudge(self, signal: Signal, nudge: dict[str, Any]) -> str:
         eng = self._engine()
@@ -182,8 +177,7 @@ class SignalHandler:
                 RETURNING nudge_id
             """
             row = conn.execute(text(sql), params).fetchone()
-        eng.dispose()
-        return str(row[0])
+return str(row[0])
 
     def _fallback_nudge(self, signal: Signal, error: str) -> dict[str, Any]:
         """Templated fallback when the LLM provider is unavailable. Keeps
@@ -216,10 +210,9 @@ def replay_stranded_signals(handler: SignalHandler, database_url: str,
     and run them through the handler again. Suppressed types re-suppress
     instantly, so replaying them is free.
     """
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.pool import NullPool
-
-    eng = create_engine(handler.database_url, poolclass=NullPool)
+    from sqlalchemy import text
+    from ..db.engine import get_engine
+    eng = get_engine(handler.database_url)
     with eng.connect() as conn:
         rows = conn.execute(text("""
             SELECT s.signal_id, s.user_id, s.signal_type, s.severity,
@@ -230,9 +223,7 @@ def replay_stranded_signals(handler: SignalHandler, database_url: str,
               AND n.nudge_id IS NULL
               AND s.produced_at > now() - (:mins * INTERVAL '1 minute')
         """), {"mins": window_minutes}).fetchall()
-    eng.dispose()
-
-    replayed = 0
+replayed = 0
     for row in rows:
         try:
             signal = Signal.from_dict({

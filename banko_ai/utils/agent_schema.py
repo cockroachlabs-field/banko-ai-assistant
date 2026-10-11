@@ -162,18 +162,13 @@ def create_agent_schema(database_url: str, verbose: bool = True) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
+    from ..db.engine import get_engine
     
     try:
         if verbose:
             print("🔧 Creating agent schema in CockroachDB...")
         
-        engine = create_engine(
-            database_url,
-            poolclass=NullPool,
-            connect_args={"options": "-c timezone=utc"}
-        )
+        engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
         
         with engine.connect() as conn:
             # Execute schema creation
@@ -192,10 +187,7 @@ def create_agent_schema(database_url: str, verbose: bool = True) -> bool:
                 conn.execute(text(statement))
             
             conn.commit()
-        
-        engine.dispose()
-        
-        if verbose:
+if verbose:
             print("✅ Agent schema created successfully")
             print("\nCreated tables:")
             print("  - agent_state: Agent registration and status")
@@ -222,8 +214,6 @@ def verify_agent_schema(database_url: str) -> dict:
     Returns:
         Dictionary with table existence status
     """
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
     
     required_tables = [
         'agent_state',
@@ -236,7 +226,7 @@ def verify_agent_schema(database_url: str) -> dict:
     results = {}
     
     try:
-        engine = create_engine(database_url, poolclass=NullPool)
+        engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
         
         with engine.connect() as conn:
             for table in required_tables:
@@ -247,10 +237,7 @@ def verify_agent_schema(database_url: str) -> dict:
                     )
                 """), {'table_name': table})
                 results[table] = result.scalar()
-        
-        engine.dispose()
-    
-    except Exception as e:
+except Exception as e:
         print(f"Error verifying schema: {e}")
         for table in required_tables:
             results[table] = False
@@ -273,8 +260,6 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
         print("⚠️  Must pass confirm=True to drop tables")
         return False
     
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
 
     print("🗑️  Dropping agent schema...")
 
@@ -289,7 +274,7 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
             )
 
     try:
-        engine = create_engine(database_url, poolclass=NullPool)
+        engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
 
         with engine.connect() as conn:
 
@@ -299,9 +284,7 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
                 conn.execute(text(f"DROP TABLE IF EXISTS {safe_name} CASCADE"))
 
             conn.commit()
-
-        engine.dispose()
-        print("✅ Agent schema dropped")
+print("✅ Agent schema dropped")
         return True
 
     except Exception as e:

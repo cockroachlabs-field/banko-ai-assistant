@@ -52,7 +52,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             import json
             embedding_json = json.dumps(query_embedding)
             
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Build query - v25.4.0 no longer requires CAST
@@ -95,10 +95,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
                         'payment_method': row[7],
                         'similarity_score': 1.0 - float(row[8])  # Convert distance to similarity
                     })
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'query': query,
                 'results': expenses,
@@ -126,7 +123,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             JSON string with search results
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Build WHERE clause from filters
@@ -188,10 +185,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
                         'date': row[6].isoformat() if row[6] else None,
                         'payment_method': row[7]
                     })
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'filters': filters,
                 'results': expenses,
@@ -215,7 +209,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             JSON string with expense details
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 result = conn.execute(text("""
@@ -244,10 +238,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
                     'expense_date': row[6].isoformat() if row[6] else None,
                     'payment_method': row[7]
                 }
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'expense': expense
             }, indent=2)

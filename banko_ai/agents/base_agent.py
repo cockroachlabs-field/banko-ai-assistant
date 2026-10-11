@@ -105,18 +105,11 @@ Be concise but thorough in your responses."""
     
     def _register_agent(self):
         """Register this agent in the database"""
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
-        
+        from ..db.engine import get_engine
+
         try:
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool,
-                connect_args={
-                    "options": "-c timezone=utc"
-                }
-            )
-            
+            engine = get_engine(self.database_url)
+
             with engine.connect() as conn:
                 # Check if agent_state table exists, if not, skip registration
                 result = conn.execute(text("""
@@ -149,8 +142,7 @@ Be concise but thorough in your responses."""
                     })
                     conn.commit()
                     print(f"✅ Agent {self.agent_type} ({self.agent_id}) registered in {self.region}")
-            
-            engine.dispose()
+
         except Exception as e:
             print(f"⚠️  Could not register agent: {e}")
             # Non-fatal - agent can still work without registration
@@ -162,16 +154,11 @@ Be concise but thorough in your responses."""
         
         if not self.database_url:
             return
-        
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
-        
+
+
         try:
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
-            
+            engine = get_engine(self.database_url)
+
             with engine.connect() as conn:
                 conn.execute(text("""
                     UPDATE agent_state
@@ -186,8 +173,6 @@ Be concise but thorough in your responses."""
                     'heartbeat': datetime.utcnow()
                 })
                 conn.commit()
-            
-            engine.dispose()
         except Exception as e:
             print(f"⚠️  Could not update status: {e}")
     
@@ -225,14 +210,9 @@ Be concise but thorough in your responses."""
         if not self.database_url:
             return decision
         
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
         
         try:
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 # Check if table exists
@@ -261,8 +241,6 @@ Be concise but thorough in your responses."""
                         'created_at': decision.created_at
                     })
                     conn.commit()
-            
-            engine.dispose()
             
             # Emit WebSocket event for dashboard
             try:
@@ -373,20 +351,15 @@ Be concise but thorough in your responses."""
         if not self.database_url:
             return None
         
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
         
         try:
             # Generate embedding for the content
             from banko_ai.utils.embeddings import load_embedding_model
             model = load_embedding_model('all-MiniLM-L6-v2')
             embedding = model.encode(content).tolist()
-            
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
-            
+
+            engine = get_engine(self.database_url)
+
             memory_id = str(uuid.uuid4())
             
             with engine.connect() as conn:
@@ -406,8 +379,6 @@ Be concise but thorough in your responses."""
                     'accessed_at': datetime.utcnow()
                 })
                 conn.commit()
-            
-            engine.dispose()
             return memory_id
         
         except Exception as e:
@@ -436,20 +407,15 @@ Be concise but thorough in your responses."""
         if not self.database_url:
             return []
         
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
         
         try:
             # Generate embedding for the query
             from banko_ai.utils.embeddings import load_embedding_model
             model = load_embedding_model('all-MiniLM-L6-v2')
             query_embedding = model.encode(query).tolist()
-            
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
-            
+
+            engine = get_engine(self.database_url)
+
             with engine.connect() as conn:
                 # Build query with optional memory_type filter
                 sql = """
@@ -488,8 +454,6 @@ Be concise but thorough in your responses."""
                         'created_at': row[4].isoformat() if row[4] else None,
                         'similarity': 1.0 - float(row[5])  # Convert distance to similarity
                     })
-            
-            engine.dispose()
             return memories
         
         except Exception as e:
@@ -518,14 +482,9 @@ Be concise but thorough in your responses."""
         if not self.database_url:
             return None
         
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
         
         try:
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
+            engine = get_engine(self.database_url)
             
             task_id = str(uuid.uuid4())
             
@@ -546,8 +505,6 @@ Be concise but thorough in your responses."""
                     'created_at': datetime.utcnow()
                 })
                 conn.commit()
-            
-            engine.dispose()
             return task_id
         
         except Exception as e:
@@ -564,14 +521,9 @@ Be concise but thorough in your responses."""
         if not self.database_url:
             return []
         
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
         
         try:
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 result = conn.execute(text("""
@@ -600,8 +552,6 @@ Be concise but thorough in your responses."""
                         'payload': json.loads(row[4]) if row[4] else {},
                         'created_at': row[5].isoformat() if row[5] else None
                     })
-            
-            engine.dispose()
             return tasks
         
         except Exception as e:
@@ -628,14 +578,9 @@ Be concise but thorough in your responses."""
         if not self.database_url:
             return False
         
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
         
         try:
-            engine = create_engine(
-                self.database_url,
-                poolclass=NullPool
-            )
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 if status not in ('processing', 'completed', 'failed'):
@@ -662,8 +607,6 @@ Be concise but thorough in your responses."""
                         'timestamp': datetime.utcnow()
                     })
                 conn.commit()
-            
-            engine.dispose()
             return True
         
         except Exception as e:

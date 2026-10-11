@@ -107,7 +107,8 @@ class WatsonxProvider(AIProvider):
             
             # Database connection with proper pooling
             DB_URI = get_database_url()
-            engine = create_resilient_engine(DB_URI)
+            from ..db.engine import get_engine
+            engine = get_engine(DB_URI)
             
             # Generate embedding with cache support
             if self.cache_manager:

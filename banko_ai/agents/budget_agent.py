@@ -260,7 +260,7 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
                 from sqlalchemy import create_engine, text
                 from sqlalchemy.pool import NullPool
                 
-                engine = create_engine(self.database_url, poolclass=NullPool)
+                engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
                 with engine.connect() as conn:
                     # Freshest fraud agent wherever it runs; region labels
                     # are real localities now, not fixed AWS names.
@@ -285,13 +285,8 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
                             priority=8 if result['alert_level'] == 'critical' else 5
                         )
                         result['task_created'] = task_id
-                
-                engine.dispose()
-            
-        except Exception as e:
+except Exception as e:
             result['error'] = str(e)
-        
-        finally:
             self.update_status("idle")
         
         return result
@@ -336,8 +331,6 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
         
         except Exception as e:
             results['error'] = str(e)
-        
-        finally:
             self.update_status("idle")
         
         return results
@@ -419,8 +412,6 @@ Be concise and practical."""
         
         except Exception as e:
             result['error'] = str(e)
-        
-        finally:
             self.update_status("idle")
         
         return result

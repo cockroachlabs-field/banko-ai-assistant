@@ -166,11 +166,11 @@ def clear_agents(agents, cache, clear_all):
       banko-ai clear-agents --cache         # Clear only cache
       banko-ai clear-agents --all           # Clear everything
     """
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.pool import NullPool
-    
+    from sqlalchemy import text
+    from .db.engine import get_engine
+
     config = get_config()
-    engine = create_engine(config.database_url, poolclass=NullPool)
+    engine = get_engine(config.database_url)
     
     tables_cleared = []
     
@@ -216,18 +216,15 @@ def clear_agents(agents, cache, clear_all):
                         click.echo(f"  ✅ Cleared {table}: {rows_deleted} rows")
                     except Exception as e:
                         click.echo(f"  ⚠️  Could not clear {table}: {e}")
-        
-        engine.dispose()
-        
+
         if tables_cleared:
             click.echo(f"\n✅ Successfully cleared: {', '.join(tables_cleared)}")
             click.echo("\n💡 Tip: Agent tables will be repopulated when you upload a new receipt")
         else:
             click.echo("\n⚠️  No tables were cleared. Use --agents, --cache, or --all")
-            
+
     except Exception as e:
         click.echo(f"\n❌ Error clearing data: {e}")
-        engine.dispose()
 
 
 @cli.command()

@@ -252,7 +252,7 @@ Example:
             # Format embedding as array literal for CockroachDB
             embedding_str = '[' + ','.join(map(str, embedding)) + ']'
             
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 result = conn.execute(text("""
@@ -278,10 +278,7 @@ Example:
                 
                 document_id = result.scalar()
                 conn.commit()
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'document_id': str(document_id),
                 'user_id': user_id,
@@ -314,7 +311,7 @@ Example:
             JSON string with matching expense or None
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Look for exact match first
@@ -393,10 +390,7 @@ Example:
                         'match_type': 'fuzzy',
                         'candidates': candidates
                     }, indent=2)
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'match_found': False
             })

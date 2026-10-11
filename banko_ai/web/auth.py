@@ -8,8 +8,7 @@ Banko AI Assistant.
 from typing import Any
 
 from flask import session
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 from ..utils.db_retry import get_database_url
 
@@ -30,14 +29,14 @@ def resolve_user_region(user_id: str, database_url: str | None = None) -> str | 
         user_id: User UUID
         database_url: Database connection string (defaults to env DATABASE_URL)
     """
-    from ..utils.db_retry import create_resilient_engine
+    from ..db.engine import get_engine
 
     url = get_database_url(database_url)
     key = (user_id, url)
     if key in _user_region_cache:
         return _user_region_cache[key]
 
-    engine = create_resilient_engine(url)
+    engine = get_engine(url)
     try:
         with engine.connect() as conn:
             result = conn.execute(
@@ -56,8 +55,6 @@ def resolve_user_region(user_id: str, database_url: str | None = None) -> str | 
             return region
     except Exception:
         return None
-    finally:
-        engine.dispose()
 
 
 resolve_user_region.cache_clear = _user_region_cache.clear  # type: ignore[attr-defined]
@@ -69,14 +66,11 @@ class UserManager:
     def __init__(self, database_url: str | None = None):
         """Initialize user manager with database connection."""
         self.database_url = get_database_url(database_url)
-        self._engine = None
 
     @property
     def engine(self):
         """Lazy engine initialization."""
-        if self._engine is None:
-            self._engine = create_engine(self.database_url, poolclass=NullPool)
-        return self._engine
+        return get_engine(self.database_url)
 
     def ensure_schema(self) -> None:
         """Ensure users table exists (delegates to migration)."""
@@ -223,10 +217,8 @@ class UserManager:
 def clear_demo_users(database_url: str) -> dict[str, int]:
     """Delete all demo users and their dependent data, preserving the three
     legacy personas. Returns per-table deletion counts."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
 
-    engine = create_engine(get_database_url(database_url), poolclass=NullPool)
+    engine = get_engine(get_database_url(database_url))
     counts = {}
 
     legacy_persona_ids = [
@@ -235,8 +227,7 @@ def clear_demo_users(database_url: str) -> dict[str, int]:
         "00000000-0000-0000-0000-0000000000a3",
     ]
 
-    try:
-        with engine.connect() as conn:
+    with engine.connect() as conn:
             demo_user_ids_result = conn.execute(
                 text("""
                     SELECT user_id FROM users
@@ -290,8 +281,5 @@ def clear_demo_users(database_url: str) -> dict[str, int]:
             counts["users"] = result.rowcount
 
             conn.commit()
-
-    finally:
-        engine.dispose()
 
     return counts

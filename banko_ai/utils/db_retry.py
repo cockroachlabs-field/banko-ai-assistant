@@ -200,67 +200,8 @@ def db_retry_context(max_attempts: int = 3, initial_delay: float = 0.5):
 
 
 def create_resilient_engine(database_url: str, **kwargs):
-    """
-    Create a SQLAlchemy engine with resilience settings for CockroachDB/HAProxy.
-    
-    Configures connection pooling and health checks to handle transient failures.
-    All settings can be configured via environment variables or kwargs.
-    
-    Environment Variables (with defaults):
-    - DB_POOL_SIZE: Connection pool size (default: 100)
-    - DB_MAX_OVERFLOW: Max overflow connections (default: 100) 
-    - DB_POOL_TIMEOUT: Pool checkout timeout in seconds (default: 30)
-    - DB_POOL_RECYCLE: Recycle connections after N seconds (default: 3600)
-    - DB_POOL_PRE_PING: Test connections before use (default: true)
-    - DB_CONNECT_TIMEOUT: Database connection timeout (default: 10)
-    
-    CockroachDB Recommendations:
-    - Set pool size based on your workload (100-1000 for high throughput)
-    - Use pool_pre_ping to detect stale connections
-    - Set pool_recycle to handle long-running connections (3600s = 1 hour)
-    - For 14 QPS+, pool_size of 100+ recommended
-    - Each connection can handle ~50-100 requests/sec
-    
-    Args:
-        database_url: Database connection URL
-        **kwargs: Additional engine parameters (override env vars)
-        
-    Returns:
-        Configured SQLAlchemy engine
-    """
-    from sqlalchemy import create_engine
-    
-    database_url = normalize_db_url(database_url)
+    """Older name for banko_ai.db.engine.get_engine. Pool settings come from
+    Settings; per-call overrides are ignored so every caller shares one pool."""
+    from ..db.engine import get_engine
 
-    # Get pool configuration from environment variables with sensible defaults
-    # CockroachDB docs recommend larger pools for production workloads
-    cfg = get_config()
-    pool_size = cfg.db_pool_size
-    max_overflow = cfg.db_max_overflow
-    pool_timeout = cfg.db_pool_timeout
-    pool_recycle = cfg.db_pool_recycle
-    pool_pre_ping = cfg.db_pool_pre_ping
-    connect_timeout = cfg.db_connect_timeout
-    
-    # Default resilience settings based on CockroachDB best practices
-    default_config = {
-        "pool_pre_ping": pool_pre_ping,  # Test connection before using
-        "pool_recycle": pool_recycle,     # Recycle connections to avoid stale connections
-        "pool_size": pool_size,           # Base connection pool size
-        "max_overflow": max_overflow,     # Additional connections during spikes
-        "pool_timeout": pool_timeout,     # Wait time for available connection
-        "echo_pool": False,               # Disable pool debug logging
-        "connect_args": {
-            "connect_timeout": connect_timeout,  # Connection timeout
-            "options": "-c default_transaction_isolation=serializable"
-        }
-    }
-    
-    # Merge with user-provided config (kwargs take precedence)
-    config = {**default_config, **kwargs}
-    
-    # Merge connect_args separately to avoid overwriting
-    if "connect_args" in kwargs:
-        config["connect_args"] = {**default_config["connect_args"], **kwargs["connect_args"]}
-    
-    return create_engine(database_url, **config)
+    return get_engine(database_url)

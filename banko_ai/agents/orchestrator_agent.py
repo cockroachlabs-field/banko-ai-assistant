@@ -294,8 +294,6 @@ Example:
         
         except Exception as e:
             result['error'] = str(e)
-        
-        finally:
             self.update_status("idle")
         
         return result
@@ -416,7 +414,7 @@ Be conversational and helpful."""
         statuses = {}
         
         try:
-            engine = create_engine(self.database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 result = conn.execute(text("""
@@ -434,10 +432,7 @@ Be conversational and helpful."""
                         'status': row[3],
                         'last_heartbeat': row[4].isoformat() if row[4] else None
                     }
-            
-            engine.dispose()
-        
-        except Exception as e:
+except Exception as e:
             statuses['error'] = str(e)
         
         return statuses

@@ -46,7 +46,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with statistics
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Build WHERE clause
@@ -132,10 +132,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         'count': int(row[1]),
                         'total': float(row[2])
                     })
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'period': {
@@ -168,7 +165,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with detected anomalies
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Get user's mean and std dev
@@ -225,10 +222,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         'z_score': float(row[6]),
                         'type': 'unusually_high' if row[2] > mean else 'unusually_low'
                     })
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'statistics': {
@@ -258,7 +252,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with potential duplicates
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Find duplicates: same merchant + amount + date
@@ -291,10 +285,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         'expense_ids': [str(eid) for eid in row[4]],
                         'descriptions': row[5],
                     })
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'duplicates': duplicates,
@@ -326,7 +317,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with comparison
         """
         try:
-            engine = create_engine(database_url, poolclass=NullPool)
+            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
                 # Period 1 stats
@@ -374,10 +365,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                     'average_change': period2['average'] - period1['average'],
                     'average_change_pct': ((period2['average'] - period1['average']) / period1['average'] * 100) if period1['average'] > 0 else 0
                 }
-            
-            engine.dispose()
-            
-            return json.dumps({
+return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'period1': {

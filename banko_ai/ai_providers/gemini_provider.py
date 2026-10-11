@@ -164,7 +164,8 @@ class GeminiProvider(AIProvider):
         if self.db_engine is None:
             database_url = get_database_url()
             try:
-                self.db_engine = create_resilient_engine(database_url)
+                self.db_from ..db.engine import get_engine
+            engine = get_engine(database_url)
             except Exception as e:
                 raise AIConnectionError(f"Failed to connect to database: {str(e)}")
         return self.db_engine

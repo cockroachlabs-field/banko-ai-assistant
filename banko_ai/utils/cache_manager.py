@@ -26,12 +26,12 @@ from sqlalchemy.dialects.postgresql import JSONB
 from banko_ai.utils.embeddings import load_embedding_model
 
 from ..config.settings import get_config
-from .db_retry import create_resilient_engine, db_retry, get_database_url
+from .db_retry import db_retry
 
-# Database configuration
-DB_URI = get_database_url()
 
-engine = create_resilient_engine(DB_URI)
+def _engine():
+    from ..db.engine import get_engine
+    return get_engine()
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle Decimal and UUID objects"""
@@ -171,7 +171,7 @@ class BankoCacheManager:
         """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 conn.execute(create_tables_sql)
                 conn.commit()
                 print("✅ Cache tables initialized successfully")
@@ -243,7 +243,7 @@ class BankoCacheManager:
             FROM embedding_cache 
             WHERE text_hash = :text_hash AND model_name = :model_name
         """)
-        with engine.connect() as conn:
+        with _engine().connect() as conn:
             result = conn.execute(cache_query, {'text_hash': text_hash, 'model_name': model_name})
             row = result.fetchone()
             
@@ -267,7 +267,7 @@ class BankoCacheManager:
         embedding_json = json.dumps(embedding.tolist())
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO embedding_cache (text_hash, text_content, embedding, model_name, access_count)
                     VALUES (:text_hash, :text_content, :embedding, :model_name, 1)
@@ -360,7 +360,7 @@ class BankoCacheManager:
             """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 # First check counts for debugging
                 count_result = conn.execute(count_query, {
                     'ai_service': ai_service,
@@ -464,7 +464,7 @@ class BankoCacheManager:
         expires_at = datetime.utcnow() + timedelta(hours=self.cache_ttl_hours)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO query_cache (
                         query_hash, query_text, query_embedding, response_text,
@@ -552,7 +552,7 @@ class BankoCacheManager:
         """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 result = conn.execute(cache_query, {
                     'embedding_hash': embedding_hash,
                     'limit': limit
@@ -589,7 +589,7 @@ class BankoCacheManager:
         expires_at = datetime.utcnow() + timedelta(hours=self.cache_ttl_hours)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO vector_search_cache (
                         query_embedding_hash, search_results, result_count, 
@@ -623,7 +623,7 @@ class BankoCacheManager:
     def _log_cache_stat(self, cache_type: str, operation: str, tokens_saved: int = 0, details: dict = None):
         """Log cache statistics for monitoring."""
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO cache_stats (cache_type, operation, tokens_saved, details)
                     VALUES (:cache_type, :operation, :tokens_saved, :details)
@@ -663,7 +663,7 @@ class BankoCacheManager:
         """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 result = conn.execute(stats_query, {'hours': hours})
                 stats = {}
                 total_tokens_saved = 0
@@ -694,7 +694,7 @@ class BankoCacheManager:
         ]
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 for query in cleanup_queries:
                     result = conn.execute(text(query))
                     print(f"🧹 Cleaned up {result.rowcount} expired cache entries")

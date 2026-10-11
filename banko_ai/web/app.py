@@ -105,8 +105,9 @@ def check_database_connection(database_url: str):
     """
     try:
         # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-        engine = create_resilient_engine(database_url)
-        
+        from ..db.engine import get_engine
+        engine = get_engine(database_url)
+
         with engine.connect() as conn:
             # Test basic connection
             result = conn.execute(text('SELECT version()'))
@@ -856,7 +857,7 @@ def create_app() -> Flask:
             
             # Check database connection with proper pooling
             # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-            engine = create_resilient_engine(config.database_url)
+            engine = get_engine(config.database_url)
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
             
@@ -1016,8 +1017,9 @@ def create_app() -> Flask:
                 expense_id = None
                 try:
                     # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-                    engine = create_resilient_engine(config.database_url)
-                    
+                    from ..db.engine import get_engine
+                    engine = get_engine(config.database_url)
+
                     expense_id = str(uuid.uuid4())
                     
                     # Get or create proper UUID for user
@@ -1914,50 +1916,45 @@ def create_app() -> Flask:
 
         This makes the webhook safely re-postable: the pipeline can fire
         the same envelope twice without producing duplicate nudges."""
-        from sqlalchemy import create_engine
         from sqlalchemy.exc import IntegrityError
-        from sqlalchemy.pool import NullPool
-
         from banko_ai.utils.migration import regional_tables_ready
         from banko_ai.web.auth import resolve_user_region as _resolve_region
-        eng = create_engine(get_database_url(), poolclass=NullPool)
+        from ..db.engine import get_engine
+        eng = get_engine(get_database_url())
         try:
-            try:
-                with eng.begin() as conn:
-                    cols = ["signal_id", "user_id", "signal_type", "severity",
-                            "payload", "idempotency_key"]
-                    placeholders = [":sid", ":uid", ":stype", ":sev",
-                                   "CAST(:pl AS JSONB)", ":ik"]
-                    params = {
-                        "sid": sig.signal_id,
-                        "uid": sig.user_id,
-                        "stype": sig.signal_type.value,
-                        "sev": sig.severity,
-                        "pl": json.dumps(sig.payload),
-                        "ik": sig.idempotency_key,
-                    }
+            with eng.begin() as conn:
+                cols = ["signal_id", "user_id", "signal_type", "severity",
+                        "payload", "idempotency_key"]
+                placeholders = [":sid", ":uid", ":stype", ":sev",
+                               "CAST(:pl AS JSONB)", ":ik"]
+                params = {
+                    "sid": sig.signal_id,
+                    "uid": sig.user_id,
+                    "stype": sig.signal_type.value,
+                    "sev": sig.severity,
+                    "pl": json.dumps(sig.payload),
+                    "ik": sig.idempotency_key,
+                }
 
-                    if regional_tables_ready(get_database_url()):
-                        user_region = _resolve_region(sig.user_id, get_database_url())
-                        if user_region:
-                            cols.append("crdb_region")
-                            placeholders.append(":region")
-                            params["region"] = user_region
+                if regional_tables_ready(get_database_url()):
+                    user_region = _resolve_region(sig.user_id, get_database_url())
+                    if user_region:
+                        cols.append("crdb_region")
+                        placeholders.append(":region")
+                        params["region"] = user_region
 
-                    sql = f"""
-                        INSERT INTO spending_signals ({", ".join(cols)})
-                        VALUES ({", ".join(placeholders)})
-                        ON CONFLICT (idempotency_key) DO NOTHING
-                        RETURNING signal_id
-                    """
-                    row = conn.execute(text(sql), params).fetchone()
-                return row is not None
-            except IntegrityError:
-                # PK collision on signal_id (or any other unique constraint) —
-                # the signal already exists, so this is a replay.
-                return False
-        finally:
-            eng.dispose()
+                sql = f"""
+                    INSERT INTO spending_signals ({", ".join(cols)})
+                    VALUES ({", ".join(placeholders)})
+                    ON CONFLICT (idempotency_key) DO NOTHING
+                    RETURNING signal_id
+                """
+                row = conn.execute(text(sql), params).fetchone()
+            return row is not None
+        except IntegrityError:
+            # PK collision on signal_id (or any other unique constraint) —
+            # the signal already exists, so this is a replay.
+            return False
 
     def _process_in_background(handler, sig):
         try:
@@ -2033,20 +2030,18 @@ def create_app() -> Flask:
                    or cfg.coach_default_user_id)
         limit = min(int(request.args.get("limit", "20")), 100)
         db_url = get_database_url()
-        eng = create_engine(db_url)
-        try:
-            with eng.connect() as conn:
-                rows = conn.execute(text("""
-                    SELECT n.nudge_id, n.message, n.provider_used, n.created_at,
-                           s.signal_type, s.severity
-                    FROM coach_nudges n
-                    LEFT JOIN spending_signals s ON s.signal_id = n.signal_id
-                    WHERE n.user_id = :u
-                    ORDER BY n.created_at DESC
-                    LIMIT :l
-                """), {"u": user_id, "l": limit}).fetchall()
-        finally:
-            eng.dispose()
+        from ..db.engine import get_engine
+        eng = get_engine(db_url)
+        with eng.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT n.nudge_id, n.message, n.provider_used, n.created_at,
+                       s.signal_type, s.severity
+                FROM coach_nudges n
+                LEFT JOIN spending_signals s ON s.signal_id = n.signal_id
+                WHERE n.user_id = :u
+                ORDER BY n.created_at DESC
+                LIMIT :l
+            """), {"u": user_id, "l": limit}).fetchall()
         return jsonify({"nudges": [{
             "nudge_id": str(r[0]), "message": r[1],
             "provider_used": r[2],
@@ -2117,7 +2112,8 @@ def create_app() -> Flask:
         db_ok = False
         if db_url:
             try:
-                eng = create_engine(db_url)
+                from ..db.engine import get_engine
+                eng = get_engine(db_url)
                 with eng.connect() as conn:
                     row = conn.execute(text(
                         "SELECT max(created_at) FROM coach_nudges"
@@ -2125,7 +2121,6 @@ def create_app() -> Flask:
                     last_nudge_at = (row[0].isoformat()
                                      if row and row[0] else None)
                     db_ok = True
-                eng.dispose()
             except Exception as e:
                 coach_log.warning("health DB check failed: %s", e)
 
@@ -2238,7 +2233,6 @@ def create_app() -> Flask:
                     import traceback
                     traceback.print_exc()
                     sock.emit('generation_error', {'message': str(e)})
-                finally:
                     generation_state['running'] = False
         
         import threading

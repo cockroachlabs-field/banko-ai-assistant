@@ -9,13 +9,13 @@ import json
 import time
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from banko_ai.utils.embeddings import load_embedding_model
 
 from ..ai_providers.base import SearchResult
 from ..config.settings import get_config
-from ..utils.db_retry import create_resilient_engine, db_retry, get_database_url
+from ..utils.db_retry import db_retry, get_database_url
 
 
 class VectorSearchEngine:
@@ -26,12 +26,8 @@ class VectorSearchEngine:
         self.database_url = get_database_url(database_url)
         self.cache_manager = cache_manager
 
-        # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-        self.engine = create_resilient_engine(
-            self.database_url,
-            pool_size=10,
-            max_overflow=20
-        )
+        from ..db.engine import get_engine
+        self.engine = get_engine(self.database_url)
         # Use configurable embedding model from environment or default
         embedding_model_name = get_config().embedding_model
         self.embedding_model = load_embedding_model(embedding_model_name)

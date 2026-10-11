@@ -48,11 +48,10 @@ def regional_tables_ready(database_url: str) -> bool:
         return False
 
     from sqlalchemy import text
-
-    from .db_retry import create_resilient_engine
+    from ..db.engine import get_engine
 
     try:
-        engine = create_resilient_engine(database_url)
+        engine = get_engine(database_url)
         with engine.connect() as conn:
             row = conn.execute(text("""
                 SELECT 1 FROM information_schema.columns
@@ -65,9 +64,6 @@ def regional_tables_ready(database_url: str) -> bool:
     except Exception as e:
         log.debug("regional readiness check failed, treating as single-region: %s", e)
         return False
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
 
 
 regional_tables_ready.cache_clear = _tables_ready_cache.clear  # type: ignore[attr-defined]
@@ -87,10 +83,8 @@ def detect_regions(database_url: str) -> list[str]:
 
     from sqlalchemy import text
 
-    from .db_retry import create_resilient_engine
-
     try:
-        engine = create_resilient_engine(database_url)
+        engine = get_engine(database_url)
         with engine.connect() as conn:
             result = conn.execute(text("SHOW REGIONS FROM CLUSTER"))
             rows = result.fetchall()
@@ -101,9 +95,6 @@ def detect_regions(database_url: str) -> list[str]:
     except Exception as e:
         log.debug("region detection failed (unreachable, will retry): %s", e)
         return []
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
 
 
 detect_regions.cache_clear = _cluster_regions_cache.clear  # type: ignore[attr-defined]
@@ -125,10 +116,8 @@ def agent_home_region(database_url: str) -> str:
 
     from sqlalchemy import text
 
-    from .db_retry import create_resilient_engine
-
     try:
-        engine = create_resilient_engine(database_url)
+        engine = get_engine(database_url)
         with engine.connect() as conn:
             row = conn.execute(text("SELECT gateway_region()")).fetchone()
             gateway = str(row[0]) if row and row[0] else None
@@ -138,9 +127,6 @@ def agent_home_region(database_url: str) -> str:
     except Exception as e:
         log.debug("gateway region lookup failed, using first region: %s", e)
         return regions[0]
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
 
 
 def detect_database_regions(database_url: str) -> list[str]:
@@ -162,10 +148,9 @@ def detect_database_regions(database_url: str) -> list[str]:
 
     from sqlalchemy import text
 
-    from .db_retry import create_resilient_engine
 
     try:
-        engine = create_resilient_engine(database_url)
+        engine = get_engine(database_url)
         with engine.connect() as conn:
             rows = conn.execute(text(
                 'SELECT region, "primary" FROM [SHOW REGIONS FROM DATABASE]'
@@ -176,9 +161,6 @@ def detect_database_regions(database_url: str) -> list[str]:
     except Exception as e:
         log.debug("database region detection failed (will retry): %s", e)
         return []
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
 
 
 detect_database_regions.cache_clear = _database_regions_cache.clear  # type: ignore[attr-defined]
@@ -196,14 +178,12 @@ def resolve_primary_region(database_url: str) -> str | None:
     """
     from sqlalchemy import text
 
-    from .db_retry import create_resilient_engine
-
     regions = detect_regions(database_url)
     if not regions:
         return None
 
     try:
-        engine = create_resilient_engine(database_url)
+        engine = get_engine(database_url)
         with engine.connect() as conn:
             result = conn.execute(text('SELECT region FROM [SHOW REGIONS FROM DATABASE] WHERE "primary"'))
             row = result.fetchone()
@@ -221,9 +201,6 @@ def resolve_primary_region(database_url: str) -> str | None:
     except Exception as e:
         log.debug("primary region resolution failed, falling back to first detected: %s", e)
         return regions[0]
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
 
 
 def resolve_user_region_cache_clear() -> None:
@@ -252,8 +229,6 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
 
     from sqlalchemy import text
 
-    from .db_retry import create_resilient_engine
-
     regions = detect_regions(database_url)
     if len(regions) < 2:
         log.info("single-region deployment detected, skipping REGIONAL BY ROW migration")
@@ -279,7 +254,7 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
             log.error("invalid region name for DDL interpolation: %s", region)
             return False
 
-    engine = create_resilient_engine(database_url)
+    engine = get_engine(database_url)
     try:
         with engine.connect() as conn:
             # Database-level topology (primary region, region list,
@@ -392,8 +367,6 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
     except Exception as e:
         log.exception("multi-region migration failed: %s", e)
         return False
-    finally:
-        engine.dispose()
 
 
 class DatabaseMigration:
@@ -402,15 +375,11 @@ class DatabaseMigration:
     def __init__(self, database_url: str | None = None):
         """Initialize migration manager."""
         self.database_url = get_database_url(database_url)
-        self._engine = None
-    
+
     @property
     def engine(self):
         """Get SQLAlchemy engine (lazy import)."""
-        if self._engine is None:
-            from sqlalchemy import create_engine
-            self._engine = create_engine(self.database_url)
-        return self._engine
+        return get_engine(self.database_url)
     
     def migrate_timestamptz(self) -> bool:
         """Convert naive TIMESTAMP columns on banko's tables to

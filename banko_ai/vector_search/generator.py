@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from ..utils.db_retry import create_resilient_engine, get_database_url
+from ..utils.db_retry import get_database_url
 from .enrichment import DataEnricher
 
 
@@ -22,21 +22,18 @@ class EnhancedExpenseGenerator:
     def __init__(self, database_url: str | None = None):
         """Initialize the enhanced expense generator."""
         self.database_url = get_database_url(database_url)
-        self._engine = None
         self.enricher = DataEnricher()
         self._embedding_model = None
         self._merchants = None
         self._categories = None
         self._payment_methods = None
         self._user_ids = None
-    
+
     @property
     def engine(self):
         """Get SQLAlchemy engine with resilience settings (lazy import)."""
-        if self._engine is None:
-            # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-            self._engine = create_resilient_engine(self.database_url)
-        return self._engine
+        from ..db.engine import get_engine
+        return get_engine(self.database_url)
     
     @property
     def embedding_model(self):
