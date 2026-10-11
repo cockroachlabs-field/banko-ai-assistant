@@ -222,10 +222,16 @@ class VectorSearchEngine:
 
         if capture_explain:
             try:
+                # CockroachDB rejects placeholders in EXPLAIN under server-side
+                # binding, so bind client-side like explain_aggregation does.
+                import psycopg
+
+                from ..utils.aggregations import _to_pyformat
                 with self.engine.connect() as conn:
-                    explain_sql = f"EXPLAIN ANALYZE {sql}"
-                    explain_result = conn.execute(text(explain_sql), params)
-                    explain_rows = explain_result.fetchall()
+                    raw_conn = conn.connection.driver_connection
+                    with psycopg.ClientCursor(raw_conn) as cur:
+                        cur.execute(f"EXPLAIN ANALYZE {_to_pyformat(sql)}", params)
+                        explain_rows = cur.fetchall()
                 explain_text = "\n".join(str(row[0]) for row in explain_rows)
             except Exception as e:
                 explain_text = f"(explain unavailable: {str(e)})"
