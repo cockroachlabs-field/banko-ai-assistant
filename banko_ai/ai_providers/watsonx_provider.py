@@ -688,9 +688,11 @@ I couldn't find any relevant expense records for your query. Please try:
                     response_text += "**Note**: API call failed, showing structured analysis above."
             
             return response_text
-            
+
         except Exception as e:
-            return f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}"
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}")
+            return NEUTRAL_UNAVAILABLE
     
     def generate_rag_response(
         self,
@@ -853,10 +855,12 @@ I couldn't find any relevant expense records for your query. Please try:
                     'language': language
                 }
             )
-            
+
         except Exception as e:
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}")
             return RAGResponse(
-                response=f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}",
+                response=NEUTRAL_UNAVAILABLE,
                 sources=context,
                 metadata={
                     'provider': 'watsonx',

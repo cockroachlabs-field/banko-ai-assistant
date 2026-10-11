@@ -20,6 +20,7 @@ PROVIDER_BRANDS: dict[str, tuple[str, str]] = {
 }
 
 NEUTRAL_UNAVAILABLE = "The assistant couldn't reach its AI model just now. Please try again in a moment."
+NEUTRAL_FAILED = "Something went wrong on our side. Please try again."
 
 
 @dataclass(frozen=True)
@@ -36,7 +37,7 @@ def _brand(provider: str) -> tuple[str, str]:
 
 def actual_identity(service: str, model: str) -> Identity:
     name, icon = _brand(service)
-    return Identity(provider=service, name=name, icon_file=icon, model=model or "")
+    return Identity(provider=service, name=name, icon_file=icon, model=model or "unknown")
 
 
 def _listed(cfg) -> list[str]:

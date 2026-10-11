@@ -64,7 +64,8 @@ def persona_client(monkeypatch):
     UserManager(os.environ["DATABASE_URL"]).backfill_personas()
     client = app.test_client()
     client.post("/login", data={"username": "maya"})
-    return client
+    yield client
+    app.extensions["banko_warmup_stop"].set()
 
 
 @needs_db
@@ -91,3 +92,87 @@ def test_health_keeps_the_truth_for_engineers(persona_client):
     assert health["ai_service"] == "watsonx"
     assert health["display"]["provider"] == "watsonx"
     assert health["actual"]["provider"] == "ollama"
+
+
+@needs_db
+def test_rag_api_metadata_shows_the_persona(monkeypatch):
+    """The /api/rag endpoint must not leak the real provider in metadata."""
+    from dataclasses import dataclass
+    from unittest.mock import MagicMock, patch
+
+    @dataclass
+    class FakeRAGResponse:
+        response: str
+        sources: list
+        metadata: dict
+
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setenv("AI_DISPLAY_PROVIDER", "watsonx")
+    monkeypatch.setenv("AI_DISPLAY_MODEL", "ibm/granite-3-3-8b-instruct")
+
+    from banko_ai.web.app import create_app
+    from banko_ai.web.auth import UserManager
+
+    fake_response = FakeRAGResponse(
+        response="Here's your answer",
+        sources=[],
+        metadata={"provider": "ollama", "model": "granite3.3:8b", "cached": False}
+    )
+
+    # Patch the provider's generate_rag_response at creation time
+    with patch('banko_ai.ai_providers.ollama_provider.OllamaProvider.generate_rag_response', return_value=fake_response):
+        app = create_app()
+        app.extensions["banko_readiness"].wait_for("schema", 60)
+        UserManager(os.environ["DATABASE_URL"]).backfill_personas()
+
+        client = app.test_client()
+        client.post("/login", data={"username": "maya"})
+
+        # Call /api/rag
+        result = client.post("/api/rag", json={"query": "how much did I spend on groceries?"}).get_json()
+
+        # The metadata must show watsonx, not ollama
+        assert result["success"] is True
+        assert result["metadata"]["provider"] == "watsonx"
+        assert result["metadata"]["model"] == "ibm/granite-3-3-8b-instruct"
+        assert "ollama" not in str(result).lower()
+
+        app.extensions["banko_warmup_stop"].set()
+
+
+@needs_db
+def test_no_persona_keeps_the_real_provider(monkeypatch):
+    """With no persona set, everything shows the real provider."""
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    # No AI_DISPLAY_PROVIDER set
+
+    from banko_ai.web.app import create_app
+    from banko_ai.web.auth import UserManager
+
+    with patch('banko_ai.ai_providers.ollama_provider.OllamaProvider.set_model', return_value=True) as mock_set_model:
+        app = create_app()
+        app.extensions["banko_readiness"].wait_for("schema", 60)
+        UserManager(os.environ["DATABASE_URL"]).backfill_personas()
+
+        client = app.test_client()
+        client.post("/login", data={"username": "maya"})
+
+        # /api/health shows ollama everywhere
+        health = client.get("/api/health").get_json()
+        assert health["ai_service"] == "ollama"
+        assert health["display"]["provider"] == "ollama"
+        assert health["actual"]["provider"] == "ollama"
+        assert health["display"] == health["actual"]
+
+        # /api/models shows ollama
+        models = client.get("/api/models").get_json()
+        assert models["provider"] == "ollama"
+
+        # POST /api/models reaches the real provider's set_model
+        result = client.post("/api/models", json={"model": "granite3.3:8b"}).get_json()
+        assert result["success"] is True
+        mock_set_model.assert_called_once_with("granite3.3:8b")
+
+        app.extensions["banko_warmup_stop"].set()

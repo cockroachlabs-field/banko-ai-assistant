@@ -34,6 +34,7 @@ from flask_socketio import SocketIO
 from sqlalchemy import text
 
 from ..ai_providers.display import (
+    NEUTRAL_FAILED,
     actual_identity,
     display_identity,
     display_label,
@@ -713,7 +714,13 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 user_id=current_demo_user(),
                 language=language
             )
-            
+
+            metadata = dict(rag_response.metadata) if rag_response.metadata else {}
+            if config.ai_display_provider:
+                shown = _shown()
+                metadata['provider'] = shown.provider
+                metadata['model'] = shown.model
+
             return jsonify({
                 'success': True,
                 'response': rag_response.response,
@@ -727,15 +734,16 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     }
                     for result in rag_response.sources
                 ],
-                'metadata': rag_response.metadata
+                'metadata': metadata
             })
-            
+
         except ModelWarmingUp:
             raise
         except Exception as e:
+            print(f"RAG error: {e}")
             return jsonify({
                 'success': False,
-                'error': str(e)
+                'error': neutral_error(e)
             }), 500
     
     # OLD ROUTE REMOVED - replaced by /api/generate-data with SocketIO support below
@@ -887,7 +895,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 }), 400
 
         except Exception as e:
-            print(e)
+            print(f"model switch failed: {e}")
             return jsonify({
                 'success': False,
                 'error': neutral_error(e)
@@ -922,6 +930,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             'ai_service': _shown().provider,
             'current_model': _shown().model,
             'ai_provider_available': ai_provider is not None,
+            # components are engineer-facing (carry the actual provider by design); the dashboard doesn't render them
             'components': snap,
             'display': {'provider': _shown().provider, 'model': _shown().model},
             'actual': {'provider': _actual().provider, 'model': _actual().model},
@@ -1390,7 +1399,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             print(f"❌ Receipt upload error: {e}")
             return jsonify({
                 'success': False,
-                'error': neutral_error(e)
+                'error': NEUTRAL_FAILED
             }), 500
     
     @app.route('/banko', methods=['GET', 'POST'])
@@ -1546,7 +1555,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                             error_message = "Reconnecting to the database, try that again in a moment."
                         else:
                             print(f"Aggregation error: {str(e)}")
-                            error_message = neutral_error(e)
+                            error_message = NEUTRAL_FAILED
                         session['chat'].append({'text': error_message, 'class': 'Assistant'})
                     return render_template('index.html',
                                            chat=session['chat'],
@@ -2050,7 +2059,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             "db_reachable": db_ok,
             "webhook_secret_configured": bool(cfg.cdc_webhook_hmac_secret),
             "kafka_enabled": cfg.coach_kafka_enabled,
-            "active_provider": cfg.ai_service,
+            "active_provider": _shown().provider,
+            "actual": _actual().provider,
             "last_nudge_at": last_nudge_at,
         }
         overall = ("green" if db_ok and

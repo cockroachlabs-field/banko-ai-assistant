@@ -494,8 +494,10 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
             
         except Exception as e:
             # Return a structured error response like gemini/watsonx does
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties with OpenAI. Error: {str(e)}")
             return RAGResponse(
-                response=f"Sorry, I'm experiencing technical difficulties with OpenAI. Error: {str(e)}",
+                response=NEUTRAL_UNAVAILABLE,
                 sources=context,
                 metadata={
                     'provider': 'openai',
