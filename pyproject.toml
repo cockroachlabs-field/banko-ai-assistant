@@ -40,7 +40,7 @@ dependencies = [
     "sqlalchemy-cockroachdb>=2.0.0,<3.0.0",
     
     # AI & Embeddings
-    "sentence-transformers>=3.1.0,<6.0.0",
+    "sentence-transformers>=3.1.0,<7.0.0",
     "openai>=1.11.0",
     
     # AWS Integration
@@ -71,21 +71,20 @@ dependencies = [
     "pytesseract>=0.3.10,<0.4.0",
     "pdf2image>=1.16.3,<2.0.0",
     "Pillow>=12.1.1",
-    "pypdf>=6.9.2",
+    "pypdf>=6.20.0",
     
     # Real-time Communication (NEW)
     "python-socketio>=5.10.0,<6.0.0",
     "flask-socketio>=5.3.5,<6.0.0",
-    "eventlet>=0.33.0,<1.0.0",
 
     # Coach v1: Kafka transport for the prod-mode (Debezium) signal path
-    "kafka-python>=2.0.0,<3.0.0",
+    "kafka-python>=2.0.0,<4.0.0",
     
     # Production Server (Updated for CVE-2024-1135 and CVE-2024-6827 fixes)
     "gunicorn>=23.0.0,<27.0.0",
     
-    # Utilities (CVE-2025-66418, CVE-2025-66471, CVE-2026-21441)
-    "urllib3>=2.6.3",
+    # Utilities (CVE-2025-66418, CVE-2025-66471, CVE-2026-21441, GHSA-8988-9cw3-xx77, GHSA-vxq7-64xx-v4gw)
+    "urllib3>=2.8.0",
     "requests>=2.33.0,<3.0.0",
     "numpy>=1.26.0",
     "pandas>=2.2.0,<3.0.0",
