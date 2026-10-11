@@ -62,24 +62,30 @@ class Readiness:
             return {name: asdict(c) for name, c in self._components.items()}
 
 
-def start_warmup(readiness: Readiness, steps: list[Step]) -> threading.Thread:
+def start_warmup(readiness: Readiness, steps: list[Step], *,
+                 stop: threading.Event | None = None,
+                 name: str = "banko-warmup") -> threading.Thread:
     """Run steps in order on a daemon thread. A failing step is recorded and
-    the next one still runs."""
-    for name, _ in steps:
-        readiness.set(name, "pending")
+    the next one still runs. Setting `stop` ends the lane before its next
+    step; steps that retry should watch it too."""
+    for step_name, _ in steps:
+        readiness.set(step_name, "pending")
 
     def run() -> None:
-        for name, fn in steps:
-            readiness.set(name, "running")
+        for step_name, fn in steps:
+            if stop is not None and stop.is_set():
+                readiness.set(step_name, "failed", "warm-up stopped")
+                continue
+            readiness.set(step_name, "running")
             started = time.monotonic()
             try:
                 detail = fn() or ""
-                readiness.set(name, "ready", detail)
-                log.info("warm-up: %s ready in %.1fs %s", name, time.monotonic() - started, detail)
+                readiness.set(step_name, "ready", detail)
+                log.info("warm-up: %s ready in %.1fs %s", step_name, time.monotonic() - started, detail)
             except Exception as e:
-                readiness.set(name, "failed", f"{e.__class__.__name__}: {e}")
-                log.warning("warm-up: %s failed: %s", name, e)
+                readiness.set(step_name, "failed", f"{e.__class__.__name__}: {e}")
+                log.warning("warm-up: %s failed: %s", step_name, e)
 
-    thread = threading.Thread(target=run, name="banko-warmup", daemon=True)
+    thread = threading.Thread(target=run, name=name, daemon=True)
     thread.start()
     return thread

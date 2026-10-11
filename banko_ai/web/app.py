@@ -10,6 +10,7 @@ import json
 import logging as _coach_log
 import os
 import re
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -23,11 +24,12 @@ from ..ai_providers.factory import AIProviderFactory
 from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.settings import get_config
-from ..db.engine import get_engine
+from ..db.engine import get_engine, mask_url
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
+from ..utils.embeddings import ModelWarmingUp
 from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
@@ -140,14 +142,23 @@ def auto_setup_data_if_needed(database_url: str) -> str:
     """Generate demo data when the database has almost none. Runs in the
     warm-up thread, never before the server listens."""
     if get_config().banko_skip_autosetup:
+        print("Skipping data generation (--no-data or BANKO_SKIP_AUTOSETUP)", flush=True)
         return "skipped (BANKO_SKIP_AUTOSETUP)"
     with get_engine(database_url).connect() as conn:
         rows = conn.execute(text("SELECT count(*) FROM (SELECT 1 FROM expenses LIMIT 100)")).scalar()
+        if rows >= 100:
+            # Only for the narration; this is the warm-up thread, not boot.
+            total = conn.execute(text("SELECT count(*) FROM expenses")).scalar()
     if rows >= 100:
-        return f"{rows}+ expenses present"
+        print(f"✅ Database already contains {total} expense records", flush=True)
+        return f"{total} expenses present"
+    print("🔍 Checking database setup...", flush=True)
+    print(f"Using database: {mask_url(database_url)}", flush=True)
+    print("Generating 5000 sample expense records...", flush=True)
     from ..vector_search.generator import EnhancedExpenseGenerator
-    EnhancedExpenseGenerator(database_url).generate_and_save(5000, user_id=None, clear_existing=False)
-    return "generated 5,000 sample expenses"
+    generated = EnhancedExpenseGenerator(database_url).generate_and_save(5000, user_id=None, clear_existing=False)
+    print(f"✅ Successfully generated {generated} expense records", flush=True)
+    return f"generated {generated} sample expenses"
 
 
 def create_app() -> Flask:
@@ -215,6 +226,9 @@ def create_app() -> Flask:
     # --- Boot: listen first, warm up in the background -------------------
     readiness = Readiness()
     app.extensions["banko_readiness"] = readiness
+    # Tests set this to end the warm-up lanes; nothing in the app does.
+    warmup_stop = threading.Event()
+    app.extensions["banko_warmup_stop"] = warmup_stop
     boot_log = _coach_log.getLogger("banko.boot")
 
     def _schema_step() -> str:
@@ -225,18 +239,27 @@ def create_app() -> Flask:
             except Exception as e:
                 readiness.set("schema", "running", f"waiting for the database ({e.__class__.__name__})")
                 boot_log.warning("database not reachable yet (%s); retrying in %.0fs", e, delay)
-                time.sleep(delay)
+                if warmup_stop.wait(delay):
+                    raise RuntimeError("warm-up stopped") from e
                 delay = min(delay * 2, 30.0)
                 continue
             if not result.changed:
                 return f"current ({result.fingerprint})"
             return f"applied {result.statements} statements in {result.seconds:.1f}s"
 
-    def _provider_step() -> str:
-        if ai_provider is None:
-            raise RuntimeError("no AI provider configured")
-        if not ai_provider.test_connection():
+    def _provider_step(narrate: bool = True) -> str:
+        # The startup lines the CLI printed before boot moved here.
+        service = config.ai_service.upper()
+        if ai_provider is None or not ai_provider.test_connection():
+            if narrate:
+                print(f"🔧 {service} Available: False", flush=True)
+                print(f"⚠️  {service} running in demo mode", flush=True)
+            if ai_provider is None:
+                raise RuntimeError("no AI provider configured")
             raise RuntimeError(f"{config.ai_service} did not answer")
+        if narrate:
+            print(f"🔧 {service} Available: True", flush=True)
+            print(f"✅ Active AI Service: {service}", flush=True)
         return f"{config.ai_service} reachable"
 
     def _personas_step() -> str:
@@ -268,14 +291,41 @@ def create_app() -> Flask:
 small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting ready</h2>
 <p>{{ detail }}</p><small>This page refreshes on its own.</small></div></body></html>"""
 
+    # Pages wait for the schema and the three personas. Without the
+    # personas, typing "maya" at /login would offer signup and create an
+    # ordinary user that the backfill then never turns into the persona.
+    _GATE = ("schema", "personas")
+
+    def _gate_ready() -> bool:
+        return all(readiness.is_ready(name) for name in _GATE)
+
+    def _wait_for_gate(timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        return all(readiness.wait_for(name, max(0.0, deadline - time.monotonic())) for name in _GATE)
+
+    def _gate_detail() -> str:
+        for name in _GATE:
+            component = readiness.get(name)
+            if component is None or component.state != "ready":
+                if component is not None and component.detail:
+                    return component.detail
+                return "Setting up the database." if name == "schema" else "Setting up the demo personas."
+        return ""
+
     @app.before_request
     def _wait_for_schema():
-        if request.path.startswith(_READINESS_EXEMPT) or readiness.is_ready("schema"):
+        if request.path.startswith(_READINESS_EXEMPT) or _gate_ready():
             return None
-        if readiness.wait_for("schema", timeout=config.warmup_wait_seconds):
+        if _wait_for_gate(config.warmup_wait_seconds):
             return None
-        component = readiness.get("schema")
-        detail = component.detail if component and component.detail else "Setting up the database."
+        detail = _gate_detail()
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "warming_up", "detail": detail}), 503
+        return render_template_string(_WARMING_UP_PAGE, detail=detail), 503
+
+    @app.errorhandler(ModelWarmingUp)
+    def _model_warming_up(e):
+        detail = "The embedding model is still loading. Try again in a few seconds."
         if request.path.startswith("/api/"):
             return jsonify({"error": "warming_up", "detail": detail}), 503
         return render_template_string(_WARMING_UP_PAGE, detail=detail), 503
@@ -617,6 +667,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 'user_id': None
             })
             
+        except ModelWarmingUp:
+            raise
         except Exception as e:
             return jsonify({
                 'success': False,
@@ -678,6 +730,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 'metadata': rag_response.metadata
             })
             
+        except ModelWarmingUp:
+            raise
         except Exception as e:
             return jsonify({
                 'success': False,
@@ -700,6 +754,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             results = search_expenses_via_vectorstore(query, limit=limit, metadata_filter=metadata_filter)
 
             return jsonify({'success': True, 'results': results, 'query': query, 'source': 'cockroachdb-vectorstore'})
+        except ModelWarmingUp:
+            raise
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -834,13 +890,14 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 'error': str(e)
             }), 500
     
-    def _db_ping() -> bool:
+    def _db_ping() -> str | None:
+        """None when the database answers, otherwise the error."""
         try:
             with get_engine(config.database_url).connect() as conn:
                 conn.execute(text("SELECT 1"))
-            return True
-        except Exception:
-            return False
+            return None
+        except Exception as e:
+            return f"database unreachable: {e.__class__.__name__}"
 
     @app.route('/api/health')
     def api_health():
@@ -848,13 +905,14 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         re-test the AI provider now."""
         if request.args.get("refresh") == "1":
             try:
-                readiness.set("ai_provider", "ready", _provider_step())
+                readiness.set("ai_provider", "ready", _provider_step(narrate=False))
             except Exception as e:
                 readiness.set("ai_provider", "failed", str(e))
-        db_ok = _db_ping()
+        db_error = _db_ping()
+        db_ok = db_error is None
         snap = readiness.snapshot()
         provider_state = snap.get("ai_provider", {}).get("state", "unknown")
-        return jsonify({
+        body = {
             'success': db_ok,
             'database': 'connected' if db_ok else 'unreachable',
             'ai_provider': 'connected' if provider_state == 'ready' else provider_state,
@@ -862,7 +920,10 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             'current_model': ai_provider.get_current_model() if ai_provider else 'unknown',
             'ai_provider_available': ai_provider is not None,
             'components': snap,
-        }), (200 if db_ok else 503)
+        }
+        if db_error:
+            body['error'] = db_error
+        return jsonify(body), (200 if db_ok else 503)
 
     @app.route('/api/health/live')
     def health_live():
@@ -870,8 +931,9 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
     @app.route('/api/health/ready')
     def health_ready():
-        ready = readiness.is_ready("schema")
-        return jsonify({'ready': ready, 'schema': readiness.snapshot().get('schema')}), (200 if ready else 503)
+        ready = _gate_ready()
+        snap = readiness.snapshot()
+        return jsonify({'ready': ready, **{name: snap.get(name) for name in _GATE}}), (200 if ready else 503)
 
     @app.route('/api/upload-receipt', methods=['POST'])
     def upload_receipt():
@@ -1545,7 +1607,9 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         pass
                     
                 except Exception as e:
-                    if isinstance(e, TRANSIENT_ERRORS):
+                    if isinstance(e, ModelWarmingUp):
+                        error_message = "I'm still warming up my embedding model. Try that again in a few seconds."
+                    elif isinstance(e, TRANSIENT_ERRORS):
                         error_message = "Reconnecting to the database, try that again in a moment."
                     else:
                         error_message = f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}"
@@ -2065,6 +2129,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             reply = agent.converse(user_id=user_id, message=message,
                                    history=[], context=context,
                                    thread_id=thread_id)
+        except ModelWarmingUp:
+            raise
         except Exception as e:
             # A provider timeout or DB blip must come back as a retryable
             # coach message, not a raw 500 the UI renders as an error.
@@ -2251,14 +2317,19 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     app.register_blueprint(agent_dashboard)
 
     # Last, so every closure the steps call already exists.
+    # Lane A needs no database. Lane B runs the gate (schema, personas)
+    # first; locality conversions are online in CockroachDB, so they come
+    # after the app is already usable.
+    start_warmup(readiness, [
+        ("ai_provider", _provider_step),
+        ("embedding_model", _model_step),
+    ], stop=warmup_stop, name="banko-warmup-local")
     start_warmup(readiness, [
         ("schema", _schema_step),
-        ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
-        ("embedding_model", _model_step),
-        ("ai_provider", _provider_step),
         ("personas", _personas_step),
         ("demo_users", _expiry_step),
         ("coach", _coach_step),
+        ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
         ("sample_data", lambda: auto_setup_data_if_needed(config.database_url)),
-    ])
+    ], stop=warmup_stop, name="banko-warmup-db")
     return app

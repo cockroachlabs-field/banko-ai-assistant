@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 import numpy as np
 from sqlalchemy import text
 
-from banko_ai.utils.embeddings import load_embedding_model
+from banko_ai.utils.embeddings import ModelWarmingUp, load_embedding_model
 
 from ..config.settings import get_config
 from .db_retry import db_retry
@@ -95,6 +95,8 @@ class BankoCacheManager:
                 # Use configurable embedding model from environment or default
                 embedding_model_name = get_config().embedding_model
                 self.model = load_embedding_model(embedding_model_name)
+            except ModelWarmingUp:
+                raise  # the request gets a 503 warming_up, not a silent miss
             except Exception as e:
                 print(f"Warning: Could not load SentenceTransformer model: {e}")
                 print("Cache functionality will be limited.")

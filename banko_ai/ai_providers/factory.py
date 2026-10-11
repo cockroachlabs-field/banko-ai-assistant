@@ -40,7 +40,10 @@ class AIProviderFactory:
         available = cls.get_available_providers()
         if service_name not in available:
             raise AIProviderError(f"Unsupported AI service: {service_name}. Available services: {', '.join(available)}")
-        provider_class = cls._resolve(service_name)
+        try:
+            provider_class = cls._resolve(service_name)
+        except ImportError as e:
+            raise AIProviderError(f"{service_name} provider is unavailable: {e}")
         try:
             if "cache_manager" in inspect.signature(provider_class.__init__).parameters:
                 return provider_class(config, cache_manager)
