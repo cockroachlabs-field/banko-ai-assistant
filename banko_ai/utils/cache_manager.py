@@ -624,6 +624,3 @@ class BankoCacheManager:
                 conn.commit()
         except Exception as e:
             print(f"⚠️ Error cleaning up cache: {e}")
-
-# Global cache manager instance
-cache_manager = BankoCacheManager()

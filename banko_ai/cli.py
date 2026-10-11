@@ -7,9 +7,7 @@ This module provides CLI commands for running the application and managing data.
 
 import click
 
-from .config.settings import get_config
-from .vector_search.generator import EnhancedExpenseGenerator
-from .web.app import create_app
+from .config.settings import get_config, set_config
 
 
 @click.group()
@@ -29,8 +27,8 @@ def cli(ctx):
 
 
 @cli.command()
-@click.option('--host', default='0.0.0.0', help='Host to bind to')
-@click.option('--port', default=5000, help='Port to bind to')
+@click.option('--host', default=None, help='Host to bind to')
+@click.option('--port', default=None, type=int, help='Port to bind to')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
 @click.option('--generate-data', type=int, default=5000, help='Generate sample data before starting (default: 5000 records)')
 @click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
@@ -38,81 +36,53 @@ def cli(ctx):
 @click.option('--background', is_flag=True, help='Run in background mode (suppress Flask output)')
 def run(host, port, debug, generate_data, no_data, clear_data, background):
     """Run the Banko AI Assistant web application."""
-    # Show beautiful startup banner
-    click.echo("🏦 === Banko AI Assistant Starting === 🏦")
-    
-    # Load configuration and show AI service info
     config = get_config()
-    ai_service = config.ai_service.upper()
+    host = host or config.host
+    port = port or config.port
+    click.echo("🏦 === Banko AI Assistant Starting === 🏦")
     click.echo(f"🤖 AI Service: {config.ai_service}")
-    
-    # Check AI provider availability
-    try:
-        from .ai_providers.factory import AIProviderFactory
-        ai_config = config.get_ai_config()
-        ai_provider = AIProviderFactory.create_provider(
-            config.ai_service, 
-            ai_config[config.ai_service]
-        )
-        
-        # Test connection and show status
-        if ai_provider.test_connection():
-            click.echo(f"🔧 {ai_service} Available: True")
-            click.echo(f"✅ Active AI Service: {ai_service}")
-        else:
-            click.echo(f"🔧 {ai_service} Available: False")
-            click.echo(f"⚠️  {ai_service} running in demo mode")
-    except Exception:
-        click.echo(f"🔧 {ai_service} Available: False")
-        click.echo(f"⚠️  {ai_service} running in demo mode")
-    
     click.echo("=" * 44)
-    
-    # Generate data if not explicitly disabled
-    if not no_data:
-        click.echo("🔍 Checking database setup...")
-        click.echo(f"Using database: {config.database_url}")
-        click.echo(f"Generating {generate_data} sample expense records...")
-        generator = EnhancedExpenseGenerator(config.database_url)
-        
-        # Check if data already exists
-        try:
-            existing_count = generator.get_expense_count()
-            if existing_count > 0 and not clear_data:
-                click.echo(f"✅ Database already contains {existing_count} expense records")
-            else:
-                if clear_data:
-                    click.echo("Clearing existing data...")
-                    generator.clear_expenses()
-                
-                actual_count = generator.generate_and_save(generate_data)
-                click.echo(f"✅ Successfully generated {actual_count} expense records")
-        except Exception as e:
-            click.echo(f"❌ Error generating data: {e}")
-            return
-    else:
-        click.echo("Skipping data generation (--no-data flag used)")
-    
-    # Show startup completion message
-    click.echo(f"🚀 Starting server on http://localhost:{port}")
-    click.echo("🎉 Banko AI is ready to help with your finances!")
-    click.echo("=" * 44)
-    
-    # Create and run the app
+
+    if no_data:
+        # The warm-up's sample-data step reads this setting.
+        set_config(config.model_copy(update={"banko_skip_autosetup": True}))
+    elif clear_data:
+        from .vector_search.generator import EnhancedExpenseGenerator
+        click.echo("Clearing existing data...")
+        EnhancedExpenseGenerator(config.database_url).clear_expenses()
+
+    from .web.app import create_app
+    from .web.server import serve
+
     app = create_app()
-    
+    app.debug = bool(debug or config.debug)  # no reloader: serve() runs in this process
+    readiness = app.extensions["banko_readiness"]
+
+    def announce_when_warm():
+        # The ready line means ready: it waits for every warm-up step.
+        import time
+        while any(c["state"] in ("pending", "running") for c in readiness.snapshot().values()):
+            time.sleep(0.5)
+        click.echo("🎉 Banko AI is ready to help with your finances!")
+        failed = [name for name, c in readiness.snapshot().items() if c["state"] == "failed"]
+        if failed:
+            click.echo(f"⚠️  Not ready: {', '.join(failed)} (details at /api/health)")
+
+    def announce(urls):
+        import threading
+        click.echo(f"🚀 Starting server on http://localhost:{port}")
+        click.echo("=" * 44)
+        for url in urls:
+            click.echo(f" * Running on {url}")
+        if background:
+            click.echo("💡 Use 'banko-ai status' to check if it's running")
+            click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
+        threading.Thread(target=announce_when_warm, name="banko-ready-line", daemon=True).start()
+
     if background:
-        # Background mode - suppress Flask output
         import logging
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)
-        
-        # Show final message for background mode
-        click.echo(f"🚀 Banko AI running in background on http://localhost:{port}")
-        click.echo("💡 Use 'banko-ai status' to check if it's running")
-        click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
-    
-    app.run(host=host, port=port, debug=debug)
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+    serve(app, host, port, on_ready=announce)
 
 
 @cli.command()
@@ -121,6 +91,8 @@ def run(host, port, debug, generate_data, no_data, clear_data, background):
 @click.option('--clear', is_flag=True, help='Clear existing data before generating')
 def generate_data(count, user_id, clear):
     """Generate sample expense data."""
+    from .vector_search.generator import EnhancedExpenseGenerator
+
     config = get_config()
     generator = EnhancedExpenseGenerator(config.database_url)
     
@@ -138,6 +110,8 @@ def generate_data(count, user_id, clear):
 @cli.command()
 def clear_data():
     """Clear all expense data."""
+    from .vector_search.generator import EnhancedExpenseGenerator
+
     config = get_config()
     generator = EnhancedExpenseGenerator(config.database_url)
     
@@ -230,6 +204,8 @@ def clear_agents(agents, cache, clear_all):
 @cli.command()
 def status():
     """Show application status."""
+    from .vector_search.generator import EnhancedExpenseGenerator
+
     config = get_config()
     generator = EnhancedExpenseGenerator(config.database_url)
     
@@ -275,87 +251,16 @@ def status():
 
 
 @cli.command()
-@click.option('--host', default='0.0.0.0', help='Host to bind to')
-@click.option('--port', default=5000, help='Port to bind to')
+@click.option('--host', default=None, help='Host to bind to')
+@click.option('--port', default=None, type=int, help='Port to bind to')
 @click.option('--generate-data', type=int, default=5000, help='Generate sample data before starting (default: 5000 records)')
 @click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
 @click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
-def start(host, port, generate_data, no_data, clear_data):
+@click.pass_context
+def start(ctx, host, port, generate_data, no_data, clear_data):
     """Start Banko AI in background mode (equivalent to 'run --background')."""
-    # Show beautiful startup banner
-    click.echo("🏦 === Banko AI Assistant Starting === 🏦")
-    
-    # Load configuration and show AI service info
-    config = get_config()
-    ai_service = config.ai_service.upper()
-    click.echo(f"🤖 AI Service: {config.ai_service}")
-    
-    # Check AI provider availability
-    try:
-        from .ai_providers.factory import AIProviderFactory
-        ai_config = config.get_ai_config()
-        ai_provider = AIProviderFactory.create_provider(
-            config.ai_service, 
-            ai_config[config.ai_service]
-        )
-        
-        # Test connection and show status
-        if ai_provider.test_connection():
-            click.echo(f"🔧 {ai_service} Available: True")
-            click.echo(f"✅ Active AI Service: {ai_service}")
-        else:
-            click.echo(f"🔧 {ai_service} Available: False")
-            click.echo(f"⚠️  {ai_service} running in demo mode")
-    except Exception:
-        click.echo(f"🔧 {ai_service} Available: False")
-        click.echo(f"⚠️  {ai_service} running in demo mode")
-    
-    click.echo("=" * 44)
-    
-    # Generate data if not explicitly disabled
-    if not no_data:
-        click.echo("🔍 Checking database setup...")
-        click.echo(f"Using database: {config.database_url}")
-        click.echo(f"Generating {generate_data} sample expense records...")
-        generator = EnhancedExpenseGenerator(config.database_url)
-        
-        # Check if data already exists
-        try:
-            existing_count = generator.get_expense_count()
-            if existing_count > 0 and not clear_data:
-                click.echo(f"✅ Database already contains {existing_count} expense records")
-            else:
-                if clear_data:
-                    click.echo("Clearing existing data...")
-                    generator.clear_expenses()
-                
-                actual_count = generator.generate_and_save(generate_data)
-                click.echo(f"✅ Successfully generated {actual_count} expense records")
-        except Exception as e:
-            click.echo(f"❌ Error generating data: {e}")
-            return
-    else:
-        click.echo("Skipping data generation (--no-data flag used)")
-    
-    # Show startup completion message
-    click.echo(f"🚀 Starting server on http://localhost:{port}")
-    click.echo("🎉 Banko AI is ready to help with your finances!")
-    click.echo("=" * 44)
-    
-    # Create and run the app in background mode
-    app = create_app()
-    
-    # Background mode - suppress Flask output
-    import logging
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)
-    
-    # Show final message for background mode
-    click.echo(f"🚀 Banko AI running in background on http://localhost:{port}")
-    click.echo("💡 Use 'banko-ai status' to check if it's running")
-    click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
-    
-    app.run(host=host, port=port, debug=False)
+    ctx.invoke(run, host=host, port=port, debug=False, generate_data=generate_data,
+               no_data=no_data, clear_data=clear_data, background=True)
 
 
 @cli.command()

@@ -7,10 +7,12 @@ for a 22M-parameter model.
 
 import sentence_transformers
 
+from banko_ai.utils import embeddings
 from banko_ai.utils.embeddings import load_embedding_model
 
 
 def test_embedding_model_loads_on_cpu(monkeypatch):
+    monkeypatch.setattr(embeddings, "_models", {})
     calls = []
 
     def fake_model(*args, **kwargs):

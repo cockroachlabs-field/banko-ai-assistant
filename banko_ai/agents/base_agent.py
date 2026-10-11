@@ -357,7 +357,7 @@ Be concise but thorough in your responses."""
         try:
             # Generate embedding for the content
             from banko_ai.utils.embeddings import load_embedding_model
-            model = load_embedding_model('all-MiniLM-L6-v2')
+            model = load_embedding_model()
             embedding = model.encode(content).tolist()
 
             from ..db.engine import get_engine
@@ -414,7 +414,7 @@ Be concise but thorough in your responses."""
         try:
             # Generate embedding for the query
             from banko_ai.utils.embeddings import load_embedding_model
-            model = load_embedding_model('all-MiniLM-L6-v2')
+            model = load_embedding_model()
             query_embedding = model.encode(query).tolist()
 
             from ..db.engine import get_engine

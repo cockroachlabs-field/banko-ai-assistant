@@ -22,7 +22,7 @@ from ..utils.crdb_engine import get_crdb_engine
 class _SentenceTransformerEmbeddings(Embeddings):
     """Wraps SentenceTransformer as a LangChain Embeddings object."""
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str | None = None):
         self._model = load_embedding_model(model_name)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:

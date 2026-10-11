@@ -15,7 +15,7 @@ import uuid
 from datetime import datetime
 
 import requests
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, session, url_for
 from flask_socketio import SocketIO
 from sqlalchemy import text
 
@@ -23,10 +23,14 @@ from ..ai_providers.factory import AIProviderFactory
 from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.settings import get_config
+from ..db.engine import get_engine
+from ..db.regions import detect_database_regions
+from ..db.schema import ensure_schema, run_pending_conversions
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
 from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
+from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
 
 
@@ -132,68 +136,18 @@ def check_database_connection(database_url: str):
         return False, f"Database connection failed: {str(e)}", False, 0
 
 
-def auto_setup_data_if_needed(database_url: str):
-    """
-    Automatically set up data if the database is empty or has very few records.
-    This integrates seamlessly into the app startup - matches original app.py.
-    """
-    # Skip the heavy data-gen path under pytest — fixtures build create_app()
-    # on every test and a 5000-row insert + embeddings on each call makes the
-    # suite unusable. Tests that need data seed it explicitly.
+def auto_setup_data_if_needed(database_url: str) -> str:
+    """Generate demo data when the database has almost none. Runs in the
+    warm-up thread, never before the server listens."""
     if get_config().banko_skip_autosetup:
-        return True
-    try:
-        db_connected, db_message, table_exists, record_count = check_database_connection(database_url)
-        
-        if not db_connected:
-            print(f"❌ Database connection failed: {db_message}")
-            return False
-            
-        # Create table if it doesn't exist
-        if not table_exists:
-            print("🔧 Creating expenses table...")
-            try:
-                # Use the unified DatabaseManager
-                from ..utils.database import DatabaseManager
-                db_manager = DatabaseManager(database_url)
-                
-                if db_manager.create_tables():
-                    print("✅ Expenses table created successfully")
-                    # Re-check the database status
-                    db_connected, db_message, table_exists, record_count = check_database_connection(database_url)
-                else:
-                    print("❌ Failed to create table")
-                    return False
-            except Exception as e:
-                print(f"❌ Table creation error: {e}")
-                return False
-            
-        # If we have very few records, offer to generate more
-        if record_count < 100:
-            print(f"🔍 Found {record_count} expense records")
-            print("🎯 Generating sample data for better demo experience...")
-            
-            try:
-                # Use the unified data generator
-                from ..vector_search.generator import EnhancedExpenseGenerator
-                
-                generator = EnhancedExpenseGenerator(database_url)
-                
-                # Generate a reasonable amount for demos (5K records)
-                generator.generate_and_save(5000, user_id=None, clear_existing=False)
-                
-                print("✅ Generated 5,000 realistic expense records")
-                return True
-                
-            except Exception as e:
-                print(f"⚠️  Data generation failed: {e}")
-                return False
-        
-        return True
-        
-    except Exception as e:
-        print(f"⚠️  Auto-setup error: {e}")
-        return False
+        return "skipped (BANKO_SKIP_AUTOSETUP)"
+    with get_engine(database_url).connect() as conn:
+        rows = conn.execute(text("SELECT count(*) FROM (SELECT 1 FROM expenses LIMIT 100)")).scalar()
+    if rows >= 100:
+        return f"{rows}+ expenses present"
+    from ..vector_search.generator import EnhancedExpenseGenerator
+    EnhancedExpenseGenerator(database_url).generate_and_save(5000, user_id=None, clear_existing=False)
+    return "generated 5,000 sample expenses"
 
 
 def create_app() -> Flask:
@@ -242,7 +196,6 @@ def create_app() -> Flask:
     user_manager = UserManager()
     cache_manager = BankoCacheManager()
     search_engine = VectorSearchEngine(config.database_url, cache_manager)
-    EnhancedExpenseGenerator(config.database_url)
     
     # Initialize AI provider
     print(f"🔧 Initializing AI Provider: {config.ai_service}")
@@ -259,39 +212,73 @@ def create_app() -> Flask:
         print(f"Warning: Could not initialize AI provider: {e}")
         ai_provider = None
     
-    # Auto-setup data if needed (matching original app.py)
-    print("🔍 Checking database setup...")
-    auto_setup_data_if_needed(config.database_url)
+    # --- Boot: listen first, warm up in the background -------------------
+    readiness = Readiness()
+    app.extensions["banko_readiness"] = readiness
+    boot_log = _coach_log.getLogger("banko.boot")
 
-    # The coach webhook accepts signals as soon as the app is up, so its
-    # tables have to exist before the first one arrives. CREATE IF NOT
-    # EXISTS, safe on every boot. The legacy pgvector ivfflat migration
-    # is gone; boot calls the granular migrations it needs directly.
-    try:
-        from banko_ai.utils.migration import (
-            DatabaseMigration,
-            detect_database_regions,
-            detect_regions,
-            migrate_regional_tables,
-            resolve_primary_region,
-        )
-        migrator = DatabaseMigration(config.database_url)
-        migrator.migrate_users_table()
-        migrator.migrate_to_coach_v1()
-        migrator.migrate_timestamptz()
+    def _schema_step() -> str:
+        delay = 1.0
+        while True:
+            try:
+                result = ensure_schema(config.database_url)
+            except Exception as e:
+                readiness.set("schema", "running", f"waiting for the database ({e.__class__.__name__})")
+                boot_log.warning("database not reachable yet (%s); retrying in %.0fs", e, delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 30.0)
+                continue
+            if not result.changed:
+                return f"current ({result.fingerprint})"
+            return f"applied {result.statements} statements in {result.seconds:.1f}s"
 
-        # The three legacy personas must exist on every boot: docs and
-        # clear-demo-users both promise maya/sam/riley survive, and a
-        # fresh database otherwise has no users at all.
+    def _provider_step() -> str:
+        if ai_provider is None:
+            raise RuntimeError("no AI provider configured")
+        if not ai_provider.test_connection():
+            raise RuntimeError(f"{config.ai_service} did not answer")
+        return f"{config.ai_service} reachable"
+
+    def _personas_step() -> str:
         UserManager(config.database_url).backfill_personas()
+        return "maya, sam, riley present"
 
-        regions = detect_regions(config.database_url)
-        if regions:
-            primary = resolve_primary_region(config.database_url)
-            if primary:
-                migrate_regional_tables(config.database_url, primary)
-    except Exception as e:
-        print(f"Warning: migration failed at startup: {e}")
+    def _expiry_step() -> str:
+        from banko_ai.utils.migration import DatabaseMigration
+        return f"{DatabaseMigration(config.database_url).expire_demo_users()} expired"
+
+    def _model_step() -> str:
+        from ..utils.embeddings import load_embedding_model
+        load_embedding_model(wait_seconds=600)
+        return f"{config.embedding_model} on {config.embedding_device}"
+
+    def _coach_step() -> str:
+        # Both helpers are closures defined further down in create_app. The
+        # warm-up thread only starts at the very end of create_app (see
+        # below), so they always exist by the time this runs.
+        _maybe_start_kafka_consumer()
+        _replay_stranded_on_boot()
+        return "kafka on" if config.coach_kafka_enabled else "webhook only"
+
+    _READINESS_EXEMPT = ("/api/health", "/static/", "/socket.io", "/favicon")
+    _WARMING_UP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="3"><title>Banko is getting ready</title>
+<style>body{font-family:Inter,system-ui,sans-serif;background:#F6F5F2;color:#1F1D1A;display:grid;place-items:center;height:100vh;margin:0}
+.card{background:#fff;border:1px solid #ECE9E2;border-radius:14px;padding:28px 32px;max-width:440px}
+small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting ready</h2>
+<p>{{ detail }}</p><small>This page refreshes on its own.</small></div></body></html>"""
+
+    @app.before_request
+    def _wait_for_schema():
+        if request.path.startswith(_READINESS_EXEMPT) or readiness.is_ready("schema"):
+            return None
+        if readiness.wait_for("schema", timeout=config.warmup_wait_seconds):
+            return None
+        component = readiness.get("schema")
+        detail = component.detail if component and component.detail else "Setting up the database."
+        if request.path.startswith("/api/"):
+            return jsonify({"error": "warming_up", "detail": detail}), 503
+        return render_template_string(_WARMING_UP_PAGE, detail=detail), 503
 
     def _emit_welcome_signal(user: dict) -> None:
         """Post a welcome signal matched to the user's spending style.
@@ -847,44 +834,44 @@ def create_app() -> Flask:
                 'error': str(e)
             }), 500
     
+    def _db_ping() -> bool:
+        try:
+            with get_engine(config.database_url).connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return True
+        except Exception:
+            return False
+
     @app.route('/api/health')
     def api_health():
-        """Health check endpoint."""
-        try:
-            # Debug logging
-            provider_name = ai_provider.get_provider_name() if ai_provider else 'None'
-            print(f"🔍 /api/health called - config.ai_service: {config.ai_service}, provider: {provider_name}")
-            
-            # Check database connection with proper pooling
-            # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-            from ..db.engine import get_engine
-            engine = get_engine(config.database_url)
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            
-            # Check AI provider
-            ai_status = "unknown"
-            current_model = "unknown"
-            ai_provider_available = False
-            if ai_provider:
-                ai_provider_available = True
-                ai_status = "connected" if ai_provider.test_connection() else "disconnected"
-                current_model = ai_provider.get_current_model()
-            
-            return jsonify({
-                'success': True,
-                'database': 'connected',
-                'ai_provider': ai_status,
-                'ai_service': config.ai_service,
-                'current_model': current_model,
-                'ai_provider_available': ai_provider_available
-            })
-            
-        except Exception as e:
-            return jsonify({
-                'success': False,
-                'error': str(e)
-            }), 500
+        """Cheap health: database ping plus warm-up state. Pass ?refresh=1 to
+        re-test the AI provider now."""
+        if request.args.get("refresh") == "1":
+            try:
+                readiness.set("ai_provider", "ready", _provider_step())
+            except Exception as e:
+                readiness.set("ai_provider", "failed", str(e))
+        db_ok = _db_ping()
+        snap = readiness.snapshot()
+        provider_state = snap.get("ai_provider", {}).get("state", "unknown")
+        return jsonify({
+            'success': db_ok,
+            'database': 'connected' if db_ok else 'unreachable',
+            'ai_provider': 'connected' if provider_state == 'ready' else provider_state,
+            'ai_service': config.ai_service,
+            'current_model': ai_provider.get_current_model() if ai_provider else 'unknown',
+            'ai_provider_available': ai_provider is not None,
+            'components': snap,
+        }), (200 if db_ok else 503)
+
+    @app.route('/api/health/live')
+    def health_live():
+        return jsonify({'status': 'alive'}), 200
+
+    @app.route('/api/health/ready')
+    def health_ready():
+        ready = readiness.is_ready("schema")
+        return jsonify({'ready': ready, 'schema': readiness.snapshot().get('schema')}), (200 if ready else 503)
 
     @app.route('/api/upload-receipt', methods=['POST'])
     def upload_receipt():
@@ -1056,7 +1043,7 @@ def create_app() -> Flask:
                     expense_text = f"Spent ${amount} at {merchant} for {category} on {expense_date.strftime('%Y-%m-%d') if hasattr(expense_date, 'strftime') else expense_date}"
                     
                     from banko_ai.utils.embeddings import load_embedding_model
-                    embedding_model = load_embedding_model('all-MiniLM-L6-v2')
+                    embedding_model = load_embedding_model()
                     embedding = embedding_model.encode(expense_text).tolist()
                     
                     # Get category and items for tags and description
@@ -1888,8 +1875,6 @@ def create_app() -> Flask:
         t.start()
         app._coach_kafka_thread = t
 
-    _maybe_start_kafka_consumer()
-
     def _replay_stranded_on_boot() -> None:
         """A process dying mid nudge leaves its signal claimed with no
         nudge to show. Recover in the background so a demo-box restart
@@ -1903,10 +1888,6 @@ def create_app() -> Flask:
                       f"before the last restart", flush=True)
         except Exception as e:
             print(f"stranded-signal replay skipped: {e}", flush=True)
-
-    import threading as _threading
-    _threading.Thread(target=_replay_stranded_on_boot,
-                      name="coach-reclaim", daemon=True).start()
 
     def _claim_signal(sig) -> bool:
         """Atomically claim a signal for processing by inserting its row
@@ -2268,5 +2249,16 @@ def create_app() -> Flask:
     # Register agent dashboard blueprint
     from .agent_dashboard import agent_dashboard
     app.register_blueprint(agent_dashboard)
-    
+
+    # Last, so every closure the steps call already exists.
+    start_warmup(readiness, [
+        ("schema", _schema_step),
+        ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
+        ("embedding_model", _model_step),
+        ("ai_provider", _provider_step),
+        ("personas", _personas_step),
+        ("demo_users", _expiry_step),
+        ("coach", _coach_step),
+        ("sample_data", lambda: auto_setup_data_if_needed(config.database_url)),
+    ])
     return app

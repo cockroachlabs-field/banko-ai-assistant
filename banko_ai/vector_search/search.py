@@ -14,7 +14,6 @@ from sqlalchemy import text
 from banko_ai.utils.embeddings import load_embedding_model
 
 from ..ai_providers.base import SearchResult
-from ..config.settings import get_config
 from ..utils.db_retry import db_retry, get_database_url
 
 
@@ -28,10 +27,12 @@ class VectorSearchEngine:
 
         from ..db.engine import get_engine
         self.engine = get_engine(self.database_url)
-        # Use configurable embedding model from environment or default
-        embedding_model_name = get_config().embedding_model
-        self.embedding_model = load_embedding_model(embedding_model_name)
-    
+
+    @property
+    def embedding_model(self):
+        """Loaded on first use, so constructing the engine at boot is free."""
+        return load_embedding_model()
+
     @db_retry(max_attempts=3, initial_delay=0.5)
     def simple_search_expenses(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """

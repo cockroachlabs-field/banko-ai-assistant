@@ -130,7 +130,7 @@ def _lexical_or_fuzzy_financial_hit(query: str) -> bool:
 def _get_model():
     global _model
     if _model is None:
-        _model = load_embedding_model("all-MiniLM-L6-v2")
+        _model = load_embedding_model()
     return _model
 
 
