@@ -22,8 +22,9 @@ def _to_pyformat(sql: str) -> str:
     """Convert :name placeholders to %(name)s format for psycopg's client-side binding.
 
     Word boundaries ensure :start and :start_date convert independently.
+    Negative lookbehind (?<!:) ensures :: type casts are left alone.
     """
-    return re.sub(r":(\w+)\b", r"%(\1)s", sql)
+    return re.sub(r"(?<!:):(\w+)\b", r"%(\1)s", sql)
 
 
 @dataclass(frozen=True)

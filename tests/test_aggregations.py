@@ -76,3 +76,5 @@ def test_to_pyformat_converts_placeholders():
     assert _to_pyformat("WHERE a = 1") == "WHERE a = 1"
     # Repeated placeholder
     assert _to_pyformat("WHERE a = :x OR b = :x") == "WHERE a = %(x)s OR b = %(x)s"
+    # PostgreSQL :: casts should not be treated as placeholders
+    assert _to_pyformat("WHERE d::DATE >= :start AND n = :name") == "WHERE d::DATE >= %(start)s AND n = %(name)s"
