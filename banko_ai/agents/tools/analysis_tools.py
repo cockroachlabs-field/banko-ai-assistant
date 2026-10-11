@@ -12,8 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from langchain_core.tools import Tool
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 
 def create_analysis_tools(database_url: str) -> list[Tool]:
@@ -46,6 +45,8 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with statistics
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -132,7 +133,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         'count': int(row[1]),
                         'total': float(row[2])
                     })
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'period': {
@@ -165,6 +166,8 @@ return json.dumps({
             JSON string with detected anomalies
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -222,7 +225,7 @@ return json.dumps({
                         'z_score': float(row[6]),
                         'type': 'unusually_high' if row[2] > mean else 'unusually_low'
                     })
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'statistics': {
@@ -252,6 +255,8 @@ return json.dumps({
             JSON string with potential duplicates
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -285,7 +290,7 @@ return json.dumps({
                         'expense_ids': [str(eid) for eid in row[4]],
                         'descriptions': row[5],
                     })
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'duplicates': duplicates,
@@ -317,6 +322,8 @@ return json.dumps({
             JSON string with comparison
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -365,7 +372,7 @@ return json.dumps({
                     'average_change': period2['average'] - period1['average'],
                     'average_change_pct': ((period2['average'] - period1['average']) / period1['average'] * 100) if period1['average'] > 0 else 0
                 }
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'user_id': user_id,
                 'period1': {

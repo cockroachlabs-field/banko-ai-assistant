@@ -103,9 +103,8 @@ Be helpful and non-judgmental. Focus on solutions, not problems."""
         """
         self.update_status("thinking", {"action": "check_budget", "user_id": user_id})
         
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         result = {
             'user_id': user_id,
             'budget': monthly_budget,
@@ -257,9 +256,11 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
             # If approaching limit, check if we need to create tasks for other agents
             if result['alert'] and result['alert_level'] in ['warning', 'critical']:
                 # Get fraud agent ID to create escalation task
-                from sqlalchemy import create_engine, text
-                from sqlalchemy.pool import NullPool
-                
+                from sqlalchemy import text
+                                
+                from ..db.engine import get_engine
+
+                                
                 engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
                 with engine.connect() as conn:
                     # Freshest fraud agent wherever it runs; region labels
@@ -285,8 +286,10 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
                             priority=8 if result['alert_level'] == 'critical' else 5
                         )
                         result['task_created'] = task_id
-except Exception as e:
+        except Exception as e:
             result['error'] = str(e)
+        
+        finally:
             self.update_status("idle")
         
         return result
@@ -331,6 +334,8 @@ except Exception as e:
         
         except Exception as e:
             results['error'] = str(e)
+        
+        finally:
             self.update_status("idle")
         
         return results
@@ -412,6 +417,8 @@ Be concise and practical."""
         
         except Exception as e:
             result['error'] = str(e)
+        
+        finally:
             self.update_status("idle")
         
         return result

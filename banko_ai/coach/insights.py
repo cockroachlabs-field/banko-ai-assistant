@@ -22,6 +22,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+
 def _engine(database_url: str):
     from ..db.engine import get_engine
     return get_engine(database_url)
@@ -47,7 +48,8 @@ def get_monthly_summary(user_id: str, year: int, month: int,
               AND expense_date >= :start
               AND expense_date <= :end
         """), {"u": user_id, "start": first_day, "end": last_day}).fetchall()
-if not rows:
+
+    if not rows:
         return {
             "year": year, "month": month, "total": 0.0,
             "transaction_count": 0,
@@ -105,7 +107,8 @@ def get_spending_velocity(user_id: str, category: str,
               AND expense_date <= :today
         """), {"u": user_id, "c": category, "start": first_day,
                "today": today}).fetchone()
-spent = float(row[0])
+
+    spent = float(row[0])
     txn_count = int(row[1])
     daily_rate = spent / days_into_month if days_into_month > 0 else 0.0
     projected_eom = daily_rate * days_in_month
@@ -162,7 +165,7 @@ def get_top_merchants(user_id: str, database_url: str,
                 ORDER BY total DESC
                 LIMIT :k
             """), {"u": user_id, "cutoff": cutoff, "k": k}).fetchall()
-return [{
+    return [{
         "merchant": r[0],
         "total": round(float(r[1]), 2),
         "transaction_count": int(r[2]),
@@ -193,7 +196,8 @@ def detect_subscriptions(user_id: str, database_url: str,
               AND merchant IS NOT NULL
             ORDER BY merchant, expense_date
         """), {"u": user_id, "cutoff": cutoff}).fetchall()
-by_merchant: dict[str, list[tuple[date, float]]] = defaultdict(list)
+
+    by_merchant: dict[str, list[tuple[date, float]]] = defaultdict(list)
     for merch, d, amt in rows:
         by_merchant[merch].append((d, float(amt)))
 

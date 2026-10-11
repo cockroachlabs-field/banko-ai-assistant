@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sqlalchemy import text
+
 from .signals import Signal, SignalType
 
 log = logging.getLogger("banko.coach.handler")
@@ -128,7 +129,7 @@ class SignalHandler:
                 "UPDATE spending_signals SET consumed_at = now() "
                 "WHERE idempotency_key = :k AND consumed_at IS NULL"
             ), {"k": signal.idempotency_key})
-return result.rowcount == 1
+        return result.rowcount == 1
 
     def _unclaim(self, signal: Signal) -> None:
         eng = self._engine()
@@ -137,13 +138,14 @@ return result.rowcount == 1
                 "UPDATE spending_signals SET consumed_at = NULL "
                 "WHERE idempotency_key = :k"
             ), {"k": signal.idempotency_key})
-def _signal_row_exists(self, signal: Signal) -> bool:
+
+    def _signal_row_exists(self, signal: Signal) -> bool:
         eng = self._engine()
         with eng.connect() as conn:
             row = conn.execute(text(
                 "SELECT 1 FROM spending_signals WHERE signal_id = :s"
             ), {"s": signal.signal_id}).fetchone()
-return row is not None
+        return row is not None
 
     def _persist_nudge(self, signal: Signal, nudge: dict[str, Any]) -> str:
         eng = self._engine()
@@ -177,7 +179,7 @@ return row is not None
                 RETURNING nudge_id
             """
             row = conn.execute(text(sql), params).fetchone()
-return str(row[0])
+        return str(row[0])
 
     def _fallback_nudge(self, signal: Signal, error: str) -> dict[str, Any]:
         """Templated fallback when the LLM provider is unavailable. Keeps
@@ -211,6 +213,7 @@ def replay_stranded_signals(handler: SignalHandler, database_url: str,
     instantly, so replaying them is free.
     """
     from sqlalchemy import text
+    
     from ..db.engine import get_engine
     eng = get_engine(handler.database_url)
     with eng.connect() as conn:
@@ -223,7 +226,8 @@ def replay_stranded_signals(handler: SignalHandler, database_url: str,
               AND n.nudge_id IS NULL
               AND s.produced_at > now() - (:mins * INTERVAL '1 minute')
         """), {"mins": window_minutes}).fetchall()
-replayed = 0
+
+    replayed = 0
     for row in rows:
         try:
             signal = Signal.from_dict({

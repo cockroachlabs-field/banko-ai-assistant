@@ -70,6 +70,7 @@ class UserManager:
     @property
     def engine(self):
         """Lazy engine initialization."""
+        from ..db.engine import get_engine
         return get_engine(self.database_url)
 
     def ensure_schema(self) -> None:
@@ -217,6 +218,7 @@ class UserManager:
 def clear_demo_users(database_url: str) -> dict[str, int]:
     """Delete all demo users and their dependent data, preserving the three
     legacy personas. Returns per-table deletion counts."""
+    from ..db.engine import get_engine
 
     engine = get_engine(get_database_url(database_url))
     counts = {}

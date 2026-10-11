@@ -130,10 +130,10 @@ Be thorough but not overly cautious. False positives are costly."""
             expense['date'] = expense.get('date') or expense.get('expense_date', '')
             
             # Signal 1: Check for duplicates within the configured window
-            from sqlalchemy import create_engine, text
-            from sqlalchemy.pool import NullPool
             try:
-                dup_engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+                from sqlalchemy import text
+                from ..db.engine import get_engine
+                dup_engine = get_engine(self.database_url)
                 with dup_engine.connect() as conn:
                     dup_result = conn.execute(text("""
                         SELECT expense_id::TEXT, merchant, expense_amount, expense_date
@@ -151,8 +151,8 @@ Be thorough but not overly cautious. False positives are costly."""
                         'expense_id': expense_id,
                     })
                     dup_rows = dup_result.fetchall()
-                dup_
-if dup_rows:
+
+                if dup_rows:
                     result['signals'].append({
                         'type': 'duplicate',
                         'severity': 'high',
@@ -300,6 +300,8 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
             
         except Exception as e:
             result['error'] = str(e)
+        
+        finally:
             self.update_status("idle")
         
         return result
@@ -321,9 +323,8 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         """
         self.update_status("acting", {"action": "scan_recent", "hours": hours})
         
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         results = {
             'scanned': 0,
             'flagged': 0,
@@ -333,6 +334,8 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         
         try:
             # Get recent expenses
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -347,7 +350,7 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
                 """), {'cutoff': cutoff_date, 'limit': limit})
                 
                 expense_ids = [row[0] for row in result.fetchall()]
-# Analyze each expense
+            # Analyze each expense
             for expense_id in expense_ids:
                 results['scanned'] += 1
                 
@@ -363,6 +366,8 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
             
         except Exception as e:
             results['error'] = str(e)
+        
+        finally:
             self.update_status("idle")
         
         return results
@@ -386,10 +391,11 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         """
         self.update_status("thinking", {"action": "learn_from_feedback", "decision_id": decision_id})
         
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -416,7 +422,7 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
                 """), {'decision_id': decision_id})
                 
                 row = result.fetchone()
-if not row:
+            if not row:
                 return {'success': False, 'error': 'Decision not found'}
             
             # In a production system, you would:
@@ -453,4 +459,6 @@ if not row:
         
         except Exception as e:
             return {'success': False, 'error': str(e)}
+        
+        finally:
             self.update_status("idle")

@@ -162,14 +162,15 @@ def create_agent_schema(database_url: str, verbose: bool = True) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    from ..db.engine import get_engine
+    from sqlalchemy import text
     
     try:
         if verbose:
             print("🔧 Creating agent schema in CockroachDB...")
         
-        engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
-        
+        from ..db.engine import get_engine
+        engine = get_engine(database_url)
+
         with engine.connect() as conn:
             # Execute schema creation
             statements = [s.strip() for s in AGENT_SCHEMA_SQL.split(';') if s.strip()]
@@ -187,7 +188,9 @@ def create_agent_schema(database_url: str, verbose: bool = True) -> bool:
                 conn.execute(text(statement))
             
             conn.commit()
-if verbose:
+        
+        
+        if verbose:
             print("✅ Agent schema created successfully")
             print("\nCreated tables:")
             print("  - agent_state: Agent registration and status")
@@ -214,6 +217,7 @@ def verify_agent_schema(database_url: str) -> dict:
     Returns:
         Dictionary with table existence status
     """
+    from sqlalchemy import text
     
     required_tables = [
         'agent_state',
@@ -226,7 +230,8 @@ def verify_agent_schema(database_url: str) -> dict:
     results = {}
     
     try:
-        engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+        from ..db.engine import get_engine
+        engine = get_engine(database_url)
         
         with engine.connect() as conn:
             for table in required_tables:
@@ -237,7 +242,9 @@ def verify_agent_schema(database_url: str) -> dict:
                     )
                 """), {'table_name': table})
                 results[table] = result.scalar()
-except Exception as e:
+        
+    
+    except Exception as e:
         print(f"Error verifying schema: {e}")
         for table in required_tables:
             results[table] = False
@@ -260,6 +267,7 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
         print("⚠️  Must pass confirm=True to drop tables")
         return False
     
+    from sqlalchemy import text
 
     print("🗑️  Dropping agent schema...")
 
@@ -274,7 +282,8 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
             )
 
     try:
-        engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+        from ..db.engine import get_engine
+        engine = get_engine(database_url)
 
         with engine.connect() as conn:
 
@@ -284,7 +293,8 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
                 conn.execute(text(f"DROP TABLE IF EXISTS {safe_name} CASCADE"))
 
             conn.commit()
-print("✅ Agent schema dropped")
+
+        print("✅ Agent schema dropped")
         return True
 
     except Exception as e:

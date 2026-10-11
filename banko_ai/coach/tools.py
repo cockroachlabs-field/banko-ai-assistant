@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import text
+
 from .insights import (
     detect_subscriptions,
     get_monthly_summary,
@@ -50,19 +51,19 @@ def get_user_budget(user_id: str, category: str,
             SELECT amount FROM user_budgets
             WHERE user_id = :u AND category = :c
         """), {"u": user_id, "c": category}).fetchone()
-        if row is not None:
-            return {
-                "user_id": user_id,
-                "category": category,
-                "monthly_budget": float(row[0]),
-                "source": "user_override",
-            }
+    if row is not None:
         return {
             "user_id": user_id,
             "category": category,
-            "monthly_budget": _DEFAULT_BUDGETS_USD.get(category.lower(), 300.0),
-            "source": "default",
+            "monthly_budget": float(row[0]),
+            "source": "user_override",
         }
+    return {
+        "user_id": user_id,
+        "category": category,
+        "monthly_budget": _DEFAULT_BUDGETS_USD.get(category.lower(), 300.0),
+        "source": "default",
+    }
 
 
 def set_budget(user_id: str, category: str, amount: float,
@@ -86,7 +87,7 @@ def set_budget(user_id: str, category: str, amount: float,
             VALUES (:u, :c, :a, now())
         """), {"u": user_id, "c": category, "a": amount})
         conn.commit()
-return {"user_id": user_id, "category": category,
+    return {"user_id": user_id, "category": category,
             "monthly_budget": float(amount), "source": "user_override"}
 
 
@@ -103,7 +104,7 @@ def get_recent_signals(user_id: str, database_url: str,
             ORDER BY produced_at DESC
             LIMIT :l
         """), {"u": user_id, "l": limit}).fetchall()
-return [{
+    return [{
         "signal_id": str(r[0]),
         "signal_type": r[1],
         "severity": r[2],
@@ -157,7 +158,7 @@ def get_recent_transactions(user_id: str, database_url: str,
                 ORDER BY expense_date DESC
                 LIMIT :l
             """), {"u": user_id, "cutoff": cutoff, "l": limit}).fetchall()
-return [{
+    return [{
         "id": str(r[0]),
         "description": r[1],
         "amount": float(r[2]),
@@ -178,7 +179,7 @@ def explain_nudge(nudge_id: str, database_url: str) -> dict[str, Any]:
             FROM coach_nudges
             WHERE nudge_id = :n
         """), {"n": nudge_id}).fetchone()
-if row is None:
+    if row is None:
         return {}
     return {
         "nudge_id": str(row[0]),

@@ -94,6 +94,7 @@ def _where_and_params(intent: AggregationIntent, user_id: str,
 def run_aggregation(intent: AggregationIntent, user_id: str,
                     database_url: str,
                     region: str | None = None) -> AggregationResult:
+    from ..db.engine import get_engine
     category = resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region)
 
@@ -152,6 +153,7 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
         FROM expenses {where_pyformat}
     """
 
+    from ..db.engine import get_engine
     eng = get_engine(database_url)
     with eng.connect() as c:
         # Get the raw psycopg connection for client-side binding

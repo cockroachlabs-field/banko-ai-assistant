@@ -11,8 +11,7 @@ import json
 from typing import Any
 
 from langchain_core.tools import Tool
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 
 def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
@@ -51,6 +50,9 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             # No CAST needed with v25.4.0 GA
             import json
             embedding_json = json.dumps(query_embedding)
+            
+            from ..db.engine import get_engine
+
             
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
@@ -95,7 +97,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
                         'payment_method': row[7],
                         'similarity_score': 1.0 - float(row[8])  # Convert distance to similarity
                     })
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'query': query,
                 'results': expenses,
@@ -123,6 +125,8 @@ return json.dumps({
             JSON string with search results
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -185,7 +189,7 @@ return json.dumps({
                         'date': row[6].isoformat() if row[6] else None,
                         'payment_method': row[7]
                     })
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'filters': filters,
                 'results': expenses,
@@ -209,6 +213,8 @@ return json.dumps({
             JSON string with expense details
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -238,7 +244,7 @@ return json.dumps({
                     'expense_date': row[6].isoformat() if row[6] else None,
                     'payment_method': row[7]
                 }
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'expense': expense
             }, indent=2)

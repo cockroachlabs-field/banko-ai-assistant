@@ -14,8 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from langchain_core.tools import Tool
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 # OCR imports
 try:
@@ -252,6 +251,9 @@ Example:
             # Format embedding as array literal for CockroachDB
             embedding_str = '[' + ','.join(map(str, embedding)) + ']'
             
+            from ..db.engine import get_engine
+
+            
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -278,7 +280,7 @@ Example:
                 
                 document_id = result.scalar()
                 conn.commit()
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'document_id': str(document_id),
                 'user_id': user_id,
@@ -311,6 +313,8 @@ return json.dumps({
             JSON string with matching expense or None
         """
         try:
+            from ..db.engine import get_engine
+
             engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
             
             with engine.connect() as conn:
@@ -390,7 +394,7 @@ return json.dumps({
                         'match_type': 'fuzzy',
                         'candidates': candidates
                     }, indent=2)
-return json.dumps({
+            return json.dumps({
                 'success': True,
                 'match_found': False
             })
