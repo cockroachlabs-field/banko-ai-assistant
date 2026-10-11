@@ -116,6 +116,16 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 - README target: ~250 lines, with embedded architecture diagram. Currently 469 lines — slim in the Coach v1 (see spec §8.2).
 - Demo marketing tone: Cisco / CockroachDB customer-story register. **Reject validation-speak** like "we prove it at scale with an industry-standard benchmark." The user has pushed back on that phrasing.
 
+### Foundation layers (v2)
+
+- Settings: `banko_ai/config/settings.py` is the only reader of environment variables (a guardrail test enforces it). Add a knob as a field there; `banko-ai config` and the README reference pick it up.
+- Database: use `banko_ai.db.engine.get_engine()`, `run_transaction()` or `user_session()`. Never call `create_engine()` or `.dispose()` elsewhere (guardrail test). Bulk writes are set-based; never `executemany` on an autocommit connection (psycopg 3 turns it into one implicit transaction).
+- psycopg 3 binds server-side, and CockroachDB rejects placeholders in `EXPLAIN`. Any EXPLAIN with parameters goes through `psycopg.ClientCursor` (see `explain_aggregation` and the vector search explain).
+- Schema: every table, index and locality lives in `banko_ai/db/schema.py`. Boot runs one SELECT when the fingerprint matches. New columns on existing tables must be nullable or have defaults.
+- Boot: slow work goes in the warm-up steps in `create_app`, reported through the app's `Readiness`; nothing slow runs before the server listens. Pages wait for the `schema` and `personas` components.
+- Persona: anything that shows provider identity reads it from `banko_ai/ai_providers/display.py`. Errors a user can see use `neutral_error()` or `NEUTRAL_FAILED`, never the exception text.
+- Tests: the plain suite runs against a throwaway single-node CockroachDB on port 26258. Always pass `DATABASE_URL` explicitly; the shell profile points at the chaos cluster on 26257, which only tests gated on `BANKO_TEST_MR_URL` may touch.
+
 ### Git workflow
 
 - See `~/.claude/projects/.../memory/feedback_local_testing_before_push.md` — **NEVER commit or push until thoroughly tested locally against every relevant LLM provider.** This applies to bot PRs too (dependabot batches go through local rebase + smoke before push — see spec §8.1).
@@ -127,8 +137,6 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 - Coach on Gemini is code-complete but never smoke-tested: the GCP project (cockroach-harsh-432021) lost Vertex access mid-test on July 15 (billing). When the project recovers, run the coach smoke (mock_signals x3 plus /api/coach/chat) with AI_SERVICE=gemini before claiming four-provider coverage.
 - The watsonx model dropdown lists every chat-capable model IBM returns, including code-tuned ones (`ibm/granite-8b-code-instruct`) that echo prompt templates on JSON extraction tasks. The `ReceiptExtraction` Pydantic gate now catches the bad payloads (422 instead of 500), but the dropdown still presents the foot-gun. Consider annotating models with a "suitable for structured extraction" hint, or filtering code-tuned models out of the JSON-extraction code paths.
 - `agent_memory.access_count` never incremented on read (defer to memory-system v2).
-- `SentenceTransformer` re-instantiated per call in `base_agent.py` (perf bug; fixing risks regression — defer).
-- `documents` table schema drift between `database.py` and `agent_schema.py` (both create it; reconcile when next touching either).
 - mypy carries about 200 findings that predate the July 2026 dep landing (verified identical against the May lockfile, so not upgrade fallout). The `make types` target is advisory, same as CI. Someone needs to budget a real typing pass; until then do not treat mypy output as a regression signal.
 - The ibm-watsonx-ai SDK prints a third-party-license WatsonxAPIWarning on every agent LLM call while the default model is non-IBM (openai/gpt-oss-120b). Informational, not an error; switching WATSONX_MODEL to an ibm/granite model silences it.
 
