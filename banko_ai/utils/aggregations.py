@@ -8,6 +8,7 @@ one SQL statement against the user's own rows.
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from functools import lru_cache
@@ -15,6 +16,14 @@ from functools import lru_cache
 from sqlalchemy import create_engine, text
 
 from .intent_classifier import AggregationIntent
+
+
+def _to_pyformat(sql: str) -> str:
+    """Convert :name placeholders to %(name)s format for psycopg's client-side binding.
+
+    Word boundaries ensure :start and :start_date convert independently.
+    """
+    return re.sub(r":(\w+)\b", r"%(\1)s", sql)
 
 
 @dataclass(frozen=True)
@@ -129,33 +138,32 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
                         region: str | None = None) -> str:
     """Run EXPLAIN ANALYZE of the aggregation query and return the plan as text.
 
-    EXPLAIN does not support placeholders with psycopg3, so we inline parameters."""
+    CockroachDB does not accept bound placeholders in EXPLAIN under server-side binding,
+    so this statement binds parameters client-side with psycopg.ClientCursor."""
+    import psycopg
+
     category = resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region)
 
-    # Build WHERE clause with inlined values (EXPLAIN doesn't support placeholders)
-    inlined_where = where
-    for key, value in params.items():
-        if isinstance(value, str):
-            # Quote and escape strings
-            escaped = value.replace("'", "''")
-            inlined_where = inlined_where.replace(f":{key}", f"'{escaped}'")
-        elif isinstance(value, (int, float)):
-            inlined_where = inlined_where.replace(f":{key}", str(value))
-        else:
-            # For dates and other types, convert to string representation
-            inlined_where = inlined_where.replace(f":{key}", f"'{str(value)}'")
+    # Convert :name placeholders to %(name)s for client-side binding
+    where_pyformat = _to_pyformat(where)
+
+    sql = f"""
+        EXPLAIN ANALYZE
+        SELECT COALESCE(SUM(expense_amount), 0),
+               COUNT(*),
+               MIN(expense_date), MAX(expense_date)
+        FROM expenses {where_pyformat}
+    """
 
     eng = create_engine(database_url)
     try:
         with eng.connect() as c:
-            plan_rows = c.execute(text(f"""
-                EXPLAIN ANALYZE
-                SELECT COALESCE(SUM(expense_amount), 0),
-                       COUNT(*),
-                       MIN(expense_date), MAX(expense_date)
-                FROM expenses {inlined_where}
-            """)).fetchall()
+            # Get the raw psycopg connection for client-side binding
+            raw_conn = c.connection.driver_connection
+            with psycopg.ClientCursor(raw_conn) as cur:
+                cur.execute(sql, params)
+                plan_rows = cur.fetchall()
     finally:
         eng.dispose()
 

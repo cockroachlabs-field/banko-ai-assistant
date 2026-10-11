@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import create_engine, text
 
-from banko_ai.utils.aggregations import resolve_category, run_aggregation
+from banko_ai.utils.aggregations import _to_pyformat, resolve_category, run_aggregation
 from banko_ai.utils.intent_classifier import AggregationIntent
 
 DB = os.getenv("DATABASE_URL")
@@ -62,3 +62,17 @@ def test_count_all_categories():
     intent = AggregationIntent("count", None, end - timedelta(days=61), end)
     r = run_aggregation(intent, USER, DB)
     assert r.count == 4
+
+
+def test_to_pyformat_converts_placeholders():
+    """Test that :name placeholders are converted to %(name)s format."""
+    # Simple case
+    assert _to_pyformat("WHERE a = :u") == "WHERE a = %(u)s"
+    # Multiple placeholders
+    assert _to_pyformat("WHERE a = :u AND b = :s") == "WHERE a = %(u)s AND b = %(s)s"
+    # Word boundary: :start and :start_date should not interfere
+    assert _to_pyformat("WHERE a = :start AND b = :start_date") == "WHERE a = %(start)s AND b = %(start_date)s"
+    # No placeholders
+    assert _to_pyformat("WHERE a = 1") == "WHERE a = 1"
+    # Repeated placeholder
+    assert _to_pyformat("WHERE a = :x OR b = :x") == "WHERE a = %(x)s OR b = %(x)s"
