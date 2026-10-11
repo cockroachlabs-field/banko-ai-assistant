@@ -195,6 +195,34 @@ def test_concurrent_boots_apply_schema_once(scratch_url):
     assert {t.name for t in S.tables()} <= _tables(scratch_url)
 
 
+def test_stale_lease_takeover(scratch_url):
+    """A stale lease row is taken over instead of timing out."""
+    # Create banko_meta and insert a stale lease
+    with get_engine(scratch_url).connect() as conn:
+        conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS banko_meta (
+                key STRING NOT NULL PRIMARY KEY,
+                value STRING NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """))
+        # Insert a lease that expired 10 minutes ago
+        conn.execute(text("""
+            INSERT INTO banko_meta (key, value, updated_at)
+            VALUES ('schema_lock', 'dead-owner', now() - INTERVAL '10 minutes')
+        """))
+
+    # ensure_schema should take over the stale lease and apply promptly
+    started = time.monotonic()
+    result = S.ensure_schema(scratch_url)
+    elapsed = time.monotonic() - started
+
+    assert result.changed
+    assert elapsed < 30  # well under the 300s TTL
+    assert {t.name for t in S.tables()} <= _tables(scratch_url)
+
+
 @pytest.mark.skipif(not MR_URL, reason="BANKO_TEST_MR_URL not set")
 def test_fresh_multi_region_database_is_born_regional():
     url = _scratch(MR_URL, "banko_schema_mr_test")

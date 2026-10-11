@@ -39,26 +39,33 @@ def _tables_to_drop() -> list[str]:
 
 
 def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
-    """Drop agent schema tables in reverse FK order. Requires explicit
-    confirmation flag and refuses unknown table names.
+    """
+    Drop all agent tables (dangerous!).
 
     Args:
         database_url: CockroachDB connection string
-        confirm: Must be True or the function exits early
+        confirm: Must be True to actually drop tables
 
     Returns:
-        True if successful, False otherwise
+        True if successful
     """
     if not confirm:
-        print("⚠️  drop_agent_schema: confirm must be True to proceed")
+        print("⚠️  Must pass confirm=True to drop tables")
         return False
 
     from sqlalchemy import text
 
+    print("🗑️  Dropping agent schema...")
+
+    # Defense-in-depth: validate table names before creating the engine.
+    # ValueError propagates to caller (not caught here).
     tables = _tables_to_drop()
-    for name in tables:
-        if name not in _ALLOWED_DROP_TABLES:
-            raise ValueError(f"table '{name}' is not in the allowed drop set")
+    for table in tables:
+        if table not in _ALLOWED_DROP_TABLES:
+            raise ValueError(
+                f"Refusing to drop {table!r}: not in the allowed drop set "
+                f"{sorted(_ALLOWED_DROP_TABLES)}"
+            )
 
     try:
         from ..db.engine import get_engine
@@ -66,16 +73,15 @@ def drop_agent_schema(database_url: str, confirm: bool = False) -> bool:
 
         with engine.connect() as conn:
             for table in tables:
-                # table names come from the frozen allowlist, safe to interpolate
-                conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
-                print(f"   dropped {table}")
+                safe_name = quoted_name(table, quote=True)
+                print(f"  Dropping table: {safe_name}")
+                conn.execute(text(f"DROP TABLE IF EXISTS {safe_name} CASCADE"))
+
             conn.commit()
 
-        print("✅ Agent schema tables dropped")
+        print("✅ Agent schema dropped")
         return True
 
     except Exception as e:
-        print(f"❌ Error dropping agent schema: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Failed to drop schema: {e}")
         return False

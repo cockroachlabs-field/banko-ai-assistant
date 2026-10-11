@@ -10,7 +10,7 @@ both repos in the same change window.
 Consumer implementation: `banko_ai/coach/signals.py` (parsing),
 `banko_ai/web/app.py` `/api/cdc/signals` (webhook receiver),
 `banko_ai/coach/kafka_consumer.py` (Kafka transport),
-`banko_ai/utils/migration.py` `migrate_to_coach_v1` (DDL).
+`banko_ai/db/schema.py` (DDL).
 
 ## The spending_signals table
 

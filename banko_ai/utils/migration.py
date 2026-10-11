@@ -35,7 +35,8 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
         log.error("primary_region required for multi-region migration but was None")
         return False
     try:
-        ensure_schema(database_url, primary_region=primary_region)
+        # Force schema reapply so region bootstrap still happens
+        ensure_schema(database_url, force=True, primary_region=primary_region)
         run_pending_conversions(database_url)
         return True
     except Exception as e:

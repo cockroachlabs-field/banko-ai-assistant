@@ -323,8 +323,10 @@ def _naive_timestamp_upgrade(conn: Connection, topo: Topology) -> list[str]:
     todo = [(t, c) for t, c in rows if t in ours]
     if not todo:
         return []
-    return ["SET enable_experimental_alter_column_type_general = true"] + [
-        f'ALTER TABLE {t} ALTER COLUMN "{c}" TYPE TIMESTAMPTZ' for t, c in todo]
+    statements = ["SET enable_experimental_alter_column_type_general = true"]
+    statements += [f'ALTER TABLE {t} ALTER COLUMN "{c}" TYPE TIMESTAMPTZ' for t, c in todo]
+    statements.append("RESET enable_experimental_alter_column_type_general")
+    return statements
 
 
 def _users_ttl_upgrade(conn: Connection, topo: Topology) -> list[str]:
@@ -468,37 +470,95 @@ def _release_lock(conn: Connection, owner: str) -> None:
     conn.execute(text("DELETE FROM banko_meta WHERE key = :k AND value = :owner"), {"k": LOCK_KEY, "owner": owner})
 
 
-def _wait_for(conn: Connection, want: str) -> None:
+def _wait_for(conn: Connection, want: str, owner: str) -> bool:
+    """Wait for another process to finish applying the schema, or take over
+    a stale lease. Returns True if we took over and should apply ourselves."""
     deadline = time.monotonic() + LOCK_TTL_SECONDS
     while time.monotonic() < deadline:
         stored = _stored(conn)
         if stored and stored.get("fingerprint") == want:
-            return
+            return False  # schema is current, no need to apply
+        # Try to acquire the lock in case the other process died
+        if _acquire_lock(conn, owner):
+            return True  # we got the lock, caller should apply
         time.sleep(1.0)
     raise TimeoutError("gave up waiting for another process to finish applying the schema")
 
 
-def _apply(conn: Connection, topo: Topology) -> int:
+def _refresh_lease(conn: Connection, owner: str) -> None:
+    """Refresh the lease's updated_at so a long apply is not stolen."""
+    conn.execute(text("UPDATE banko_meta SET updated_at = now() WHERE key = :k AND value = :owner"),
+                 {"k": LOCK_KEY, "owner": owner})
+
+
+def _apply(conn: Connection, topo: Topology, owner: str) -> int:
     existing = set(current_localities(conn))
-    statements: list[str] = []
-    for table in tables():
-        if table.name not in existing:
-            statements.append(table.create_sql(topo))
-            continue
-        have_columns = {str(r[0]) for r in conn.execute(text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = :t"), {"t": table.name}).fetchall()}
-        statements += [f"ALTER TABLE {table.name} ADD COLUMN IF NOT EXISTS {c.name} {c.definition}"
-                       for c in table.columns if c.name not in have_columns]
-        have_indexes = {str(r[0]) for r in conn.execute(
-            text(f"SELECT DISTINCT index_name FROM [SHOW INDEXES FROM {table.name}]")).fetchall()}
-        statements += [i.create(table.name) for i in table.indexes if i.name not in have_indexes]
-    for upgrade in UPGRADES:
-        statements += upgrade(conn, topo)
-    for sql in statements:
-        log.info("schema: %s", sql.splitlines()[0])
-        conn.execute(text(sql))
-    return len(statements)
+    is_fresh = len(existing) <= 1  # only banko_meta exists
+    count = 0
+
+    # Batch-create all missing tables in one transaction for fresh databases
+    missing_tables = [t for t in tables() if t.name not in existing]
+    if missing_tables:
+        create_started = time.monotonic()
+        if is_fresh:
+            # Fresh database: batch all table creates in one transaction
+            log.info("schema: batch-creating %d tables", len(missing_tables))
+            # Use a fresh connection from the shared engine in a transaction
+            engine = conn.engine
+            with engine.begin() as txn:
+                # Disable autocommit_before_ddl so statements don't commit individually
+                txn.execute(text("SET LOCAL autocommit_before_ddl = false"))
+                for table in missing_tables:
+                    sql = table.create_sql(topo)
+                    log.info("schema: %s", sql.splitlines()[0])
+                    txn.execute(text(sql))
+            count += len(missing_tables)
+            log.info("schema: created %d tables in %.1fs", len(missing_tables), time.monotonic() - create_started)
+        else:
+            # Incremental: create tables one by one
+            for table in missing_tables:
+                sql = table.create_sql(topo)
+                log.info("schema: %s", sql.splitlines()[0])
+                conn.execute(text(sql))
+                count += 1
+
+    # For existing tables, add missing columns and indexes (skip on fresh database)
+    if not is_fresh:
+        for table in tables():
+            if table.name in existing:
+                have_columns = {str(r[0]) for r in conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = :t"), {"t": table.name}).fetchall()}
+                for c in table.columns:
+                    if c.name not in have_columns:
+                        sql = f"ALTER TABLE {table.name} ADD COLUMN IF NOT EXISTS {c.name} {c.definition}"
+                        log.info("schema: %s", sql)
+                        conn.execute(text(sql))
+                        count += 1
+                have_indexes = {str(r[0]) for r in conn.execute(
+                    text(f"SELECT DISTINCT index_name FROM [SHOW INDEXES FROM {table.name}]")).fetchall()}
+                for i in table.indexes:
+                    if i.name not in have_indexes:
+                        sql = i.create(table.name)
+                        log.info("schema: %s", sql)
+                        conn.execute(text(sql))
+                        count += 1
+
+    # Run upgrade functions (skip on fresh database as tables don't exist yet)
+    if not is_fresh:
+        upgrade_started = time.monotonic()
+        for upgrade in UPGRADES:
+            statements = upgrade(conn, topo)
+            for sql in statements:
+                log.info("schema: %s", sql.splitlines()[0])
+                conn.execute(text(sql))
+                count += 1
+        if count > len(missing_tables):
+            log.info("schema: ran upgrades in %.1fs", time.monotonic() - upgrade_started)
+
+    # Refresh lease periodically during long operations
+    _refresh_lease(conn, owner)
+    return count
 
 
 def _write_fingerprint(conn: Connection, fp: str, topo: Topology) -> None:
@@ -518,8 +578,15 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
             return SchemaResult(changed=False, fingerprint=stored["fingerprint"],
                                 seconds=time.monotonic() - started)
 
-        for sql in _bootstrap_regions(conn, primary_region):
+        # Phase 1: Bootstrap regions (if multi-region cluster)
+        bootstrap_started = time.monotonic()
+        bootstrap_stmts = _bootstrap_regions(conn, primary_region)
+        for sql in bootstrap_stmts:
             _tolerant(conn, sql)
+        if bootstrap_stmts:
+            log.info("schema: bootstrap phase %.1fs (%d statements)",
+                     time.monotonic() - bootstrap_started, len(bootstrap_stmts))
+
         topo = detect_topology(conn)
         _ensure_meta(conn, topo)
         want = fingerprint(topo)
@@ -527,17 +594,29 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
         owner = uuid.uuid4().hex
         if not _acquire_lock(conn, owner):
             log.info("schema: another process is applying the schema, waiting for it")
-            _wait_for(conn, want)
-            return SchemaResult(changed=False, fingerprint=want, seconds=time.monotonic() - started)
+            should_apply = _wait_for(conn, want, owner)
+            if not should_apply:
+                return SchemaResult(changed=False, fingerprint=want, seconds=time.monotonic() - started)
+            # We took over a stale lease, proceed to apply
         try:
             stored = None if force else _stored(conn)
             if stored and stored.get("fingerprint") == want:
                 return SchemaResult(changed=False, fingerprint=want, seconds=time.monotonic() - started)
             log.info("schema: applying registry v%d (%s)", REGISTRY_VERSION,
                      "multi-region" if topo.regional else "single-region")
-            count = _apply(conn, topo)
+
+            # Phase 2: Apply schema (tables, columns, indexes, upgrades)
+            apply_started = time.monotonic()
+            count = _apply(conn, topo, owner)
+            log.info("schema: apply phase %.1fs (%d statements)",
+                     time.monotonic() - apply_started, count)
+
+            # Phase 3: Plan locality conversions and write fingerprint
+            fp_started = time.monotonic()
             conversions = plan_locality_conversions(current_localities(conn), topo)
             _write_fingerprint(conn, want, topo)
+            log.info("schema: fingerprint phase %.1fs", time.monotonic() - fp_started)
+
             return SchemaResult(changed=True, fingerprint=want, statements=count,
                                 pending_conversions=conversions, seconds=time.monotonic() - started)
         finally:
@@ -552,9 +631,17 @@ def run_pending_conversions(url: str | None = None) -> list[str]:
         conn.execution_options(isolation_level="AUTOCOMMIT")
         topo = detect_topology(conn)
         stored = _stored(conn)
+
+        # If topology changed, or cluster has regions but DB doesn't, reapply
+        cluster_regions = _cluster_regions(conn)
+        db_has_primary = any(primary for _, primary in _database_regions(conn))
         if stored is not None and bool(stored.get("regional")) != topo.regional:
             log.info("schema: database topology changed since the schema was applied, re-applying")
             ensure_schema(url, force=True)
+        elif len(cluster_regions) >= 2 and not db_has_primary:
+            log.info("schema: cluster has regions but database doesn't, bootstrapping")
+            ensure_schema(url, force=True)
+
         if not topo.regional:
             return []
         current = current_localities(conn)
@@ -568,9 +655,16 @@ def run_pending_conversions(url: str | None = None) -> list[str]:
             name, locality = sql.split()[2], sql.split("SET LOCALITY ", 1)[1]
             narration.info("converting %s to %s (a real schema change, can take a minute or two "
                            "on a multi-node cluster)", name, locality)
-            conn.execute(text(sql))
-            narration.info("set %s to %s", name, locality)
-            done.append(sql)
+            try:
+                conn.execute(text(sql))
+                narration.info("set %s to %s", name, locality)
+                done.append(sql)
+            except DBAPIError as e:
+                if "already" in str(e).lower():
+                    narration.info("%s already %s (concurrent boot)", name, locality)
+                    done.append(sql)
+                else:
+                    raise
         narration.info("multi-region migration completed successfully")
         from .regions import clear_region_caches
         clear_region_caches()
