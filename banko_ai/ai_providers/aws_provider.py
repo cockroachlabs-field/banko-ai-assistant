@@ -69,14 +69,7 @@ class AWSProvider(AIProvider):
             # Create Bedrock client from session
             self.bedrock_client = self.session.client('bedrock-runtime')
             print(f"✅ AWS Bedrock client created (region: {self.region}, model: {self.model_id})")
-            
-            # Verify credentials by getting caller identity
-            print("🔍 Verifying AWS credentials...")
-            sts = self.session.client('sts')
-            identity = sts.get_caller_identity()
-            print(f"✅ AWS Identity verified: {identity['Arn']}")
-            print(f"   Account: {identity['Account']}")
-            
+
         except Exception as e:
             error_msg = str(e)
             print("\n⚠️ AWS Bedrock initialization failed!")
@@ -87,18 +80,18 @@ class AWSProvider(AIProvider):
                 print("\n❌ Your AWS credentials have EXPIRED")
                 print("\n💡 To fix:")
                 print("   1. Get fresh credentials from AWS Console")
-                print("   2. Or run: aws sso login --profile CRLRevenue-337380398238")
+                print("   2. Or run: aws sso login --profile <your-profile>")
             elif 'NoCredentials' in error_msg or 'Unable to locate credentials' in error_msg:
                 print("\n❌ No AWS credentials found")
                 print("\n💡 Set credentials via:")
-                print("   - export AWS_PROFILE=CRLRevenue-337380398238")
+                print("   - export AWS_PROFILE=<your-profile>")
                 print("   - export AWS_ACCESS_KEY_ID=...")
                 print("   - export AWS_SECRET_ACCESS_KEY=...")
                 print("   - Or configure ~/.aws/credentials")
             elif 'InvalidClientTokenId' in error_msg:
                 print("\n❌ Invalid AWS credentials")
                 print("\n💡 If using SSO, try:")
-                print("   - export AWS_PROFILE=CRLRevenue-337380398238")
+                print("   - export AWS_PROFILE=<your-profile>")
                 print("   - Then restart the application")
             
             self.bedrock_client = None
@@ -156,7 +149,7 @@ class AWSProvider(AIProvider):
             print(f"⚠️  Could not list Bedrock models: {e}")
 
         # Fallback: known-good current Claude 4.x inference profiles. Refreshed
-        # 2026-05-22 against a CRLRevenue Bedrock account; pick Haiku as the
+        # 2026-05-22 against a Bedrock account; pick Haiku as the
         # demo default to keep token cost low.
         return [
             "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -620,10 +613,5 @@ class AWSProvider(AIProvider):
             raise AIConnectionError(f"Embedding generation failed: {str(e)}")
     
     def test_connection(self) -> bool:
-        """Test AWS Bedrock connection by verifying credentials (no tokens consumed)."""
-        try:
-            sts = boto3.client('sts', region_name=self.region)
-            sts.get_caller_identity()
-            return True
-        except Exception:
-            return False
+        """Test AWS Bedrock connection by checking if the client is initialized."""
+        return self.bedrock_client is not None

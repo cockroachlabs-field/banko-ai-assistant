@@ -12,7 +12,6 @@
 | `/api/models` | POST | Switch to a different model |
 | `/api/agents/status` | GET | Agent dashboard data |
 | `/cache-stats` | GET | Cache performance metrics |
-| `/diagnostics/watsonx` | GET | Watsonx connection diagnostics |
 
 ### Search & RAG
 

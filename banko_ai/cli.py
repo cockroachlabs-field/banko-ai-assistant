@@ -8,6 +8,7 @@ This module provides CLI commands for running the application and managing data.
 import click
 
 from .config.settings import get_config, set_config
+from .db.engine import mask_url
 
 
 @click.group()
@@ -212,7 +213,7 @@ def status():
     # Show current configuration
     click.echo("🔧 Current Configuration:")
     click.echo(f"   AI Service: {config.ai_service}")
-    click.echo(f"   Database: {config.database_url}")
+    click.echo(f"   Database: {mask_url(config.database_url)}")
     
     if config.ai_service == 'gemini':
         click.echo(f"   Google Project: {config.google_project_id}")

@@ -10,13 +10,26 @@ import json
 import logging as _coach_log
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime
 
 import requests
-from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, session, url_for
+from flask import (
+    Flask,
+    after_this_request,
+    flash,
+    g,
+    jsonify,
+    redirect,
+    render_template,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
 from flask_socketio import SocketIO
 from sqlalchemy import text
 
@@ -202,7 +215,13 @@ def create_app() -> Flask:
     config = get_config()
     app.config['SECRET_KEY'] = config.secret_key
     app.config['DEBUG'] = config.debug
-    
+    app.config.update(
+        MAX_CONTENT_LENGTH=config.max_upload_mb * 1024 * 1024,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=config.session_cookie_secure,
+    )
+
     # Initialize components
     user_manager = UserManager()
     cache_manager = BankoCacheManager()
@@ -329,6 +348,23 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         if request.path.startswith("/api/"):
             return jsonify({"error": "warming_up", "detail": detail}), 503
         return render_template_string(_WARMING_UP_PAGE, detail=detail), 503
+
+    @app.before_request
+    def _set_request_scope():
+        from ..utils.request_scope import set_user_scope
+        g._banko_scope = set_user_scope(session.get('user_id') or config.coach_default_user_id)
+
+    @app.teardown_request
+    def _reset_request_scope(exc):
+        from ..utils.request_scope import reset_user_scope
+        token = g.pop('_banko_scope', None)
+        if token is not None:
+            reset_user_scope(token)
+
+    @app.errorhandler(413)
+    def too_large(error):
+        return jsonify({'success': False,
+                        'error': f'Receipts can be up to {config.max_upload_mb} MB'}), 413
 
     def _emit_welcome_signal(user: dict) -> None:
         """Post a welcome signal matched to the user's spending style.
@@ -955,12 +991,24 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     'success': False,
                     'error': 'No file selected'
                 }), 400
-            
+
             # Save file temporarily
-            file_ext = Path(file.filename).suffix
-            temp_path = f"/tmp/receipt_{uuid.uuid4()}{file_ext}"
+            file_ext = Path(file.filename).suffix.lower()
+            if file_ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".pdf"}:
+                return jsonify({'success': False, 'error': 'Upload a receipt image or PDF'}), 400
+            handle = tempfile.NamedTemporaryFile(prefix="banko_receipt_", suffix=file_ext, delete=False)
+            temp_path = handle.name
+            handle.close()
             file.save(temp_path)
-            
+
+            @after_this_request
+            def _remove_temp_file(response):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+                return response
+
             print(f"📄 Receipt uploaded: {file.filename} → {temp_path}")
             
             # One real region label for every agent in this pipeline: the
@@ -1366,6 +1414,9 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 }), 500
         
         except Exception as e:
+            from werkzeug.exceptions import HTTPException
+            if isinstance(e, HTTPException):
+                raise
             print(f"❌ Receipt upload error: {e}")
             return jsonify({
                 'success': False,
@@ -1668,75 +1719,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                              current_page='settings',
                              ai_provider=ai_provider_display)
 
-    @app.route('/ai-status')
-    def ai_status():
-        """Endpoint to check the status of AI services and database."""
-        # Check database status
-        db_connected, db_message, table_exists, record_count = check_database_connection(config.database_url)
-        
-        status = {
-            'current_service': config.ai_service,
-            'watsonx_available': config.ai_service.lower() == 'watsonx',
-            'aws_bedrock_available': config.ai_service.lower() == 'aws',
-            'database': {
-                'connected': db_connected,
-                'status': db_message,
-                'expenses_table_exists': table_exists,
-                'record_count': record_count,
-                'connection_string': config.database_url.replace("@", "@***") if db_connected else "Not connected"
-            }
-        }
-        
-        # Check AI provider status (without making LLM calls)
-        if ai_provider:
-            # Check credentials without making API calls
-            has_credentials = bool(
-                getattr(ai_provider, 'api_key', None) or 
-                getattr(ai_provider, 'access_key_id', None) or
-                getattr(ai_provider, 'project_id', None)
-            )
-            provider_name = ai_provider.get_provider_name()
-            current_model = getattr(ai_provider, 'current_model', 'Unknown')
-            
-            status['ai_status'] = {
-                'connected': has_credentials,
-                'message': 'API credentials configured' if has_credentials else 'Running in demo mode'
-            }
-            status['active_service_name'] = provider_name
-            status['current_model'] = current_model
-        else:
-            status['ai_status'] = {
-                'connected': False,
-                'message': 'No AI provider configured'
-            }
-            status['active_service_name'] = 'Unknown'
-            status['current_model'] = 'Unknown'
-        
-        return status
-
-    @app.route('/test-ai-connection')
-    def test_ai_connection():
-        """Endpoint to actually test AI provider connection (makes LLM call)."""
-        if not ai_provider:
-            return {'error': 'No AI provider configured'}, 400
-        
-        try:
-            # This will make an actual LLM call to test connection
-            is_connected = ai_provider.test_connection()
-            return {
-                'connected': is_connected,
-                'message': 'Connection test successful' if is_connected else 'Connection test failed',
-                'provider': ai_provider.get_provider_name(),
-                'model': getattr(ai_provider, 'current_model', 'Unknown')
-            }
-        except Exception as e:
-            return {
-                'connected': False,
-                'message': f'Connection test failed: {str(e)}',
-                'provider': ai_provider.get_provider_name(),
-                'model': getattr(ai_provider, 'current_model', 'Unknown')
-            }, 500
-
     @app.route('/cache-stats')
     def cache_stats():
         """Endpoint to view cache performance statistics"""
@@ -1781,73 +1763,10 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         except Exception as e:
             return {'error': f'Cache cleanup failed: {str(e)}'}, 500
 
-    @app.route('/diagnostics/watsonx')
-    def watsonx_diagnostics():
-        """Watsonx connection diagnostics endpoint"""
-        import socket
-
-        import requests
-        
-        results = {
-            'dns_test': {'status': 'unknown', 'message': ''},
-            'http_test': {'status': 'unknown', 'message': ''},
-            'config_test': {'status': 'unknown', 'message': ''},
-            'overall_status': 'unknown',
-            'suggestions': []
-        }
-        
-        try:
-            # Test DNS resolution
-            socket.gethostbyname("iam.cloud.ibm.com")
-            results['dns_test'] = {'status': 'success', 'message': 'DNS resolution successful'}
-            
-            # Test HTTP connectivity
-            response = requests.get("https://iam.cloud.ibm.com", timeout=10)
-            results['http_test'] = {'status': 'success', 'message': f'HTTP connectivity successful (status: {response.status_code})'}
-            
-            # Test configuration
-            if config.ai_service.lower() == 'watsonx':
-                results['config_test'] = {'status': 'success', 'message': 'Watsonx configuration available'}
-                results['overall_status'] = 'healthy'
-            else:
-                results['config_test'] = {'status': 'warning', 'message': 'Watsonx not configured or unavailable'}
-                results['overall_status'] = 'degraded'
-                results['suggestions'].append('Configure WATSONX_API_KEY environment variable')
-                
-        except socket.gaierror as e:
-            results['dns_test'] = {'status': 'error', 'message': f'DNS resolution failed: {str(e)}'}
-            results['overall_status'] = 'unhealthy'
-            results['suggestions'].extend([
-                'Check your internet connection',
-                'Verify DNS settings',
-                'Try: nslookup iam.cloud.ibm.com'
-            ])
-        except requests.exceptions.ConnectionError as e:
-            results['http_test'] = {'status': 'error', 'message': f'Connection failed: {str(e)}'}
-            results['overall_status'] = 'unhealthy'
-            results['suggestions'].extend([
-                'Check firewall settings',
-                'Verify network connectivity',
-                'Switch to AWS Bedrock: export AI_SERVICE=aws'
-            ])
-        except requests.exceptions.Timeout as e:
-            results['http_test'] = {'status': 'error', 'message': f'Connection timeout: {str(e)}'}
-            results['overall_status'] = 'unhealthy'
-            results['suggestions'].extend([
-                'Check network latency',
-                'Try again later',
-                'Switch to AWS Bedrock: export AI_SERVICE=aws'
-            ])
-        except Exception as e:
-            results['config_test'] = {'status': 'error', 'message': f'Unexpected error: {str(e)}'}
-            results['overall_status'] = 'unhealthy'
-            results['suggestions'].append('Check application logs for more details')
-        
-        return results
-    
     # Initialize SocketIO for real-time updates (needed before data generator routes)
     # Use threading mode for Flask dev server, eventlet mode for Gunicorn production
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+    origins = [o.strip() for o in config.socketio_cors_origins.split(",") if o.strip()]
+    socketio = SocketIO(app, cors_allowed_origins=origins or None, async_mode='threading')
     app.socketio = socketio
 
     # --- Coach v1 webhook receiver ---------------------------------------

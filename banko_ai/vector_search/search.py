@@ -98,14 +98,16 @@ class VectorSearchEngine:
         """
         print("\n🔍 VECTOR SEARCH (with caching):")
         print(f"1. Query: '{query}' | Limit: {limit}")
-        
+
+        scope_key = f"{user_id or ''}|{date_start}|{date_end}|{region}|{limit}"
+
         if self.cache_manager:
             start_time = time.time()
             raw_embedding = self.cache_manager._get_embedding_with_cache(query)
             embed_duration = (time.time() - start_time) * 1000
             print(f"   Embedding generated in {embed_duration:.1f}ms")
-            
-            cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit)
+
+            cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit, scope=scope_key)
             
             if cached_results:
                 print(f"2. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
@@ -215,7 +217,7 @@ class VectorSearchEngine:
                     'tags': result.metadata.get('tags')
                 })
 
-            self.cache_manager.cache_vector_search_results(raw_embedding, search_results_dict)
+            self.cache_manager.cache_vector_search_results(raw_embedding, search_results_dict, scope=scope_key)
             print("4. ✅ Cached vector search results for future queries")
 
         if capture_explain:

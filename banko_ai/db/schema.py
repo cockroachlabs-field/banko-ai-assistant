@@ -205,6 +205,7 @@ def tables() -> tuple[Table, ...]:
             ("ai_service", "STRING NOT NULL"),
             ("language", "STRING NOT NULL DEFAULT 'en'"),
             ("expense_data_hash", "STRING"),
+            ("scope", "STRING NOT NULL DEFAULT ''"),
             ("created_at", "TIMESTAMPTZ DEFAULT now()"),
             ("expires_at", "TIMESTAMPTZ"),
             ("hit_count", "INT8 DEFAULT 0"),
