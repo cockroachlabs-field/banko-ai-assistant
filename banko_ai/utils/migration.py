@@ -334,8 +334,23 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
                         f"ALTER DATABASE {db_name} SURVIVE REGION FAILURE"))
                     log.info("survival goal set to REGION FAILURE")
 
+            # SET LOCALITY is not a no-op on a table that already has that
+            # locality: CockroachDB still runs a full schema-change job,
+            # about 9s apiece on the 9-node chaos cluster, and boot used to
+            # pay for four of them every time. Read what each table has and
+            # only alter the ones that differ.
+            localities = {str(r[0]): str(r[1]) for r in conn.execute(text(
+                "SELECT table_name, locality FROM [SHOW TABLES] "
+                "WHERE schema_name = 'public'")).fetchall()}
+
             # Table names are hardcoded here (not user input), safe to interpolate
             for table in ["expenses", "spending_signals", "coach_nudges"]:
+                if localities.get(table) == "REGIONAL BY ROW":
+                    log.info("%s already REGIONAL BY ROW", table)
+                    continue
+                log.info("converting %s to REGIONAL BY ROW (a real schema "
+                         "change, can take a minute or two on a multi-node "
+                         "cluster)", table)
                 try:
                     conn.execute(text(f"ALTER TABLE {table} SET LOCALITY REGIONAL BY ROW"))
                     log.info("set %s to REGIONAL BY ROW", table)
@@ -350,14 +365,17 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
             # region a fast local read and keeps auth instant while a
             # region is down, per the multi-region skill's guidance for
             # read-mostly reference tables.
-            try:
-                conn.execute(text("ALTER TABLE users SET LOCALITY GLOBAL"))
-                log.info("set users to GLOBAL")
-            except Exception as e:
-                if "already" in str(e).lower():
-                    log.debug("users already GLOBAL: %s", e)
-                else:
-                    log.warning("could not set users GLOBAL: %s", e)
+            if localities.get("users") == "GLOBAL":
+                log.info("users already GLOBAL")
+            else:
+                try:
+                    conn.execute(text("ALTER TABLE users SET LOCALITY GLOBAL"))
+                    log.info("set users to GLOBAL")
+                except Exception as e:
+                    if "already" in str(e).lower():
+                        log.debug("users already GLOBAL: %s", e)
+                    else:
+                        log.warning("could not set users GLOBAL: %s", e)
 
             conn.commit()
             log.info("multi-region migration completed successfully")
