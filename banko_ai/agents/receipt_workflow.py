@@ -7,7 +7,6 @@ State is persisted via CockroachDBSaver so the workflow survives
 restarts and can be inspected / replayed.
 """
 
-import os
 import uuid
 from datetime import datetime
 from typing import Any, TypedDict

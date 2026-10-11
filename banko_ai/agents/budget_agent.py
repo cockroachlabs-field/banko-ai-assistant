@@ -13,8 +13,6 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from langchain_core.tools import Tool
-
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
 
@@ -261,7 +259,7 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
                 from ..db.engine import get_engine
 
                                 
-                engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+                engine = get_engine(self.database_url)
                 with engine.connect() as conn:
                     # Freshest fraud agent wherever it runs; region labels
                     # are real localities now, not fixed AWS names.

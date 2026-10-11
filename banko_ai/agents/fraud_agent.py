@@ -11,10 +11,8 @@ This agent:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
-
-from langchain_core.tools import Tool
 
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
@@ -132,6 +130,7 @@ Be thorough but not overly cautious. False positives are costly."""
             # Signal 1: Check for duplicates within the configured window
             try:
                 from sqlalchemy import text
+
                 from ..db.engine import get_engine
                 dup_engine = get_engine(self.database_url)
                 with dup_engine.connect() as conn:
@@ -336,7 +335,7 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
             # Get recent expenses
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 from datetime import datetime, timedelta
@@ -396,7 +395,7 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 # Update decision with feedback

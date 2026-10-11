@@ -54,7 +54,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             from ..db.engine import get_engine
 
             
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Build query - v25.4.0 no longer requires CAST
@@ -127,7 +127,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Build WHERE clause from filters
@@ -215,7 +215,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 result = conn.execute(text("""

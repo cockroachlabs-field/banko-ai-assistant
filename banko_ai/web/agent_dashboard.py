@@ -11,7 +11,6 @@ Provides WebSocket-based updates for:
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, render_template
-from flask_socketio import emit
 from sqlalchemy import text
 
 agent_dashboard = Blueprint('agent_dashboard', __name__)
@@ -26,12 +25,10 @@ def dashboard():
 @agent_dashboard.route('/api/agents/status')
 def get_all_agent_status():
     """Get status of all registered agents"""
-    from ..db.engine import get_engine
-
     from ..config.settings import get_config
+    from ..db.engine import get_engine
     
     config = get_config()
-    from ..db.engine import get_engine
     engine = get_engine(config.database_url)
     
     try:

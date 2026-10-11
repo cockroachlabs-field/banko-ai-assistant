@@ -10,7 +10,8 @@ Apple's MPS device, which reserves about 1 GB of Metal memory for a
 
 import sentence_transformers
 
-from banko_ai.utils import db_retry, migration
+from banko_ai.db import engine as db_engine
+from banko_ai.utils import migration
 from banko_ai.utils.embeddings import load_embedding_model
 
 DB_URL = "cockroachdb://root@localhost:26257/defaultdb?sslmode=disable"
@@ -71,8 +72,8 @@ class _Engine:
 def _run_migration(monkeypatch, localities):
     executed: list[str] = []
     monkeypatch.setattr(migration, "detect_regions", lambda url: REGIONS)
-    monkeypatch.setattr(db_retry, "create_resilient_engine",
-                        lambda url, **kw: _Engine(localities, executed))
+    monkeypatch.setattr(db_engine, "get_engine",
+                        lambda url=None: _Engine(localities, executed))
     assert migration.migrate_regional_tables(DB_URL, "us-south") is True
     return [s for s in executed if s.lstrip().upper().startswith("ALTER")]
 

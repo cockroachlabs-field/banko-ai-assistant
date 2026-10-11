@@ -6,8 +6,6 @@ for user-specific vector indexing and other enhancements.
 """
 
 import logging
-import os
-from typing import Optional
 
 from .db_retry import get_database_url
 
@@ -48,6 +46,7 @@ def regional_tables_ready(database_url: str) -> bool:
         return False
 
     from sqlalchemy import text
+
     from ..db.engine import get_engine
 
     try:
@@ -84,6 +83,7 @@ def detect_regions(database_url: str) -> list[str]:
     from sqlalchemy import text
 
     try:
+        from ..db.engine import get_engine
         engine = get_engine(database_url)
         with engine.connect() as conn:
             result = conn.execute(text("SHOW REGIONS FROM CLUSTER"))
@@ -117,6 +117,7 @@ def agent_home_region(database_url: str) -> str:
     from sqlalchemy import text
 
     try:
+        from ..db.engine import get_engine
         engine = get_engine(database_url)
         with engine.connect() as conn:
             row = conn.execute(text("SELECT gateway_region()")).fetchone()
@@ -150,6 +151,7 @@ def detect_database_regions(database_url: str) -> list[str]:
 
 
     try:
+        from ..db.engine import get_engine
         engine = get_engine(database_url)
         with engine.connect() as conn:
             rows = conn.execute(text(
@@ -183,6 +185,7 @@ def resolve_primary_region(database_url: str) -> str | None:
         return None
 
     try:
+        from ..db.engine import get_engine
         engine = get_engine(database_url)
         with engine.connect() as conn:
             result = conn.execute(text('SELECT region FROM [SHOW REGIONS FROM DATABASE] WHERE "primary"'))
@@ -254,6 +257,7 @@ def migrate_regional_tables(database_url: str, primary_region: str | None) -> bo
             log.error("invalid region name for DDL interpolation: %s", region)
             return False
 
+    from ..db.engine import get_engine
     engine = get_engine(database_url)
     try:
         with engine.connect() as conn:
@@ -379,6 +383,7 @@ class DatabaseMigration:
     @property
     def engine(self):
         """Get SQLAlchemy engine (lazy import)."""
+        from ..db.engine import get_engine
         return get_engine(self.database_url)
     
     def migrate_timestamptz(self) -> bool:

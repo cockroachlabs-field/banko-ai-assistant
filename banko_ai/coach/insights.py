@@ -17,7 +17,7 @@ from __future__ import annotations
 import calendar
 import statistics
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import text

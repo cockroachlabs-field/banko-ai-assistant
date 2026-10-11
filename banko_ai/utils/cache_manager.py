@@ -13,15 +13,11 @@ Uses CockroachDB for persistent caching with TTL support.
 import decimal
 import hashlib
 import json
-import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
 
 import numpy as np
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, create_engine, text
-from sqlalchemy import Text as TextColumn
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import text
 
 from banko_ai.utils.embeddings import load_embedding_model
 

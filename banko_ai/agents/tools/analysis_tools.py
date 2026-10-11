@@ -8,8 +8,6 @@ Provides:
 """
 
 import json
-from datetime import datetime, timedelta
-from typing import Any
 
 from langchain_core.tools import Tool
 from sqlalchemy import text
@@ -47,7 +45,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Build WHERE clause
@@ -168,7 +166,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Get user's mean and std dev
@@ -257,7 +255,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Find duplicates: same merchant + amount + date
@@ -324,7 +322,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Period 1 stats

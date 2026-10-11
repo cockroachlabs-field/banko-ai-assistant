@@ -8,8 +8,6 @@ Provides:
 """
 
 import json
-import os
-import tempfile
 from datetime import datetime
 from typing import Any
 
@@ -254,7 +252,7 @@ Example:
             from ..db.engine import get_engine
 
             
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 result = conn.execute(text("""
@@ -315,7 +313,7 @@ Example:
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
+            engine = get_engine(database_url)
             
             with engine.connect() as conn:
                 # Look for exact match first

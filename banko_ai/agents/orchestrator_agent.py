@@ -10,11 +10,7 @@ This agent:
 """
 
 import json
-import uuid
-from datetime import datetime
 from typing import Any
-
-from langchain_core.tools import Tool
 
 from .base_agent import BaseAgent
 
@@ -417,8 +413,8 @@ Be conversational and helpful."""
         try:
             from ..db.engine import get_engine
 
-            engine = get_engine(self.database_url if hasattr(self, "database_url") else database_url)
-            
+            engine = get_engine(self.database_url)
+
             with engine.connect() as conn:
                 result = conn.execute(text("""
                     SELECT agent_id, agent_type, region, status, last_heartbeat

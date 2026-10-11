@@ -352,7 +352,7 @@ class EnhancedExpenseGenerator:
                         # Use pandas to insert the batch
                         df = pd.DataFrame(batch)
                         # Specify dtypes for all columns to avoid psycopg3 type casting issues
-                        from sqlalchemy import JSON, ARRAY, String, Text, Boolean, Date, Numeric
+                        from sqlalchemy import ARRAY, Boolean, Date, Numeric, Text
                         from sqlalchemy.dialects.postgresql import UUID
                         dtype = {
                             'expense_id': UUID(as_uuid=True),

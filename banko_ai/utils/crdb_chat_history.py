@@ -4,8 +4,6 @@ Provides persistent conversation storage per session/thread so chat
 history survives server restarts and browser refreshes.
 """
 
-import os
-from typing import Optional
 
 from langchain_cockroachdb import CockroachDBChatMessageHistory
 

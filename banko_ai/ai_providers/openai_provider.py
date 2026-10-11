@@ -7,16 +7,14 @@ This module provides OpenAI integration for vector search and RAG responses.
 import json
 from typing import Any
 
-import numpy as np
 from openai import OpenAI
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
 
 from banko_ai.utils.embeddings import load_embedding_model
 
 from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
-from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
+from .base import AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
 
 

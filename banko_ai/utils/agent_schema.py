@@ -11,9 +11,7 @@ Creates tables for:
 """
 
 import sys
-from typing import Optional
 
-from sqlalchemy import text
 from sqlalchemy.sql import quoted_name
 
 # Whitelist of tables that drop_agent_schema is allowed to drop.

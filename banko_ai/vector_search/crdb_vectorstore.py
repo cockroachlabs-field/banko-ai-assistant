@@ -7,7 +7,6 @@ VECTOR type with C-SPANN indexes, replacing hand-rolled SQL queries.
 from typing import Any
 
 from langchain_cockroachdb import (
-    CockroachDBEngine,
     CockroachDBVectorStore,
     CSPANNIndex,
     DistanceStrategy,

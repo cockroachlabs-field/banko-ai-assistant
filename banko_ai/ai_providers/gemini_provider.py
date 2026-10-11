@@ -9,7 +9,6 @@ import os
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
 
 from banko_ai.utils.embeddings import load_embedding_model
 

@@ -4,8 +4,6 @@ Database management utilities.
 This module provides database schema creation and management functionality.
 """
 
-import os
-from typing import Optional
 
 from .db_retry import create_resilient_engine, get_database_url
 

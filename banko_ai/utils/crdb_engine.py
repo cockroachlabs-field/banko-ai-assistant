@@ -4,7 +4,6 @@ Provides a single async connection pool backed by langchain-cockroachdb
 that all components (vectorstore, chat history, checkpointer) share.
 """
 
-from typing import Optional
 
 from langchain_cockroachdb import CockroachDBEngine
 

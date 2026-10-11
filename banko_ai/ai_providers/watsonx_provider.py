@@ -18,12 +18,9 @@ Author: Banko AI Team
 Date: 2025
 """
 
-import json
 from typing import Any
 
-import numpy as np
 import requests
-from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..ai_providers.base import AIConnectionError, AIProvider, RAGResponse, SearchResult
 from ..ai_providers.rag_prompts import build_banko_rag_prompt
@@ -100,7 +97,6 @@ class WatsonxProvider(AIProvider):
             # Use the same simple search logic as the original watsonx.py
             import json
 
-            import numpy as np
             from sqlalchemy import text
 
             from banko_ai.utils.embeddings import load_embedding_model

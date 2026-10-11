@@ -4,7 +4,6 @@ Command-line interface for Banko AI Assistant.
 This module provides CLI commands for running the application and managing data.
 """
 
-import os
 
 import click
 
@@ -167,6 +166,7 @@ def clear_agents(agents, cache, clear_all):
       banko-ai clear-agents --all           # Clear everything
     """
     from sqlalchemy import text
+
     from .db.engine import get_engine
 
     config = get_config()

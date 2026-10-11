@@ -24,7 +24,7 @@ from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.settings import get_config
 from ..utils.cache_manager import BankoCacheManager
-from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, get_database_url
+from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
 from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from .auth import UserManager
@@ -857,6 +857,7 @@ def create_app() -> Flask:
             
             # Check database connection with proper pooling
             # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
+            from ..db.engine import get_engine
             engine = get_engine(config.database_url)
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
@@ -888,7 +889,6 @@ def create_app() -> Flask:
     @app.route('/api/upload-receipt', methods=['POST'])
     def upload_receipt():
         """Handle receipt upload and process with Agent system"""
-        import tempfile
         from pathlib import Path
         
         try:
@@ -1917,8 +1917,10 @@ def create_app() -> Flask:
         This makes the webhook safely re-postable: the pipeline can fire
         the same envelope twice without producing duplicate nudges."""
         from sqlalchemy.exc import IntegrityError
+
         from banko_ai.utils.migration import regional_tables_ready
         from banko_ai.web.auth import resolve_user_region as _resolve_region
+
         from ..db.engine import get_engine
         eng = get_engine(get_database_url())
         try:
@@ -2022,7 +2024,6 @@ def create_app() -> Flask:
 
     @app.route("/api/coach/nudges", methods=["GET"])
     def coach_list_nudges():
-        from sqlalchemy import create_engine
 
         from ..config.settings import get_config
         cfg = get_config()
@@ -2103,7 +2104,6 @@ def create_app() -> Flask:
 
     @app.route("/health/coach", methods=["GET"])
     def health_coach():
-        from sqlalchemy import create_engine
 
         from ..config.settings import get_config
         cfg = get_config()

@@ -157,6 +157,7 @@ Be concise but thorough in your responses."""
 
 
         try:
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
 
             with engine.connect() as conn:
@@ -212,6 +213,7 @@ Be concise but thorough in your responses."""
         
         
         try:
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
@@ -358,6 +360,7 @@ Be concise but thorough in your responses."""
             model = load_embedding_model('all-MiniLM-L6-v2')
             embedding = model.encode(content).tolist()
 
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
 
             memory_id = str(uuid.uuid4())
@@ -414,6 +417,7 @@ Be concise but thorough in your responses."""
             model = load_embedding_model('all-MiniLM-L6-v2')
             query_embedding = model.encode(query).tolist()
 
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
 
             with engine.connect() as conn:
@@ -484,6 +488,7 @@ Be concise but thorough in your responses."""
         
         
         try:
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
             
             task_id = str(uuid.uuid4())
@@ -523,6 +528,7 @@ Be concise but thorough in your responses."""
         
         
         try:
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
@@ -580,6 +586,7 @@ Be concise but thorough in your responses."""
         
         
         try:
+            from ..db.engine import get_engine
             engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
