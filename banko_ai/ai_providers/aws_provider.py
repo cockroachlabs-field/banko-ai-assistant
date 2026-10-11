@@ -9,7 +9,6 @@ import os
 from typing import Any
 
 import boto3
-import psycopg2
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, OperationalError
 

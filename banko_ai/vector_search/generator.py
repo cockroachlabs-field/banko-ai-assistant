@@ -342,17 +342,33 @@ class EnhancedExpenseGenerator:
         
         for i in range(0, len(data_to_insert), batch_size):
             batch = data_to_insert[i:i + batch_size]
-            
+
             # Retry logic for CockroachDB transaction conflicts and multi-region failover
             max_retries = 10  # Increased for multi-region scenarios
             retry_count = 0
-            
+
             while retry_count < max_retries:
                 try:
                     with self.engine.begin() as conn:
                         # Use pandas to insert the batch
                         df = pd.DataFrame(batch)
-                        df.to_sql('expenses', conn, if_exists='append', index=False, method='multi')
+                        # Specify dtypes for all columns to avoid psycopg3 type casting issues
+                        from sqlalchemy import JSON, ARRAY, String, Text, Boolean, Date, Numeric
+                        from sqlalchemy.dialects.postgresql import UUID
+                        dtype = {
+                            'expense_id': UUID(as_uuid=True),
+                            'user_id': UUID(as_uuid=True),
+                            'expense_date': Date(),
+                            'expense_amount': Numeric(precision=10, scale=2),
+                            'shopping_type': Text(),
+                            'description': Text(),
+                            'merchant': Text(),
+                            'payment_method': Text(),
+                            'recurring': Boolean(),
+                            'tags': ARRAY(Text()),
+                            'embedding': ARRAY(Numeric(precision=18, scale=15)),
+                        }
+                        df.to_sql('expenses', conn, if_exists='append', index=False, method='multi', dtype=dtype)
                         # Transaction is automatically committed when exiting the context
                         
                     # Only increment counter after successful transaction

@@ -42,7 +42,7 @@ class ReceiptExtraction(BaseModel):
 
     Designed to reject prompt-template echoes (`"date": "YYYY-MM-DD"`,
     `"amount": 0.0`, `"merchant": "store name"`) BEFORE they reach the DB
-    layer, where they would surface as opaque psycopg2 errors.
+    layer, where they would surface as opaque driver errors.
     """
 
     merchant: str = Field(min_length=1)

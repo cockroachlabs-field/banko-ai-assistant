@@ -9,7 +9,6 @@ import os
 from typing import Any
 
 import numpy as np
-import psycopg2
 from openai import OpenAI
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, OperationalError

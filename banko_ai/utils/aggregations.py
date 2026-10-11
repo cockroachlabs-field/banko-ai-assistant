@@ -127,9 +127,24 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
 def explain_aggregation(intent: AggregationIntent, user_id: str,
                         database_url: str,
                         region: str | None = None) -> str:
-    """Run EXPLAIN ANALYZE of the aggregation query and return the plan as text."""
+    """Run EXPLAIN ANALYZE of the aggregation query and return the plan as text.
+
+    EXPLAIN does not support placeholders with psycopg3, so we inline parameters."""
     category = resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region)
+
+    # Build WHERE clause with inlined values (EXPLAIN doesn't support placeholders)
+    inlined_where = where
+    for key, value in params.items():
+        if isinstance(value, str):
+            # Quote and escape strings
+            escaped = value.replace("'", "''")
+            inlined_where = inlined_where.replace(f":{key}", f"'{escaped}'")
+        elif isinstance(value, (int, float)):
+            inlined_where = inlined_where.replace(f":{key}", str(value))
+        else:
+            # For dates and other types, convert to string representation
+            inlined_where = inlined_where.replace(f":{key}", f"'{str(value)}'")
 
     eng = create_engine(database_url)
     try:
@@ -139,8 +154,8 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
                 SELECT COALESCE(SUM(expense_amount), 0),
                        COUNT(*),
                        MIN(expense_date), MAX(expense_date)
-                FROM expenses {where}
-            """), params).fetchall()
+                FROM expenses {inlined_where}
+            """)).fetchall()
     finally:
         eng.dispose()
 

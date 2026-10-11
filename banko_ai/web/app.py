@@ -972,7 +972,7 @@ def create_app() -> Flask:
 
                 # Some models (notably code-tuned ones like ibm/granite-8b-code-instruct)
                 # echo the prompt scaffold instead of extracting values, which would land
-                # in the DB as opaque psycopg2 errors.
+                # in the DB as opaque driver errors.
                 if is_placeholder_payload(extracted):
                     print(f"❌ Extraction returned prompt-template placeholders: {extracted}")
                     return jsonify({

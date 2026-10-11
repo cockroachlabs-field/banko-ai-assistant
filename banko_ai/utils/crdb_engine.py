@@ -8,20 +8,12 @@ from typing import Optional
 
 from langchain_cockroachdb import CockroachDBEngine
 
-from .db_retry import get_database_url
+from .db_retry import get_database_url, normalize_db_url
 
 
 def normalize_crdb_url(url: str) -> str:
-    """Convert any CockroachDB URL to use the async psycopg driver.
-
-    langchain-cockroachdb only converts ``cockroachdb://`` automatically.
-    This handles ``postgresql://`` and ``postgres://`` as well.
-    """
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "cockroachdb+psycopg://", 1)
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "cockroachdb+psycopg://", 1)
-    return url
+    """Convert any CockroachDB URL to the psycopg driver langchain-cockroachdb uses."""
+    return normalize_db_url(url)
 
 _engine: CockroachDBEngine | None = None
 

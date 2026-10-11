@@ -23,7 +23,6 @@ import os
 from typing import Any
 
 import numpy as np
-import psycopg2
 import requests
 from sqlalchemy.exc import DBAPIError, OperationalError
 

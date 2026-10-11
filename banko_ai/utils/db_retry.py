@@ -11,18 +11,39 @@ import os
 import time
 from collections.abc import Callable
 
-import psycopg2
+import psycopg
 from sqlalchemy.exc import DBAPIError, OperationalError
+
+# Spellings people already have in env files and compose files. All of them
+# land on the CockroachDB dialect with the psycopg 3 driver.
+_DRIVER_PREFIXES = (
+    "postgresql+psycopg2://",
+    "postgres+psycopg2://",
+    "cockroachdb+psycopg2://",
+    "postgresql+psycopg://",
+    "cockroachdb://",
+    "postgresql://",
+    "postgres://",
+)
+_SQLALCHEMY_PREFIX = "cockroachdb+psycopg://"
 
 
 def normalize_db_url(url: str) -> str:
-    """Normalize postgresql:// or postgres:// to cockroachdb:// so the
-    sqlalchemy-cockroachdb dialect handles CockroachDB version strings."""
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "cockroachdb://", 1)
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "cockroachdb://", 1)
+    """Return the SQLAlchemy URL banko uses everywhere: the CockroachDB
+    dialect on psycopg 3. Already-normalized and asyncpg URLs pass through."""
+    for prefix in _DRIVER_PREFIXES:
+        if url.startswith(prefix):
+            return _SQLALCHEMY_PREFIX + url[len(prefix):]
     return url
+
+
+def to_libpq_url(url: str) -> str:
+    """A plain postgresql:// URL, for libraries that open psycopg
+    connections themselves (the LangGraph checkpointer)."""
+    normalized = normalize_db_url(url)
+    if normalized.startswith(_SQLALCHEMY_PREFIX):
+        return "postgresql://" + normalized[len(_SQLALCHEMY_PREFIX):]
+    return normalized
 
 
 def get_database_url(url: str | None = None) -> str:
@@ -34,8 +55,8 @@ def get_database_url(url: str | None = None) -> str:
 # Transient errors that should trigger a retry
 TRANSIENT_ERRORS = (
     OperationalError,
-    psycopg2.OperationalError,
-    psycopg2.InterfaceError,
+    psycopg.OperationalError,
+    psycopg.InterfaceError,
     DBAPIError,
 )
 
