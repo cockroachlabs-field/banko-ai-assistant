@@ -5,7 +5,6 @@ This module generates realistic expense data with enriched descriptions
 for improved vector search accuracy.
 """
 
-import os
 import random
 import uuid
 from datetime import datetime, timedelta
@@ -43,11 +42,12 @@ class EnhancedExpenseGenerator:
     def embedding_model(self):
         """Get embedding model (lazy import)."""
         if self._embedding_model is None:
-            import os
-
             from banko_ai.utils.embeddings import load_embedding_model
+
+            from ..config.settings import get_config
+
             # Use configurable embedding model from environment or default
-            embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+            embedding_model_name = get_config().embedding_model
             self._embedding_model = load_embedding_model(embedding_model_name)
         return self._embedding_model
     
@@ -334,7 +334,9 @@ class EnhancedExpenseGenerator:
         
         # Insert in smaller batches to reduce transaction conflicts
         # Use environment variable or default to 50
-        batch_size = int(os.getenv('DATA_GEN_BATCH_SIZE', '50'))
+        from ..config.settings import get_config
+
+        batch_size = get_config().data_gen_batch_size
         total_inserted = 0
         total_batches = (len(data_to_insert) + batch_size - 1) // batch_size
         

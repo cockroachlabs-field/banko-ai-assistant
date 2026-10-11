@@ -2,6 +2,9 @@ import os
 
 import pytest
 
+# The app no longer sniffs PYTEST_CURRENT_TEST; tests opt out of sample data explicitly.
+os.environ.setdefault("BANKO_SKIP_AUTOSETUP", "1")
+
 # Normalize the scheme once for every test module: postgresql:// works for
 # the app (it normalizes internally), so it should work for the suite too.
 from banko_ai.utils.db_retry import normalize_db_url

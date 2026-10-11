@@ -21,6 +21,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
 from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
@@ -38,9 +39,10 @@ class GeminiProvider(AIProvider):
 
         self.cache_manager = cache_manager
 
-        self.project_id = config.get("project_id") or os.getenv("GOOGLE_PROJECT_ID")
-        self.location = config.get("location") or os.getenv("GOOGLE_LOCATION", "us-central1")
-        self.model_name = config.get("model") or os.getenv("GOOGLE_MODEL", "gemini-2.0-flash-001")
+        cfg = get_config()
+        self.project_id = config.get("project_id") or cfg.google_project_id
+        self.location = config.get("location") or cfg.google_location
+        self.model_name = config.get("model") or cfg.google_model
         self.embedding_model = None
         self.db_engine = None
         self.genai_client = None
@@ -61,8 +63,9 @@ class GeminiProvider(AIProvider):
         if not self.project_id:
             raise AIAuthenticationError("Google project ID is required")
 
-        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        api_key = os.getenv("GOOGLE_API_KEY")
+        cfg = get_config()
+        credentials_path = cfg.google_application_credentials
+        api_key = cfg.google_api_key
 
         try:
             if credentials_path and os.path.exists(credentials_path):
@@ -110,16 +113,17 @@ class GeminiProvider(AIProvider):
 
     def get_available_models(self) -> list[str]:
         """Get available Gemini models. Override with GEMINI_MODELS env var or auto-discover from API."""
-        extra = os.getenv("GEMINI_MODELS", "")
+        cfg = get_config()
+        extra = cfg.gemini_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
-        
+
         if GEMINI_AVAILABLE:
             try:
                 # Use existing client, or create one matching the auth method
                 client = self.genai_client
                 if not client:
-                    api_key = os.getenv("GOOGLE_API_KEY")
+                    api_key = cfg.google_api_key
                     if api_key:
                         client = genai.Client(api_key=api_key)
                     elif self.project_id:
@@ -149,7 +153,7 @@ class GeminiProvider(AIProvider):
         if self.embedding_model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.embedding_model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 raise AIConnectionError(f"Failed to load embedding model: {str(e)}")

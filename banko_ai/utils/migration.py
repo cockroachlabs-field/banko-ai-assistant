@@ -521,7 +521,9 @@ class DatabaseMigration:
         TTL could not do this: it cannot cascade to expenses/signals/nudges
         and it cannot exempt personas or real accounts. Returns the number
         of users removed (0 when the knob is off, the default)."""
-        ttl_days = int(os.getenv("DEMO_USER_TTL_DAYS", "0"))
+        from ..config.settings import get_config
+
+        ttl_days = get_config().demo_user_ttl_days
         if ttl_days <= 0:
             return 0
 

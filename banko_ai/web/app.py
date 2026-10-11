@@ -139,7 +139,7 @@ def auto_setup_data_if_needed(database_url: str):
     # Skip the heavy data-gen path under pytest — fixtures build create_app()
     # on every test and a 5000-row insert + embeddings on each call makes the
     # suite unusable. Tests that need data seed it explicitly.
-    if os.getenv("PYTEST_CURRENT_TEST") or os.getenv("BANKO_SKIP_AUTOSETUP"):
+    if get_config().banko_skip_autosetup:
         return True
     try:
         db_connected, db_message, table_exists, record_count = check_database_connection(database_url)
@@ -245,7 +245,7 @@ def create_app() -> Flask:
     
     # Initialize AI provider
     print(f"🔧 Initializing AI Provider: {config.ai_service}")
-    print(f"   Environment AI_SERVICE: {os.getenv('AI_SERVICE', 'NOT SET')}")
+    print(f"   Environment AI_SERVICE: {config.ai_service}")
     try:
         ai_config = config.get_ai_config()
         ai_provider = AIProviderFactory.create_provider(
@@ -298,7 +298,7 @@ def create_app() -> Flask:
         The POST goes back to this same server, so it runs on a background
         thread: a synchronous self-call inside the signup request would
         deadlock a single-threaded server."""
-        secret = os.getenv("CDC_WEBHOOK_HMAC_SECRET", "")
+        secret = get_config().cdc_webhook_hmac_secret
         if not secret:
             print("welcome signal skipped: no webhook secret")
             return
@@ -1801,7 +1801,7 @@ def create_app() -> Flask:
     coach_log = _coach_log.getLogger("banko.coach.webhook")
 
     def _verify_signature(body: bytes, header_sig: str | None) -> bool:
-        secret = os.getenv("CDC_WEBHOOK_HMAC_SECRET", "")
+        secret = get_config().cdc_webhook_hmac_secret
         if not secret:
             coach_log.warning("CDC_WEBHOOK_HMAC_SECRET not set; rejecting all "
                               "incoming webhooks")
@@ -1850,8 +1850,8 @@ def create_app() -> Flask:
             return
         import threading
 
-        bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-        topic = os.getenv("COACH_KAFKA_TOPIC", "banko.spending_signals")
+        bootstrap = cfg.kafka_bootstrap_servers
+        topic = cfg.coach_kafka_topic
 
         def _connect_and_run() -> None:
             # Kafka is an optional transport; an unreachable broker must
@@ -2104,7 +2104,7 @@ def create_app() -> Flask:
         from flask_socketio import join_room
         user_id = data.get("user_id")
         if user_id:
-            join_room(f"coach:{user_id}")
+            join_room(f"{get_config().coach_socketio_room_prefix}{user_id}")
 
     @app.route("/health/coach", methods=["GET"])
     def health_coach():
@@ -2131,9 +2131,7 @@ def create_app() -> Flask:
 
         components = {
             "db_reachable": db_ok,
-            "webhook_secret_configured": bool(
-                os.getenv("CDC_WEBHOOK_HMAC_SECRET", "")
-            ),
+            "webhook_secret_configured": bool(cfg.cdc_webhook_hmac_secret),
             "kafka_enabled": cfg.coach_kafka_enabled,
             "active_provider": cfg.ai_service,
             "last_nudge_at": last_nudge_at,
@@ -2187,9 +2185,10 @@ def create_app() -> Flask:
                             'message': 'Clearing data...'
                         })
                         generator.clear_expenses()
-                    
+
+
                     # Use same batch size as generator for consistency
-                    batch_size = int(os.getenv('DATA_GEN_BATCH_SIZE', '50'))
+                    batch_size = get_config().data_gen_batch_size
                     import time
                     
                     # Main generation loop - supports continuous mode

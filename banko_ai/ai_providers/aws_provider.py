@@ -5,7 +5,6 @@ This module provides AWS Bedrock integration for vector search and RAG responses
 """
 
 import json
-import os
 from typing import Any
 
 import boto3
@@ -14,6 +13,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
 from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
@@ -25,11 +25,12 @@ class AWSProvider(AIProvider):
     def __init__(self, config: dict[str, Any], cache_manager=None):
         """Initialize AWS provider."""
         # Support both config and environment variables with defaults
-        self.access_key_id = config.get("access_key_id") or os.getenv("AWS_ACCESS_KEY_ID")
-        self.secret_access_key = config.get("secret_access_key") or os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.region = config.get("region") or os.getenv("AWS_REGION", "us-east-1")
-        self.profile_name = config.get("profile_name") or os.getenv("AWS_PROFILE")
-        self.model_id = config.get("model") or os.getenv("AWS_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        cfg = get_config()
+        self.access_key_id = config.get("access_key_id") or cfg.aws_access_key_id
+        self.secret_access_key = config.get("secret_access_key") or cfg.aws_secret_access_key
+        self.region = config.get("region") or cfg.aws_region
+        self.profile_name = config.get("profile_name") or cfg.aws_profile
+        self.model_id = config.get("model") or cfg.aws_model
         
         self.bedrock_client = None
         self.embedding_model = None
@@ -127,7 +128,7 @@ class AWSProvider(AIProvider):
         via the AWS_MODELS env var (comma-separated), which short-circuits
         discovery entirely.
         """
-        extra = os.getenv("AWS_MODELS", "")
+        extra = get_config().aws_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
 
@@ -178,7 +179,7 @@ class AWSProvider(AIProvider):
         if self.embedding_model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.embedding_model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 raise AIConnectionError(f"Failed to load embedding model: {str(e)}")

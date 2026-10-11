@@ -4,17 +4,16 @@ This matches the original app.py behavior.
 """
 
 if __name__ == '__main__':
-    import os
-
+    from .config.settings import get_config
     from .web.app import create_app
-    
+
     print("🏦 === Banko AI Assistant Starting === 🏦")
-    
+
     # Create the Flask app
     app = create_app()
-    
+
     # Get port from environment variable or default to 5000 (matching original)
-    port = int(os.environ.get("PORT", 5000))
+    port = get_config().port
     
     print(f"🚀 Starting server on http://localhost:{port}")
     print("🎉 Banko AI is ready to help with your finances!")

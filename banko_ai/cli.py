@@ -245,8 +245,8 @@ def status():
         click.echo(f"   Google Project: {config.google_project_id}")
         click.echo(f"   Google Model: {config.google_model}")
         click.echo(f"   Google Location: {config.google_location}")
-        creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        api_key = os.getenv("GOOGLE_API_KEY")
+        creds_path = config.google_application_credentials
+        api_key = config.google_api_key
         click.echo(f"   Service Account: {'✅' if creds_path else '❌'} {creds_path or 'Not set'}")
         click.echo(f"   API Key Fallback: {'✅' if api_key else '❌'} {'Set' if api_key else 'Not set'}")
     

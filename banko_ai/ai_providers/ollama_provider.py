@@ -8,7 +8,6 @@ whole app runs with the network cable unplugged.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import requests
@@ -28,14 +27,12 @@ class OllamaProvider(AIProvider):
 
     def __init__(self, config: dict[str, Any] = None, cache_manager=None):
         config = config or {}
-        self.host = (config.get("host") or os.getenv("OLLAMA_HOST")
-                     or "http://localhost:11434").rstrip("/")
-        self.current_model = (config.get("model") or os.getenv("OLLAMA_MODEL")
-                              or "granite3.3:8b")
+        cfg = get_config()
+        self.host = (config.get("host") or cfg.ollama_host).rstrip("/")
+        self.current_model = config.get("model") or cfg.ollama_model
         self.cache_manager = cache_manager
-        self.embedding_model_name = os.getenv("EMBEDDING_MODEL",
-                                              "all-MiniLM-L6-v2")
-        self.timeout = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
+        self.embedding_model_name = cfg.embedding_model
+        self.timeout = cfg.ollama_timeout_seconds
         super().__init__(config)
 
     def _validate_config(self) -> None:

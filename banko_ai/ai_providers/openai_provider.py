@@ -5,7 +5,6 @@ This module provides OpenAI integration for vector search and RAG responses.
 """
 
 import json
-import os
 from typing import Any
 
 import numpy as np
@@ -15,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
 from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
@@ -27,14 +27,15 @@ class OpenAIProvider(AIProvider):
         """Initialize OpenAI provider."""
         # Store cache manager
         self.cache_manager = cache_manager
-        
+
         # Support both config and environment variables
-        raw_key = config.get("api_key") or os.getenv("OPENAI_API_KEY")
+        cfg = get_config()
+        raw_key = config.get("api_key") or cfg.openai_api_key
         self.api_key = raw_key.strip().replace('\n', '').replace(' ', '') if raw_key else None
-        
+
         # Set the model in config so base class picks it up
         if "model" not in config:
-            config["model"] = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            config["model"] = cfg.openai_model
         
         self.client = None
         self.embedding_model = None
@@ -56,7 +57,7 @@ class OpenAIProvider(AIProvider):
         
         # Initialize OpenAI client
         try:
-            base_url = self.config.get("base_url") or os.getenv("OPENAI_BASE_URL")
+            base_url = self.config.get("base_url") or get_config().openai_base_url
             # Any OpenAI-compatible endpoint works here: a local ollama or
             # vLLM server, LM Studio, or a hosted vendor.
             self.client = (OpenAI(api_key=self.api_key, base_url=base_url)
@@ -72,7 +73,7 @@ class OpenAIProvider(AIProvider):
     
     def get_available_models(self) -> list[str]:
         """Get available OpenAI models. Override with OPENAI_MODELS env var or auto-discover from API."""
-        extra = os.getenv("OPENAI_MODELS", "")
+        extra = get_config().openai_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
         
@@ -95,7 +96,7 @@ class OpenAIProvider(AIProvider):
         if self.embedding_model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.embedding_model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 raise AIConnectionError(f"Failed to load embedding model: {str(e)}")

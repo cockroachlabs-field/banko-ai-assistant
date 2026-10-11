@@ -15,7 +15,7 @@ time, and for that CPU is the faster device anyway.
 
 from __future__ import annotations
 
-import os
+from ..config.settings import get_config
 
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
@@ -23,7 +23,7 @@ DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 def load_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL):
     from sentence_transformers import SentenceTransformer
 
-    device = os.getenv("EMBEDDING_DEVICE", "cpu")
+    device = get_config().embedding_device
     try:
         return SentenceTransformer(model_name, local_files_only=True, device=device)
     except Exception:

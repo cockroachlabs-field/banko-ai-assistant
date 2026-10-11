@@ -77,10 +77,13 @@ def test_fallback_stub_is_non_trivial_on_discovery_failure(provider):
 def test_env_override_skips_discovery(provider, monkeypatch):
     """WATSONX_MODELS env var must short-circuit the API call so operators
     can pin a known-good set in airgap/restricted environments."""
+    from banko_ai.config.settings import reset_config
+
     monkeypatch.setenv(
         "WATSONX_MODELS",
         "meta-llama/llama-3-3-70b-instruct, ibm/granite-3-1-8b-base",
     )
+    reset_config()  # Settings are cached; reset after changing env
     with patch("banko_ai.ai_providers.watsonx_provider.requests.get") as mock_get:
         models = provider.get_available_models()
 
@@ -97,12 +100,16 @@ def test_env_override_not_cached_across_changes(monkeypatch):
     """A fresh provider instance must see the current env, not a cached
     value from the prior process state. (lru_cache traps that bit teams in
     the past.)"""
+    from banko_ai.config.settings import reset_config
+
     monkeypatch.setenv("WATSONX_MODELS", "model-a")
+    reset_config()  # Settings are cached; reset after changing env
     p1 = WatsonxProvider({"api_key": "k", "project_id": "p", "model": "model-a"})
     monkeypatch.setattr(p1, "_get_access_token", lambda: "tok")
     assert p1.get_available_models() == ["model-a"]
 
     monkeypatch.setenv("WATSONX_MODELS", "model-b")
+    reset_config()  # Settings are cached; reset after changing env
     p2 = WatsonxProvider({"api_key": "k", "project_id": "p", "model": "model-b"})
     monkeypatch.setattr(p2, "_get_access_token", lambda: "tok")
     assert p2.get_available_models() == ["model-b"]

@@ -1,7 +1,7 @@
 """
 IBM Watsonx AI Provider for Banko Assistant
 
-This module provides integration with IBM Watsonx AI services to power the 
+This module provides integration with IBM Watsonx AI services to power the
 Banko Assistant's conversational capabilities. It includes functions for:
 - Expense data search and retrieval
 - RAG (Retrieval Augmented Generation) responses
@@ -19,7 +19,6 @@ Date: 2025
 """
 
 import json
-import os
 from typing import Any
 
 import numpy as np
@@ -28,6 +27,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..ai_providers.base import AIConnectionError, AIProvider, RAGResponse, SearchResult
 from ..ai_providers.rag_prompts import build_banko_rag_prompt
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
 
 
@@ -38,26 +38,21 @@ class WatsonxProvider(AIProvider):
         """Initialize Watsonx provider with configuration."""
         if config is None:
             config = {}
-        
+
         # Store config for base class compatibility
         self.config = config
         self.cache_manager = cache_manager
-        
-        self.api_key = config.get('api_key') or os.getenv('WATSONX_API_KEY')
-        self.project_id = config.get('project_id') or os.getenv('WATSONX_PROJECT_ID')
-        self.current_model = config.get('model', config.get('model_id')) or os.getenv('WATSONX_MODEL_ID', 'openai/gpt-oss-120b')
-        
+
+        cfg = get_config()
+        self.api_key = config.get('api_key') or cfg.watsonx_api_key
+        self.project_id = config.get('project_id') or cfg.watsonx_project_id
+        self.current_model = config.get('model', config.get('model_id')) or cfg.watsonx_model
+
         # API configuration with environment variable support
-        self.api_url = config.get('api_url') or os.getenv(
-            'WATSONX_API_URL', 
-            'https://us-south.ml.cloud.ibm.com/ml/v1/text/chat?version=2023-05-29'
-        )
-        self.token_url = config.get('token_url') or os.getenv(
-            'WATSONX_TOKEN_URL',
-            'https://iam.cloud.ibm.com/identity/token'
-        )
-        self.timeout = int(config.get('timeout', os.getenv('WATSONX_TIMEOUT', '30')))
-        self.embedding_model_name = config.get('embedding_model') or os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+        self.api_url = config.get('api_url') or cfg.watsonx_api_url
+        self.token_url = config.get('token_url') or cfg.watsonx_token_url
+        self.timeout = int(config.get('timeout', cfg.watsonx_timeout))
+        self.embedding_model_name = config.get('embedding_model') or cfg.embedding_model
         
         # Discovery cache: get_available_models() can call IBM on every UI page
         # load; cache for the life of the process. App restart picks up changes.
@@ -256,7 +251,8 @@ class WatsonxProvider(AIProvider):
         4. A static fallback stub of known-good chat models, so the dropdown
            still has multiple recoverable options when discovery fails.
         """
-        extra = os.getenv("WATSONX_MODELS", "")
+        cfg = get_config()
+        extra = cfg.watsonx_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
 
@@ -265,7 +261,7 @@ class WatsonxProvider(AIProvider):
 
         try:
             access_token = self._get_access_token()
-            api_url = os.getenv("WATSONX_API_URL", "https://us-south.ml.cloud.ibm.com")
+            api_url = cfg.watsonx_base_url
             if '/ml/v1' in api_url or '?' in api_url:
                 from urllib.parse import urlparse
                 parsed = urlparse(api_url)

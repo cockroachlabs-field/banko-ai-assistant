@@ -7,12 +7,13 @@ resets, or network issues.
 """
 
 import functools
-import os
 import time
 from collections.abc import Callable
 
 import psycopg
 from sqlalchemy.exc import DBAPIError, OperationalError
+
+from ..config.settings import get_config
 
 # Spellings people already have in env files and compose files. All of them
 # land on the CockroachDB dialect with the psycopg 3 driver.
@@ -48,7 +49,7 @@ def to_libpq_url(url: str) -> str:
 
 def get_database_url(url: str | None = None) -> str:
     """Get and normalize the database URL from argument or DATABASE_URL env var."""
-    raw = url or os.getenv("DATABASE_URL", "cockroachdb://root@localhost:26257/defaultdb?sslmode=disable")
+    raw = url or get_config().database_url
     return normalize_db_url(raw)
 
 
@@ -230,15 +231,16 @@ def create_resilient_engine(database_url: str, **kwargs):
     from sqlalchemy import create_engine
     
     database_url = normalize_db_url(database_url)
-    
+
     # Get pool configuration from environment variables with sensible defaults
     # CockroachDB docs recommend larger pools for production workloads
-    pool_size = int(os.getenv("DB_POOL_SIZE", "100"))  # Increased from 10
-    max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "100"))  # Increased from 20
-    pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
-    pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))  # 1 hour (increased from 5 min)
-    pool_pre_ping = os.getenv("DB_POOL_PRE_PING", "true").lower() == "true"
-    connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))
+    cfg = get_config()
+    pool_size = cfg.db_pool_size
+    max_overflow = cfg.db_max_overflow
+    pool_timeout = cfg.db_pool_timeout
+    pool_recycle = cfg.db_pool_recycle
+    pool_pre_ping = cfg.db_pool_pre_ping
+    connect_timeout = cfg.db_connect_timeout
     
     # Default resilience settings based on CockroachDB best practices
     default_config = {

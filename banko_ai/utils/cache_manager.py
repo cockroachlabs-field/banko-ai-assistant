@@ -13,7 +13,6 @@ Uses CockroachDB for persistent caching with TTL support.
 import decimal
 import hashlib
 import json
-import os
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -26,6 +25,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from ..config.settings import get_config
 from .db_retry import create_resilient_engine, db_retry, get_database_url
 
 # Database configuration
@@ -64,24 +64,25 @@ class BankoCacheManager:
     def __init__(self, similarity_threshold=None, cache_ttl_hours=None, strict_mode=None):
         """
         Initialize the cache manager.
-        
+
         Args:
             similarity_threshold: Minimum similarity score (default: from env or 0.75)
             cache_ttl_hours: Time-to-live for cached responses (default: from env or 24)
             strict_mode: Require exact expense data match (default: from env or True)
         """
         # Load from environment variables with fallbacks
+        cfg = get_config()
         self.similarity_threshold = (
-            similarity_threshold if similarity_threshold is not None 
-            else float(os.getenv('CACHE_SIMILARITY_THRESHOLD', '0.75'))
+            similarity_threshold if similarity_threshold is not None
+            else cfg.cache_similarity_threshold
         )
         self.cache_ttl_hours = (
             cache_ttl_hours if cache_ttl_hours is not None
-            else int(os.getenv('CACHE_TTL_HOURS', '24'))
+            else cfg.cache_ttl_hours
         )
         self.strict_mode = (
             strict_mode if strict_mode is not None
-            else os.getenv('CACHE_STRICT_MODE', 'true').lower() == 'true'
+            else cfg.cache_strict_mode
         )
         
         print("📦 Cache Manager initialized:")
@@ -97,7 +98,7 @@ class BankoCacheManager:
         if self.model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 print(f"Warning: Could not load SentenceTransformer model: {e}")
@@ -234,9 +235,9 @@ class BankoCacheManager:
     def _get_embedding_with_cache(self, input_text: str) -> np.ndarray:
         """Get embedding for text, using cache when possible."""
         text_hash = self._generate_hash(input_text)
-        
+
         # Try to get from cache first
-        model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model_name = get_config().embedding_model
         cache_query = text("""
             SELECT embedding, access_count
             FROM embedding_cache 
