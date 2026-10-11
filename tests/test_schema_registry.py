@@ -75,6 +75,42 @@ def test_single_region_never_plans_locality_changes():
     assert S.plan_locality_conversions({"expenses": "anything"}, PLAIN) == []
 
 
+def test_refresh_lease_raises_when_another_owner_holds_it():
+    """_refresh_lease raises RuntimeError when another process holds the lease."""
+    if not URL:
+        pytest.skip("DATABASE_URL not set")
+    url = _scratch(URL, "banko_lease_test")
+    try:
+        # Create banko_meta and insert a lease held by another owner
+        with get_engine(url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            conn.execute(text("""
+                CREATE TABLE banko_meta (
+                    key STRING NOT NULL PRIMARY KEY,
+                    value STRING NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """))
+            conn.execute(text("""
+                INSERT INTO banko_meta (key, value, updated_at)
+                VALUES ('schema_lock', 'other-owner', now())
+            """))
+
+        # Trying to refresh with our owner should raise
+        from banko_ai.db.schema import _refresh_lease
+        with get_engine(url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            with pytest.raises(RuntimeError, match="lease was taken over"):
+                _refresh_lease(conn, "our-owner")
+
+        # Refreshing with the correct owner should succeed
+        with get_engine(url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            _refresh_lease(conn, "other-owner")  # should not raise
+    finally:
+        _drop(URL, "banko_lease_test")
+
+
 def _scratch(base: str, name: str) -> str:
     admin = get_engine(base)
     with admin.connect() as conn:

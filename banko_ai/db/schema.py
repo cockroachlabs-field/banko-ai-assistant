@@ -486,9 +486,13 @@ def _wait_for(conn: Connection, want: str, owner: str) -> bool:
 
 
 def _refresh_lease(conn: Connection, owner: str) -> None:
-    """Refresh the lease's updated_at so a long apply is not stolen."""
-    conn.execute(text("UPDATE banko_meta SET updated_at = now() WHERE key = :k AND value = :owner"),
-                 {"k": LOCK_KEY, "owner": owner})
+    """Refresh the lease's updated_at between phases. Raises if the lease was
+    taken over, preventing two appliers from running DDL concurrently."""
+    result = conn.execute(text(
+        "UPDATE banko_meta SET updated_at = now() WHERE key = :k AND value = :owner"),
+        {"k": LOCK_KEY, "owner": owner})
+    if result.rowcount == 0:
+        raise RuntimeError(f"lease was taken over by another process (owner {owner} no longer holds it)")
 
 
 def _apply(conn: Connection, topo: Topology, owner: str) -> int:
@@ -514,6 +518,8 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
                     txn.execute(text(sql))
             count += len(missing_tables)
             log.info("schema: created %d tables in %.1fs", len(missing_tables), time.monotonic() - create_started)
+            # Refresh lease after batch transaction commits
+            _refresh_lease(conn, owner)
         else:
             # Incremental: create tables one by one
             for table in missing_tables:
@@ -521,6 +527,7 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
                 log.info("schema: %s", sql.splitlines()[0])
                 conn.execute(text(sql))
                 count += 1
+                _refresh_lease(conn, owner)
 
     # For existing tables, add missing columns and indexes (skip on fresh database)
     if not is_fresh:
@@ -535,6 +542,7 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
                         log.info("schema: %s", sql)
                         conn.execute(text(sql))
                         count += 1
+                        _refresh_lease(conn, owner)
                 have_indexes = {str(r[0]) for r in conn.execute(
                     text(f"SELECT DISTINCT index_name FROM [SHOW INDEXES FROM {table.name}]")).fetchall()}
                 for i in table.indexes:
@@ -543,6 +551,7 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
                         log.info("schema: %s", sql)
                         conn.execute(text(sql))
                         count += 1
+                        _refresh_lease(conn, owner)
 
     # Run upgrade functions (skip on fresh database as tables don't exist yet)
     if not is_fresh:
@@ -553,11 +562,10 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
                 log.info("schema: %s", sql.splitlines()[0])
                 conn.execute(text(sql))
                 count += 1
+                _refresh_lease(conn, owner)
         if count > len(missing_tables):
             log.info("schema: ran upgrades in %.1fs", time.monotonic() - upgrade_started)
 
-    # Refresh lease periodically during long operations
-    _refresh_lease(conn, owner)
     return count
 
 
@@ -604,6 +612,10 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
                 return SchemaResult(changed=False, fingerprint=want, seconds=time.monotonic() - started)
             log.info("schema: applying registry v%d (%s)", REGISTRY_VERSION,
                      "multi-region" if topo.regional else "single-region")
+
+            # Refresh lease after acquiring it (especially after bootstrap phase if regions were added)
+            if bootstrap_stmts:
+                _refresh_lease(conn, owner)
 
             # Phase 2: Apply schema (tables, columns, indexes, upgrades)
             apply_started = time.monotonic()
