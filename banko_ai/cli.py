@@ -41,7 +41,11 @@ def run(host, port, debug, generate_data, no_data, clear_data, background):
     host = host or config.host
     port = port or config.port
     click.echo("🏦 === Banko AI Assistant Starting === 🏦")
-    click.echo(f"🤖 AI Service: {config.ai_service}")
+    if config.ai_display_provider:
+        click.echo(f"🤖 AI: shown as {config.ai_display_provider} · {config.ai_display_model or 'default'}, "
+                   f"served by {config.ai_service}")
+    else:
+        click.echo(f"🤖 AI Service: {config.ai_service}")
     click.echo("=" * 44)
 
     if no_data:

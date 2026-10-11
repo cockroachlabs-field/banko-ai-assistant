@@ -33,6 +33,14 @@ from flask import (
 from flask_socketio import SocketIO
 from sqlalchemy import text
 
+from ..ai_providers.display import (
+    actual_identity,
+    display_identity,
+    display_label,
+    display_models,
+    neutral_error,
+    ui_context,
+)
 from ..ai_providers.factory import AIProviderFactory
 from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
@@ -47,71 +55,6 @@ from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
-
-
-def get_provider_display_info(ai_service, ai_provider=None, current_model=None, connection_status=None):
-    """Get display information for the current AI provider including proper icons."""
-    service = ai_service.lower()
-    
-    # Provider-specific configurations
-    provider_configs = {
-        'watsonx': {
-            'name': 'IBM Watsonx',
-            'icon_file': 'watsonx-icon.svg',
-            'icon_alt': 'IBM Watsonx'
-        },
-        'gemini': {
-            'name': 'Google Gemini',
-            'icon_file': 'google-gemini-icon.svg',
-            'icon_alt': 'Google Gemini'
-        },
-        'aws': {
-            'name': 'AWS Bedrock',
-            'icon_file': 'aws-bedrock-icon.svg',
-            'icon_alt': 'AWS Bedrock'
-        },
-        'openai': {
-            'name': 'OpenAI',
-            'icon_file': 'openai-icon.svg',  # Fallback to watsonx icon for now
-            'icon_alt': 'OpenAI'
-        },
-        'ollama': {
-            'name': 'Ollama (local)',
-            'icon_file': 'roach-logo.svg',  # local-first badge until a dedicated icon lands
-            'icon_alt': 'Ollama local model'
-        }
-    }
-    
-    # Get provider config or use default
-    config = provider_configs.get(service, {
-        'name': 'IBM Watsonx',
-        'icon_file': 'watsonx-icon.svg',
-        'icon_alt': 'AI Provider'
-    })
-    
-    # Get current model if not provided
-    if current_model is None and ai_provider:
-        current_model = getattr(ai_provider, 'current_model', 'Unknown')
-    
-    # Get connection status if not provided
-    if connection_status is None and ai_provider:
-        # Check if we have API credentials without making a call
-        has_credentials = bool(
-            getattr(ai_provider, 'api_key', None) or 
-            getattr(ai_provider, 'access_key_id', None) or
-            getattr(ai_provider, 'project_id', None)
-        )
-        connection_status = 'connected' if has_credentials else 'demo'
-    
-    return {
-        'name': config['name'],
-        'current_service': ai_service.upper(),
-        'current_model': current_model or 'Unknown',
-        'status': connection_status or 'disconnected',
-        'icon_file': config['icon_file'],
-        'icon_alt': config['icon_alt'],
-        'icon': '🧠'  # Keep emoji as fallback
-    }
 
 
 def check_database_connection(database_url: str):
@@ -233,7 +176,7 @@ def create_app() -> Flask:
     try:
         ai_config = config.get_ai_config()
         ai_provider = AIProviderFactory.create_provider(
-            config.ai_service, 
+            config.ai_service,
             ai_config[config.ai_service],
             cache_manager
         )
@@ -241,6 +184,21 @@ def create_app() -> Flask:
     except Exception as e:
         print(f"Warning: Could not initialize AI provider: {e}")
         ai_provider = None
+
+    def _actual():
+        return actual_identity(config.ai_service, ai_provider.get_current_model() if ai_provider else "")
+
+    def _shown():
+        return display_identity(config, _actual(), selected_model=app.config.get("DISPLAY_MODEL_OVERRIDE"))
+
+    def _provider_ui():
+        return ui_context(_shown(), status="connected" if ai_provider else "disconnected")
+
+    if config.ai_display_provider:
+        shown, actual = _shown(), _actual()
+        _coach_log.getLogger("banko.boot").info(
+            "AI persona: shown as %s · %s, served by %s · %s",
+            shown.provider, shown.model, actual.provider, actual.model)
     
     # --- Boot: listen first, warm up in the background -------------------
     readiness = Readiness()
@@ -278,7 +236,11 @@ def create_app() -> Flask:
             raise RuntimeError(f"{config.ai_service} did not answer")
         if narrate:
             print(f"🔧 {service} Available: True", flush=True)
-            print(f"✅ Active AI Service: {service}", flush=True)
+            if config.ai_display_provider:
+                shown, actual = _shown(), _actual()
+                print(f"✅ Active AI Service: {shown.provider} (served by {actual.provider})", flush=True)
+            else:
+                print(f"✅ Active AI Service: {service}", flush=True)
         return f"{config.ai_service} reachable"
 
     def _personas_step() -> str:
@@ -424,7 +386,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         'username': session.get('username', 'Demo')}
 
         # Get AI provider info for display
-        ai_provider_display = get_provider_display_info(config.ai_service, ai_provider)
+        ai_provider_display = _provider_ui()
         
         return render_template('index.html', 
                              user=current_user,
@@ -849,8 +811,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         """API endpoint for available AI providers."""
         try:
             providers = AIProviderFactory.get_available_providers()
-            current_provider = config.ai_service
-            
+            current_provider = _shown().provider
+
             return jsonify({
                 'success': True,
                 'providers': providers,
@@ -872,17 +834,12 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     'success': False,
                     'error': 'AI provider not available'
                 }), 500
-            
-            available_models = ai_provider.get_available_models()
-            current_model = ai_provider.get_current_model()
-            
-            return jsonify({
-                'success': True,
-                'models': available_models,
-                'current': current_model,
-                'provider': config.ai_service
-            })
-            
+
+            shown = _shown()
+            listed = display_models(config, None) if config.ai_display_provider else None
+            models = listed or display_models(config, ai_provider.get_available_models())
+            return jsonify({'success': True, 'models': models, 'current': shown.model, 'provider': shown.provider})
+
         except Exception as e:
             return jsonify({
                 'success': False,
@@ -898,18 +855,25 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     'success': False,
                     'error': 'AI provider not available'
                 }), 500
-            
+
             data = request.get_json()
             model = data.get('model')
-            
+
             if not model:
                 return jsonify({
                     'success': False,
                     'error': 'Model name is required'
                 }), 400
-            
+
+            if config.ai_display_provider:
+                # Settings guarantee a persona always has at least one model to show.
+                if model not in display_models(config, None):
+                    return jsonify({'success': False, 'error': f'Model {model} is not available'}), 400
+                app.config["DISPLAY_MODEL_OVERRIDE"] = model
+                return jsonify({'success': True, 'message': f'Switched to {model}', 'current_model': model})
+
             success = ai_provider.set_model(model)
-            
+
             if success:
                 return jsonify({
                     'success': True,
@@ -921,11 +885,12 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     'success': False,
                     'error': f'Model {model} is not available'
                 }), 400
-                
+
         except Exception as e:
+            print(e)
             return jsonify({
                 'success': False,
-                'error': str(e)
+                'error': neutral_error(e)
             }), 500
     
     def _db_ping() -> str | None:
@@ -954,10 +919,12 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             'success': db_ok,
             'database': 'connected' if db_ok else 'unreachable',
             'ai_provider': 'connected' if provider_state == 'ready' else provider_state,
-            'ai_service': config.ai_service,
-            'current_model': ai_provider.get_current_model() if ai_provider else 'unknown',
+            'ai_service': _shown().provider,
+            'current_model': _shown().model,
             'ai_provider_available': ai_provider is not None,
             'components': snap,
+            'display': {'provider': _shown().provider, 'model': _shown().model},
+            'actual': {'provider': _actual().provider, 'model': _actual().model},
         }
         if db_error:
             body['error'] = db_error
@@ -1408,11 +1375,11 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 print(f"⚠️  Agent processing error: {agent_error}")
                 import traceback
                 traceback.print_exc()
-                
+
                 # Return error (not fake success)
                 return jsonify({
                     'success': False,
-                    'error': f'Agent processing failed: {str(agent_error)}',
+                    'error': neutral_error(agent_error),
                     'message': 'Receipt uploaded but processing failed. Check server logs.'
                 }), 500
         
@@ -1423,7 +1390,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             print(f"❌ Receipt upload error: {e}")
             return jsonify({
                 'success': False,
-                'error': str(e)
+                'error': neutral_error(e)
             }), 500
     
     @app.route('/banko', methods=['GET', 'POST'])
@@ -1434,9 +1401,9 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             session['chat'] = []
         elif 'chat' not in session:
             session['chat'] = []
-        
+
         # Get AI provider info for display
-        ai_provider_display = get_provider_display_info(config.ai_service, ai_provider)
+        ai_provider_display = _provider_ui()
         
         if request.method == 'POST':
             # One import for every branch below: a local import inside a
@@ -1578,8 +1545,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         if isinstance(e, TRANSIENT_ERRORS):
                             error_message = "Reconnecting to the database, try that again in a moment."
                         else:
-                            error_message = f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}"
-                        print(f"Aggregation error: {str(e)}")
+                            print(f"Aggregation error: {str(e)}")
+                            error_message = neutral_error(e)
                         session['chat'].append({'text': error_message, 'class': 'Assistant'})
                     return render_template('index.html',
                                            chat=session['chat'],
@@ -1666,8 +1633,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     elif isinstance(e, TRANSIENT_ERRORS):
                         error_message = "Reconnecting to the database, try that again in a moment."
                     else:
-                        error_message = f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}"
-                    print(f"Error with {config.ai_service}: {str(e)}")
+                        print(f"Error with {config.ai_service}: {str(e)}")
+                        error_message = neutral_error(e)
                     session['chat'].append({'text': error_message, 'class': 'Assistant'})
                     
         return render_template('index.html', 
@@ -1701,24 +1668,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
     @app.route('/settings')
     def settings():
-        # Get AI provider info for display (without making LLM calls)
-        if ai_provider:
-            # Use cached provider info to avoid LLM calls
-            ai_provider.get_provider_name()
-            current_model = getattr(ai_provider, 'current_model', 'Unknown')
-            # Check if we have API credentials without making a call
-            has_credentials = bool(
-                getattr(ai_provider, 'api_key', None) or 
-                getattr(ai_provider, 'access_key_id', None) or
-                getattr(ai_provider, 'project_id', None)
-            )
-            connection_status = 'connected' if has_credentials else 'demo'
-        else:
-            current_model = 'Unknown'
-            connection_status = 'disconnected'
-        
-        ai_provider_display = get_provider_display_info(config.ai_service, ai_provider, current_model, connection_status)
-        return render_template('dashboard.html', 
+        ai_provider_display = _provider_ui()
+        return render_template('dashboard.html',
                              current_page='settings',
                              ai_provider=ai_provider_display)
 
@@ -2012,7 +1963,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             """), {"u": user_id, "l": limit}).fetchall()
         return jsonify({"nudges": [{
             "nudge_id": str(r[0]), "message": r[1],
-            "provider_used": r[2],
+            "provider_used": display_label(config, r[2]),
             "created_at": r[3].isoformat() if r[3] else None,
             "signal_type": r[4], "severity": r[5],
         } for r in rows]})
@@ -2024,6 +1975,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                                database_url=get_database_url())
         if not result:
             return jsonify({"error": "not found"}), 404
+        result["provider_used"] = display_label(config, result.get("provider_used"))
         return jsonify(result)
 
     @app.route("/api/coach/chat", methods=["POST"])
@@ -2062,6 +2014,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                            "Give it a moment and send that again.",
                 "transient": True,
             }), 503
+        reply["provider_used"] = display_label(config, reply.get("provider_used"))
         return jsonify(reply)
 
     @socketio.on("coach.join")

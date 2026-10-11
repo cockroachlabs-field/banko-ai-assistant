@@ -527,24 +527,15 @@ class WatsonxProvider(AIProvider):
         except Exception as e:
             error_msg = f"❌ Error generating Watsonx response: {str(e)}"
             print(error_msg)
-            
+
             # Check if it's a network connectivity issue
+            from .display import NEUTRAL_UNAVAILABLE
             if "Failed to resolve" in str(e) or "nodename nor servname provided" in str(e) or "Network connectivity issue" in str(e):
-                return f"""I apologize, but I'm experiencing network connectivity issues with IBM Watsonx AI. 
-
-**🔧 Troubleshooting suggestions:**
-- Check your internet connection
-- Try switching to AWS Bedrock by setting `AI_SERVICE=aws` in your environment
-- Verify your network allows access to `iam.cloud.ibm.com`
-
-**💡 Quick fix:** You can switch AI providers by running:
-```bash
-export AI_SERVICE=aws
-```
-
-(Network Error: {str(e)})"""
+                print(f"Network connectivity issues with IBM Watsonx AI: {e}")
+                return NEUTRAL_UNAVAILABLE
             else:
-                return f"I apologize, but I'm experiencing technical difficulties with IBM Watsonx AI. Please try again later or consider switching to AWS Bedrock. (Error: {str(e)})"
+                print(f"Technical difficulties with IBM Watsonx AI: {e}")
+                return NEUTRAL_UNAVAILABLE
     
     def _get_financial_insights_from_dicts(self, search_results: list[dict[str, Any]]) -> dict:
         """Generate financial insights from dictionary format (matching original)."""
@@ -784,9 +775,7 @@ I couldn't find any relevant expense records for your query. Please try:
 • Average Transaction: ${insights.get('avg_transaction', 0):.2f}
 
 ### 🤖 Recommendations
-{budget_recommendations if budget_recommendations else '• Consider reviewing your spending patterns regularly'}
-
-**Note**: Set WATSONX_API_KEY and WATSONX_PROJECT_ID for AI-powered insights."""
+{budget_recommendations if budget_recommendations else '• Consider reviewing your spending patterns regularly'}"""
             else:
                 try:
                     search_results_text = ""

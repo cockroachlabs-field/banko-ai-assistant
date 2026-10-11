@@ -25,6 +25,8 @@ from typing import Any, Protocol
 
 from sqlalchemy import text
 
+from ..ai_providers.display import display_label
+from ..config.settings import get_config
 from .signals import Signal, SignalType
 
 log = logging.getLogger("banko.coach.handler")
@@ -109,7 +111,7 @@ class SignalHandler:
                 "signal_type": signal.signal_type.value,
                 "severity": signal.severity,
                 "message": nudge["message"],
-                "provider_used": nudge.get("provider_used"),
+                "provider_used": display_label(get_config(), nudge.get("provider_used")),
             },
             room=f"{self.socketio_room_prefix}{signal.user_id}",
         )

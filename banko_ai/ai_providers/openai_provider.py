@@ -390,7 +390,9 @@ class OpenAIProvider(AIProvider):
                     else:
                         ai_response = "I apologize, but I couldn't generate a response at this time."
                 else:
-                    ai_response = "No OpenAI client available."
+                    from .display import NEUTRAL_UNAVAILABLE
+                    print("No OpenAI client available.")
+                    ai_response = NEUTRAL_UNAVAILABLE
                     
             except Exception as e:
                 # Fallback to structured response if API call fails (following gemini/watsonx pattern)
