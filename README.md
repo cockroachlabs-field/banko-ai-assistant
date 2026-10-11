@@ -9,7 +9,7 @@ A demo banking assistant that combines vector RAG, a LangGraph multi-agent
 pipeline, and runtime-switchable LLM providers — all backed by a single
 CockroachDB cluster.
 
-![Banko AI Assistant](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/banko_ai/static/banko-ai-assistant-watsonx.gif)
+![Banko AI Assistant](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/banko-ai-assistant-watsonx.gif)
 
 ## What it can do
 
@@ -33,7 +33,7 @@ CockroachDB cluster.
 
 ## How it works
 
-![Banko AI Architecture](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/banko_ai/static/banko-ai-architecture.png)
+![Banko AI Architecture](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/banko-ai-architecture.png)
 
 Five layers, one database:
 
