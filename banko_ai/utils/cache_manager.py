@@ -85,9 +85,8 @@ class BankoCacheManager:
         print(f"   - Similarity threshold: {self.similarity_threshold}")
         print(f"   - TTL: {self.cache_ttl_hours} hours")
         print(f"   - Strict mode: {self.strict_mode}")
-        
+
         self.model = None  # Lazy load the model
-        self._ensure_cache_tables()
     
     def _get_model(self):
         """Lazy load the SentenceTransformer model."""
@@ -101,78 +100,6 @@ class BankoCacheManager:
                 print("Cache functionality will be limited.")
                 return None
         return self.model
-    
-    def _ensure_cache_tables(self):
-        """Create cache tables if they don't exist."""
-        create_tables_sql = text("""
-            -- Query cache for similar questions and responses
-            CREATE TABLE IF NOT EXISTS query_cache (
-                cache_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                query_hash STRING NOT NULL,
-                query_text STRING NOT NULL,
-                query_embedding VECTOR(384),
-                response_text TEXT NOT NULL,
-                response_tokens INTEGER DEFAULT 0,
-                prompt_tokens INTEGER DEFAULT 0,
-                ai_service STRING NOT NULL,
-                language STRING NOT NULL DEFAULT 'en',
-                expense_data_hash STRING,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                hit_count INTEGER DEFAULT 0,
-                last_accessed TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (query_hash, ai_service, language),
-                INDEX idx_query_hash (query_hash),
-                INDEX idx_expires_at (expires_at),
-                INDEX idx_ai_service (ai_service),
-                INDEX idx_expense_hash (expense_data_hash)
-            );
-            
-            -- Embedding cache to avoid regenerating embeddings
-            CREATE TABLE IF NOT EXISTS embedding_cache (
-                embedding_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                text_hash STRING NOT NULL,
-                text_content STRING NOT NULL,
-                embedding VECTOR(384) NOT NULL,
-                model_name STRING NOT NULL DEFAULT 'all-MiniLM-L6-v2',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                access_count INTEGER DEFAULT 0,
-                UNIQUE (text_hash, model_name),
-                INDEX idx_text_hash (text_hash)
-            );
-            
-            -- Vector search results cache
-            CREATE TABLE IF NOT EXISTS vector_search_cache (
-                search_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                query_embedding_hash STRING UNIQUE NOT NULL,
-                search_results JSONB NOT NULL,
-                result_count INTEGER,
-                similarity_threshold FLOAT,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                access_count INTEGER DEFAULT 0,
-                INDEX idx_embedding_hash (query_embedding_hash),
-                INDEX idx_expires_at (expires_at)
-            );
-            
-            -- Cache statistics for monitoring
-            CREATE TABLE IF NOT EXISTS cache_stats (
-                stat_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                cache_type STRING NOT NULL,
-                operation STRING NOT NULL, -- 'hit', 'miss', 'write'
-                tokens_saved INTEGER DEFAULT 0,
-                timestamp TIMESTAMPTZ DEFAULT now(),
-                details JSONB
-            );
-        """)
-        
-        try:
-            with _engine().connect() as conn:
-                conn.execute(create_tables_sql)
-                conn.commit()
-                print("✅ Cache tables initialized successfully")
-        except Exception as e:
-            print(f"⚠️ Error creating cache tables: {e}")
     
     def _generate_hash(self, content: str) -> str:
         """Generate a consistent hash for content."""
