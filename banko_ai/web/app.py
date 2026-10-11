@@ -2233,8 +2233,9 @@ def create_app() -> Flask:
                     import traceback
                     traceback.print_exc()
                     sock.emit('generation_error', {'message': str(e)})
+                finally:
                     generation_state['running'] = False
-        
+
         import threading
         thread = threading.Thread(target=generate_in_background)
         thread.daemon = True

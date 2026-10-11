@@ -351,8 +351,9 @@ JSON:"""
             
         except Exception as e:
             result['errors'].append(f"Unexpected error: {str(e)}")
+        finally:
             self.update_status("idle")
-        
+
         return result
     
     def process_batch(

@@ -14,6 +14,8 @@ from typing import Any
 from langchain_core.tools import Tool
 from sqlalchemy import text
 
+from ...db.engine import get_engine
+
 # OCR imports
 try:
     import pytesseract
@@ -249,7 +251,6 @@ Example:
             # Format embedding as array literal for CockroachDB
             embedding_str = '[' + ','.join(map(str, embedding)) + ']'
             
-            from ..db.engine import get_engine
 
             
             engine = get_engine(database_url)
@@ -311,7 +312,6 @@ Example:
             JSON string with matching expense or None
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             

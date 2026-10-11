@@ -12,6 +12,8 @@ import json
 from langchain_core.tools import Tool
 from sqlalchemy import text
 
+from ...db.engine import get_engine
+
 
 def create_analysis_tools(database_url: str) -> list[Tool]:
     """
@@ -43,7 +45,6 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with statistics
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             
@@ -164,7 +165,6 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with detected anomalies
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             
@@ -253,7 +253,6 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with potential duplicates
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             
@@ -320,7 +319,6 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
             JSON string with comparison
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             

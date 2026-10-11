@@ -13,6 +13,8 @@ from typing import Any
 from langchain_core.tools import Tool
 from sqlalchemy import text
 
+from ...db.engine import get_engine
+
 
 def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
     """
@@ -51,7 +53,6 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             import json
             embedding_json = json.dumps(query_embedding)
             
-            from ..db.engine import get_engine
 
             
             engine = get_engine(database_url)
@@ -125,7 +126,6 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             JSON string with search results
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             
@@ -213,7 +213,6 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             JSON string with expense details
         """
         try:
-            from ..db.engine import get_engine
 
             engine = get_engine(database_url)
             
