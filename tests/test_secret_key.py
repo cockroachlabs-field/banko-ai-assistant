@@ -8,7 +8,7 @@ def _config_with_db(monkeypatch):
     """Helper: build a Config with a database_url set so validate() reaches
     the secret_key block instead of bailing early on DATABASE_URL check."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://nowhere/db")
-    return Config.from_env()
+    return Config()
 
 
 def test_validate_raises_in_prod_when_secret_key_missing(monkeypatch):

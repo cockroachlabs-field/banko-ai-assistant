@@ -10,6 +10,17 @@ if os.getenv("DATABASE_URL"):
     os.environ["DATABASE_URL"] = normalize_db_url(os.environ["DATABASE_URL"])
 
 
+@pytest.fixture(autouse=True)
+def _fresh_settings():
+    """Settings are cached per process. Tests change the environment, so
+    each one starts from a clean read."""
+    from banko_ai.config.settings import reset_config
+
+    reset_config()
+    yield
+    reset_config()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_app_schema():
     """Create the real application schema before any test touches the

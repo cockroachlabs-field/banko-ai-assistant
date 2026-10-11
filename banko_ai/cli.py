@@ -569,6 +569,23 @@ def search(query, user_id, limit):
         click.echo()
 
 
+@cli.command("config")
+@click.option("--docs", is_flag=True, help="Print the README configuration reference instead.")
+def config_cmd(docs):
+    """Show the effective configuration and where each value came from."""
+    from .config.settings import GROUPS, render_config_docs
+
+    if docs:
+        click.echo(render_config_docs(), nl=False)
+        return
+    current = None
+    for info in get_config().describe():
+        if info.group != current:
+            current = info.group
+            click.echo(f"\n[{GROUPS[info.group]}]")
+        click.echo(f"  {info.env:<32} {info.value:<56} ({info.source})")
+
+
 @cli.command()
 @click.option('--yes', is_flag=True, help='Skip confirmation prompt')
 def clear_demo_users(yes):
