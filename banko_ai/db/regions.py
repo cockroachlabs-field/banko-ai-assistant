@@ -202,10 +202,33 @@ def clear_region_caches() -> None:
     _database_regions_cache.clear()
     _tables_ready_cache.clear()
     _gateway_region_cache.clear()
+    _money_tables_regional.clear()
     resolve_user_region_cache_clear()
 
 
 _region_columns_seen: set[tuple[str, str]] = set()
+
+# Every table a money write may pin crdb_region on.
+MONEY_TABLES = ("accounts", "ledger_entries", "transfers", "goals", "user_budgets",
+                "user_data_versions", "expenses")
+_money_tables_regional: set[str] = set()  # database URLs (no password) where all have it
+
+
+def _all_money_tables_regional(conn) -> bool:
+    """Whether every money table has crdb_region yet. On an existing
+    database the conversion to REGIONAL BY ROW runs in the background, one
+    table at a time, and pinning crdb_region on a table that has not
+    converted fails the insert. Positive answers are cached per database."""
+    key = conn.engine.url.render_as_string(hide_password=True)
+    if key in _money_tables_regional:
+        return True
+    found = conn.execute(text("SELECT count(DISTINCT table_name) FROM information_schema.columns "
+                              "WHERE column_name = 'crdb_region' AND table_name = ANY(:t)"),
+                         {"t": list(MONEY_TABLES)}).scalar()
+    if found == len(MONEY_TABLES):
+        _money_tables_regional.add(key)
+        return True
+    return False
 
 
 def money_region(conn, user_id: str, url: str | None = None) -> str | None:
@@ -213,10 +236,13 @@ def money_region(conn, user_id: str, url: str | None = None) -> str | None:
 
     Inserts into REGIONAL BY ROW money tables pin crdb_region to this value,
     so a user's accounts and ledger live where the user lives instead of
-    wherever the gateway node happened to be."""
+    wherever the gateway node happened to be. Until every money table has
+    finished converting, nothing is pinned."""
     from ..config.settings import get_config
 
     if not regional_tables_ready(url or get_config().database_url):
+        return None
+    if not _all_money_tables_regional(conn):
         return None
     row = conn.execute(text("SELECT home_region FROM users WHERE user_id = CAST(:u AS UUID)"),
                        {"u": str(user_id)}).fetchone()

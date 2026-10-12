@@ -93,13 +93,17 @@ def _clamp(year: int, month: int, day: int) -> date:
     return date(year, month, min(day, calendar.monthrange(year, month)[1]))
 
 
-def _add_months(day: date, months: int) -> date:
+def add_months(day: date, months: int) -> date:
     total = day.year * 12 + day.month - 1 + months
     return _clamp(total // 12, total % 12 + 1, day.day)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 def history_start(today: date, months: int) -> date:
-    return _add_months(today, -months)
+    return add_months(today, -months)
 
 
 def _due(day: date, day_of_month: int) -> bool:
@@ -128,8 +132,10 @@ def build_plan(user_id: str, profile: SeedProfile, catalog: Catalog, *, start: d
     by_key = {a.key: a for a in accounts}
     balance = {a.key: a.opening_balance for a in accounts}
     goals = [PlannedGoal(_slug(g.name), g.name, g.icon, _money(g.target_amount),
-                         _add_months(start, g.target_months), g.account) for g in profile.goals]
+                         add_months(start, g.target_months), g.account) for g in profile.goals]
     entries: list[PlannedEntry] = []
+    now = _utcnow()
+    live_today = end == now.date()
 
     def can_spend(key: str, amount: Decimal) -> bool:
         acct = by_key[key]
@@ -146,6 +152,10 @@ def build_plan(user_id: str, profile: SeedProfile, catalog: Catalog, *, start: d
             entry_id = str(uuid.uuid5(NAMESPACE, f"{user_id}:{day.isoformat()}:{counter}"))
             counter += 1
             posted = datetime.combine(day, time(hour, rng.randint(0, 59)), tzinfo=timezone.utc)
+            if day == end and live_today:
+                # Today's entries never land in the future. The draw above
+                # still happens, so ids and amounts stay deterministic.
+                posted = min(posted, now)
             entries.append(PlannedEntry(entry_id, key, posted, amount, kind, description, **extra))
             balance[key] += amount
 
@@ -185,18 +195,18 @@ def build_plan(user_id: str, profile: SeedProfile, catalog: Catalog, *, start: d
         cp = profile.card_payment
         if cp and _due(day, cp.day_of_month):
             owed = -balance[cp.to_account]
-            pay = min(owed, balance[cp.from_account]) if owed > 0 else Decimal("0")
-            if pay > 0:
+            payment = min(owed, balance[cp.from_account]) if owed > 0 else Decimal("0")
+            if payment > 0:
                 r = ref()
-                add(cp.from_account, -pay, "card_payment", "Card payment", hour=8, transfer_ref=r)
-                add(cp.to_account, pay, "card_payment", "Card payment", hour=8, transfer_ref=r)
+                add(cp.from_account, -payment, "card_payment", "Card payment", hour=8, transfer_ref=r)
+                add(cp.to_account, payment, "card_payment", "Card payment", hour=8, transfer_ref=r)
 
-        for spec, goal in zip(profile.goals, goals):
-            contribution = _money(spec.monthly_contribution)
-            if _due(day, spec.day_of_month) and can_spend(spec.from_account, contribution):
+        for goal_spec, goal in zip(profile.goals, goals):
+            contribution = _money(goal_spec.monthly_contribution)
+            if _due(day, goal_spec.day_of_month) and can_spend(goal_spec.from_account, contribution):
                 r = ref()
                 note = f"Goal contribution: {goal.name}"
-                add(spec.from_account, -contribution, "transfer_out", note, hour=7,
+                add(goal_spec.from_account, -contribution, "transfer_out", note, hour=7,
                     goal_key=goal.key, transfer_ref=r)
                 add(goal.account_key, contribution, "transfer_in", note, hour=7,
                     goal_key=goal.key, transfer_ref=r)

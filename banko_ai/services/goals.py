@@ -31,7 +31,8 @@ def list_goals(user_id: str, *, today: date | None = None, url: str | None = Non
                    COALESCE(sum(l.amount) FILTER (WHERE l.amount > 0), 0) AS saved,
                    COALESCE(sum(l.amount) FILTER (WHERE l.amount > 0 AND l.posted_at >= :since), 0) AS recent
             FROM goals AS g
-            LEFT JOIN ledger_entries AS l ON l.goal_id = g.goal_id AND l.account_id = g.account_id
+            LEFT JOIN ledger_entries AS l
+              ON l.goal_id = g.goal_id AND l.account_id = g.account_id AND l.user_id = g.user_id
             WHERE g.user_id = CAST(:u AS UUID)
             GROUP BY g.goal_id, g.name, g.icon, g.target_amount, g.target_date, g.account_id
             ORDER BY g.name

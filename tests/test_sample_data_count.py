@@ -71,3 +71,63 @@ def test_the_sample_data_step_generates_the_configured_count(monkeypatch):
     monkeypatch.setattr("banko_ai.vector_search.generator.EnhancedExpenseGenerator", _Generator)
     assert app_module.auto_setup_data_if_needed("postgresql://unused") == "generated 42 sample expenses"
     assert asked["count"] == 42
+
+
+class _SpyConn:
+    def __init__(self, calls, value=0):
+        self.calls, self.value = calls, value
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, statement, params=None):
+        self.calls.append((str(statement), params or {}))
+        value = self.value
+
+        class _Result:
+            def scalar(self):
+                return value
+
+        return _Result()
+
+
+def _persona_ids():
+    from banko_ai.config.catalog import get_catalog
+    return {p.user_id for p in get_catalog().personas}
+
+
+def test_the_sample_data_count_ignores_persona_rows(monkeypatch):
+    from banko_ai.web import app as app_module
+
+    calls = []
+
+    class _Engine:
+        def connect(self):
+            return _SpyConn(calls, value=500)
+
+    monkeypatch.setenv("BANKO_SKIP_AUTOSETUP", "0")
+    monkeypatch.setattr(app_module, "get_engine", lambda url: _Engine())
+    app_module.auto_setup_data_if_needed("postgresql://unused")
+    sql, params = calls[0]
+    assert "LIMIT 100" in sql
+    assert set(params.get("personas", [])) == _persona_ids()
+
+
+def test_clearing_sample_data_keeps_persona_expenses(monkeypatch):
+    from banko_ai.vector_search.generator import EnhancedExpenseGenerator
+
+    calls = []
+
+    class _Engine:
+        def begin(self):
+            return _SpyConn(calls)
+
+    monkeypatch.setattr(EnhancedExpenseGenerator, "engine", property(lambda self: _Engine()))
+    gen = EnhancedExpenseGenerator.__new__(EnhancedExpenseGenerator)
+    assert gen.clear_expenses() is True
+    sql, params = calls[0]
+    assert sql.startswith("DELETE FROM expenses") and "WHERE" in sql
+    assert set(params.get("personas", [])) == _persona_ids()

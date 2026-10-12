@@ -358,3 +358,19 @@ def test_has_region_column_cache_never_stores_password():
     # Verify "secret" doesn't appear in any cache keys
     for url_str, table_name in regions._region_columns_seen:
         assert "secret" not in url_str, f"Password leaked in cache key: {url_str}"
+
+
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
+def test_money_region_waits_until_every_money_table_has_crdb_region(monkeypatch):
+    """Mid conversion, expenses may carry crdb_region while a money table
+    does not yet; pinning the region then would fail the insert."""
+    from banko_ai.db import regions
+    from tests._money import drop_user, make_user
+
+    monkeypatch.setattr(regions, "regional_tables_ready", lambda url: True)
+    uid = make_user(home_region="us-east1")
+    try:
+        with get_engine().connect() as c:
+            assert regions.money_region(c, uid) is None  # single node: no money table has crdb_region
+    finally:
+        drop_user(uid)

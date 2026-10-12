@@ -85,3 +85,20 @@ def test_budgets_and_goals_come_from_the_profile():
     assert plan.budgets["Restaurant"] == Decimal("600.00")
     assert [g.name for g in plan.goals] == ["Japan trip"]
     assert any(e.goal_key == plan.goals[0].key for e in plan.entries)
+
+
+def test_todays_entries_are_never_posted_in_the_future(monkeypatch):
+    from datetime import datetime, timezone
+
+    from banko_ai.services import seed_plan as P
+
+    early = datetime(END.year, END.month, END.day, 0, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(P, "_utcnow", lambda: early)
+    clamped = _plan()
+    monkeypatch.setattr(P, "_utcnow", lambda: early + timedelta(days=1))
+    unclamped = _plan()
+    assert all(e.posted_at <= early for e in clamped.entries)
+    assert any(e.posted_at > early for e in unclamped.entries)
+    assert [(e.entry_id, e.amount) for e in clamped.entries] == [(e.entry_id, e.amount) for e in unclamped.entries]
+    assert [e.posted_at for e in clamped.entries if e.posted_at.date() < END] == \
+           [e.posted_at for e in unclamped.entries if e.posted_at.date() < END]

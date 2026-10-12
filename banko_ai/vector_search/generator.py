@@ -415,22 +415,31 @@ class EnhancedExpenseGenerator:
         return total_inserted
     
     def clear_expenses(self) -> bool:
-        """Clear all expenses from the database with retry logic."""
+        """Clear the sample expenses, with retry logic. Persona expenses stay:
+        their ledger entries point at them, and deleting one half of a
+        persona's history would leave the other half dangling."""
         import random
         import time
 
         from sqlalchemy import text
         from sqlalchemy.exc import DBAPIError, OperationalError
 
+        from ..config.catalog import CatalogError, get_catalog
         from ..utils.db_retry import is_transient_error
-        
+
+        try:
+            personas = [p.user_id for p in get_catalog().personas]
+        except CatalogError:
+            personas = []
         max_retries = 10  # Increased for multi-region scenarios
         retry_count = 0
         
         while retry_count < max_retries:
             try:
                 with self.engine.begin() as conn:
-                    conn.execute(text("DELETE FROM expenses"))
+                    conn.execute(text("DELETE FROM expenses WHERE user_id IS NULL "
+                                      "OR user_id <> ALL(CAST(:personas AS UUID[]))"),
+                                 {"personas": personas})
                     # Transaction is automatically committed when exiting the context
                     return True
                     

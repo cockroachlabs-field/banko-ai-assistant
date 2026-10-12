@@ -96,8 +96,19 @@ def auto_setup_data_if_needed(database_url: str) -> str:
     if get_config().banko_skip_autosetup:
         print("Skipping data generation (--no-data or BANKO_SKIP_AUTOSETUP)", flush=True)
         return "skipped (BANKO_SKIP_AUTOSETUP)"
+    # Persona history does not count: it can land first, and must never stop
+    # the sample rows the search demo needs from being generated.
+    from ..config.catalog import CatalogError, get_catalog
+    try:
+        personas = [p.user_id for p in get_catalog().personas]
+    except CatalogError:
+        personas = []
     with get_engine(database_url).connect() as conn:
-        rows = conn.execute(text("SELECT count(*) FROM (SELECT 1 FROM expenses LIMIT 100)")).scalar()
+        rows = conn.execute(text("""
+            SELECT count(*) FROM (SELECT 1 FROM expenses
+                                  WHERE user_id IS NULL OR user_id <> ALL(CAST(:personas AS UUID[]))
+                                  LIMIT 100)
+        """), {"personas": personas}).scalar() or 0
         if rows >= 100:
             # Only for the narration; this is the warm-up thread, not boot.
             total = conn.execute(text("SELECT count(*) FROM expenses")).scalar()
