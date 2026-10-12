@@ -335,3 +335,22 @@ def test_region_columns():
     from banko_ai.db.regions import region_columns
     assert region_columns(None) == ("", "")
     assert region_columns("eu-de") == ("crdb_region, ", "CAST(:crdb_region AS crdb_internal_region), ")
+
+
+def test_has_region_column_cache_never_stores_password():
+    from unittest.mock import Mock
+
+    from banko_ai.db import regions
+
+    # Create a stub connection with a URL containing "secret"
+    stub_conn = Mock()
+    stub_conn.engine.url = make_url("cockroachdb+psycopg://u:secret@h:26257/db")
+    stub_conn.execute.return_value.fetchone.return_value = (1,)
+
+    # Call has_region_column, which should cache the result
+    result = regions.has_region_column(stub_conn, "test_table")
+    assert result is True
+
+    # Verify "secret" doesn't appear in any cache keys
+    for url_str, table_name in regions._region_columns_seen:
+        assert "secret" not in url_str, f"Password leaked in cache key: {url_str}"

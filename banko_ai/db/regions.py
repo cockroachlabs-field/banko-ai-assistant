@@ -236,7 +236,8 @@ def has_region_column(conn, table: str) -> bool:
     """Whether the table has crdb_region yet. user_budgets converts to
     REGIONAL BY ROW in the background on existing databases, so writers
     check before pinning. Positive answers are cached per database."""
-    key = (str(conn.engine.url), table)
+    # Cache key never carries the password (explicit hide_password=True)
+    key = (conn.engine.url.render_as_string(hide_password=True), table)
     if key in _region_columns_seen:
         return True
     row = conn.execute(text("SELECT 1 FROM information_schema.columns "
