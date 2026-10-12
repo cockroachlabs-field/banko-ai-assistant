@@ -21,6 +21,7 @@ import re
 import time
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
@@ -29,7 +30,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from ..config.settings import get_config
 from .engine import get_engine
-from .rls import policy_tables, rls_statements, supports_rls
+from .rls import policy_statements, policy_tables, rls_statements, role_statements, supports_rls
 
 log = logging.getLogger("banko.schema")
 narration = logging.getLogger("banko.migration")  # the lines the demo console shows
@@ -592,10 +593,29 @@ def _refresh_lease(conn: Connection, owner: str) -> None:
         raise RuntimeError(f"lease was taken over by another process (owner {owner} no longer holds it)")
 
 
+def _apply_policies_in_parallel(conn: Connection, per_table: dict[str, list[str]]) -> int:
+    """Run each table's statements in order on its own autocommit connection,
+    all tables at once. The first failure re-raises here."""
+    engine = conn.engine
+
+    def run(statements: list[str]) -> int:
+        with engine.connect() as worker:
+            worker.execution_options(isolation_level="AUTOCOMMIT")
+            for sql in statements:
+                log.info("schema: %s", sql)
+                worker.execute(text(sql))
+        return len(statements)
+
+    with ThreadPoolExecutor(max_workers=max(1, len(per_table)), thread_name_prefix="banko-rls") as pool:
+        futures = [pool.submit(run, statements) for statements in per_table.values()]
+        return sum(f.result() for f in futures)
+
+
 def _apply(conn: Connection, topo: Topology, owner: str, *, rls_on: bool = False) -> int:
     existing = set(current_localities(conn))
     is_fresh = len(existing) <= 1  # only banko_meta exists
     count = 0
+    roles_batched = False
 
     # Batch-create all missing tables in one transaction for fresh databases
     missing_tables = [t for t in tables() if t.name not in existing]
@@ -604,6 +624,9 @@ def _apply(conn: Connection, topo: Topology, owner: str, *, rls_on: bool = False
         if is_fresh:
             # Fresh database: batch all table creates in one transaction
             log.info("schema: batch-creating %d tables", len(missing_tables))
+            # The role and its GRANTs ride in the same transaction. The
+            # policy DDL can't (see policy_statements), so it runs after.
+            roles = role_statements([t.name for t in tables()], regional=topo.regional) if rls_on else []
             # Use a fresh connection from the shared engine in a transaction
             engine = conn.engine
             with engine.begin() as txn:
@@ -613,7 +636,11 @@ def _apply(conn: Connection, topo: Topology, owner: str, *, rls_on: bool = False
                     sql = table.create_sql(topo)
                     log.info("schema: %s", sql.splitlines()[0])
                     txn.execute(text(sql))
-            count += len(missing_tables)
+                for sql in roles:
+                    log.info("schema: %s", sql)
+                    txn.execute(text(sql))
+            count += len(missing_tables) + len(roles)
+            roles_batched = bool(roles)
             log.info("schema: created %d tables in %.1fs", len(missing_tables), time.monotonic() - create_started)
             # Refresh lease after batch transaction commits
             _refresh_lease(conn, owner)
@@ -675,7 +702,16 @@ def _apply(conn: Connection, topo: Topology, owner: str, *, rls_on: bool = False
             log.info("schema: ran upgrades in %.1fs", time.monotonic() - upgrade_started)
 
     # Row-level security on the money tables, never on vector tables.
-    if rls_on:
+    if rls_on and roles_batched:
+        # Fresh database: no request can be live yet, and each money table's
+        # pair of statements is independent of the others, so the tables run
+        # side by side. On a multi-region cluster each statement is a schema
+        # change job of several seconds; one after another they took ~50 s.
+        rls_started = time.monotonic()
+        count += _apply_policies_in_parallel(conn, policy_statements())
+        log.info("schema: row-level security in %.1fs", time.monotonic() - rls_started)
+        _refresh_lease(conn, owner)
+    elif rls_on:
         # Tables that already have the policy get ALTER POLICY: no window
         # where a live banko_app request meets RLS without a policy.
         for sql in rls_statements([t.name for t in tables()], regional=topo.regional,

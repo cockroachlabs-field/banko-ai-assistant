@@ -150,6 +150,20 @@ def test_fresh_database_gets_every_table_and_a_fingerprint(scratch_url):
     assert {t.name for t in S.tables()} <= _tables(scratch_url)
     with get_engine(scratch_url).connect() as conn:
         stored = conn.execute(text("SELECT value FROM banko_meta WHERE key = 'schema_fingerprint'")).scalar()
+        if S.supports_rls(conn) and S.get_config().rls_mode != "off":
+            # The fresh path batches the role and grants with the tables
+            # and runs the policy DDL per table; every money table ends up
+            # with RLS on and the policy, and the app role can read.
+            from banko_ai.db import rls
+            assert S.policy_tables(conn) == set(rls.RLS_TABLES)
+            flagged = {r[0] for r in conn.execute(text(
+                "SELECT relname FROM pg_class WHERE relrowsecurity AND relname = ANY(:t)"),
+                {"t": list(rls.RLS_TABLES)})}
+            assert flagged == set(rls.RLS_TABLES)
+            grants = conn.execute(text(
+                "SELECT count(*) FROM [SHOW GRANTS ON TABLE accounts] WHERE grantee = :r"),
+                {"r": rls.APP_ROLE}).scalar()
+            assert grants
     assert result.fingerprint in stored
 
 

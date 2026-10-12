@@ -66,16 +66,33 @@ def rls_statements(table_names: list[str], *, regional: bool = False,
     never sees a table with RLS on and no policy. (A transaction cannot hold
     the pair: CockroachDB commits before each DDL by default, and with
     autocommit_before_ddl off it refuses DROP POLICY.)"""
+    out = role_statements(table_names, regional=regional)
+    for statements in policy_statements(existing).values():
+        out += statements
+    return out
+
+
+def role_statements(table_names: list[str], *, regional: bool = False) -> list[str]:
+    """CREATE ROLE and the GRANTs. Unlike the policy DDL these run inside an
+    explicit transaction, so a fresh schema batches them with its tables."""
     granted = [t for t in table_names if t != "banko_meta"]
     out = [f"CREATE ROLE IF NOT EXISTS {APP_ROLE} WITH LOGIN",
            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {', '.join(granted)} TO {APP_ROLE}",
            f"GRANT SELECT ON TABLE banko_meta TO {APP_ROLE}"]
     if regional:
         out.append(f"GRANT USAGE ON TYPE crdb_internal_region TO {APP_ROLE}")
+    return out
+
+
+def policy_statements(existing: Collection[str] = ()) -> dict[str, list[str]]:
+    """ENABLE ROW LEVEL SECURITY plus the policy, per money table. v26.3
+    implements both only in the declarative schema changer, which refuses
+    them inside an explicit transaction, so each runs on its own."""
+    out = {}
     for table in RLS_TABLES:
         verb = "ALTER" if table in existing else "CREATE"
-        out += [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
-                f"{verb} POLICY {POLICY} ON {table} USING (user_id = {_USER}) WITH CHECK (user_id = {_USER})"]
+        out[table] = [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
+                      f"{verb} POLICY {POLICY} ON {table} USING (user_id = {_USER}) WITH CHECK (user_id = {_USER})"]
     return out
 
 
