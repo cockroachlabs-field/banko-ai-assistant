@@ -5,6 +5,7 @@ ISO strings; errors are neutral and never include exception text."""
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import date
 
@@ -18,6 +19,7 @@ from ..services import accounts, budgets, goals, ledger, recurring, reports, see
 from ..services._sql import jsonable, valid_uuid
 
 api_v1 = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+log = logging.getLogger("banko.api")
 
 
 class _BadRequest(Exception):
@@ -40,9 +42,13 @@ def _date_arg(name: str) -> date | None:
     if not raw:
         return None
     try:
-        return date.fromisoformat(raw)
+        day = date.fromisoformat(raw)
     except ValueError:
         raise _BadRequest(f"{name} must look like 2026-10-01") from None
+    # Far-off years overflow the date math downstream (to + 1 day).
+    if not 1900 <= day.year <= 2999:
+        raise _BadRequest(f"{name} must be a date between 1900 and 2999")
+    return day
 
 
 def _int_arg(name: str, default: int, low: int, high: int) -> int:
@@ -104,8 +110,13 @@ def me():
 def ai():
     shared = current_app.extensions["banko_ai"]
     shown = shared["shown"]()
+    try:
+        models = shared["models"]()
+    except Exception:  # a live model list can fail; the identity still answers
+        log.warning("model list unavailable for /api/v1/ai", exc_info=True)
+        models = []
     return jsonify({"provider": shown.provider, "name": shown.name, "model": shown.model,
-                    "icon": shown.icon_file, "models": shared["models"]()})
+                    "icon": shown.icon_file, "models": models})
 
 
 @api_v1.post("/ai/model")
@@ -252,7 +263,10 @@ def admin_reset():
 
     def run():
         for uid in targets:
-            seeding.reset_user(uid, url=url)
+            try:
+                seeding.reset_user(uid, url=url)
+            except Exception:
+                log.exception("reset of %s failed; moving on to the next persona", uid)
 
     threading.Thread(target=run, daemon=True, name="banko-reset").start()
     return jsonify({"status": "started", "users": len(targets)}), 202
@@ -261,11 +275,10 @@ def admin_reset():
 @api_v1.post("/admin/seed")
 def admin_seed():
     body = _body()
-    try:
-        users = int(body.get("users", 0))
-        months = int(body.get("months", get_config().seed_history_months))
-    except (TypeError, ValueError):
-        raise _BadRequest("users and months must be whole numbers") from None
+    users = body.get("users", 0)
+    months = body.get("months", get_config().seed_history_months)
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (users, months)):
+        raise _BadRequest("users and months must be whole numbers")
     if not 1 <= users <= 200 or not 1 <= months <= 24:
         raise _BadRequest("users must be 1 to 200 and months 1 to 24")
     url = get_config().database_url

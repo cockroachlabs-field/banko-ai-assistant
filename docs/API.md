@@ -109,7 +109,7 @@ the personas are ready.
 | GET | `/api/v1/accounts` | Accounts grouped into cash and credit, with totals, net worth and card utilization | 200 | |
 | GET | `/api/v1/accounts/<id>` | One account | 200 | 404 |
 | GET | `/api/v1/accounts/<id>/statements` | No `month`: the months that have a statement. `?month=YYYY-MM`: opening, credits, charges, closing and entries. Add `&format=csv` for a download | 200 | 400, 404 |
-| GET | `/api/v1/transactions` | Newest first, keyset paged: `limit` (1 to 200, default 50), `cursor` (from `next_cursor`), `category`, `account`, `kind`, `from`, `to`, `min`, `max`. With `q`, a semantic search instead, ranked by vector distance (`limit` default 20, plus `category`, `from`, `to`) | 200 | 400 |
+| GET | `/api/v1/transactions` | Newest first, keyset paged: `limit` (1 to 200, default 50), `cursor` (from `next_cursor`), `category`, `account`, `kind`, `from`, `to` (years 1900 to 2999), `min`, `max`. With `q`, a semantic search instead, ranked by vector distance (`limit` default 20, plus `category`, `from`, `to`) | 200 | 400 |
 | GET | `/api/v1/transactions/<id>` | One transaction, by ledger entry id or expense id | 200 | 404 |
 | GET | `/api/v1/cashflow` | Income, spending, net and savings rate per month, plus totals by category and merchant; `?months=` 1 to 24 (default 6) | 200 | 400 |
 | GET | `/api/v1/budgets` | This month's budgets with spending against each | 200 | |
@@ -122,8 +122,9 @@ the personas are ready.
 | POST | `/api/v1/admin/seed` | Create and seed generated demo users, `{"users": 1-200, "months": 1-24}` | 202 | 400 |
 
 A reset holds the same per-user lease as seeding. If a seed of that persona
-is still running, the reset waits up to 30 seconds and then skips that
-persona without deleting anything (the server log says so).
+is still running, the reset waits up to 30 seconds for it and tries again.
+If the lease is still taken, it skips that persona without deleting anything,
+and the server log says so. One persona failing doesn't stop the others.
 
 ### Examples
 

@@ -426,16 +426,19 @@ def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn 
                today: date | None = None, months: int | None = None) -> int:
     """Delete the user's seed state and money rows, then reseed. Coach
     signals and nudges are left alone. The whole reset holds the user's
-    seeding lease, so it never deletes rows out from under a running seed;
-    when a seed already holds it, the reset waits a moment and then gives
-    up without deleting anything (returns 0)."""
+    seeding lease, so it never deletes rows out from under a running seed.
+    When a seed holds it, the reset waits for that seed and tries once more;
+    if the lease is still taken, it gives up without deleting anything
+    (returns 0)."""
     today = today or datetime.now(timezone.utc).date()
     style, profile = _profile_for(user_id, None, url)
     owner = secrets.token_hex(8)
     if not _claim_lease(user_id, owner, url):
         _wait_for_lease(user_id, url)
-        log.warning("reset of %s skipped: a seed of this user was still running", user_id)
-        return 0
+        if not _claim_lease(user_id, owner, url):
+            log.warning("reset of %s skipped: another seed or reset of this user still held the lease "
+                        "after %ss; nothing was deleted", user_id, LEASE_WAIT_SECONDS)
+            return 0
     try:
         _delete_money_rows(user_id, url)
         return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,

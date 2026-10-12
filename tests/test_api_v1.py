@@ -32,8 +32,8 @@ def app_client(monkeypatch, **env):
     app = create_app()
     _apps.append(app)
     readiness = app.extensions["banko_readiness"]
-    readiness.wait_for("schema", 60)
-    readiness.wait_for("personas", 60)
+    assert readiness.wait_for("schema", 60)
+    assert readiness.wait_for("personas", 60)
     return app.test_client()
 
 
@@ -195,6 +195,59 @@ def test_admin_reset_all_needs_confirmation(client):
     assert client.post("/api/v1/admin/reset", json={"all": True}).status_code == 400
     assert client.post("/api/v1/admin/reset", json={"persona": "nobody-here"}).status_code == 404
     assert client.post("/api/v1/admin/seed", json={"users": 0}).status_code == 400
+
+
+def test_month_with_a_trailing_newline_is_400(client, member):
+    checking, _ = _accounts(member)
+    month = date.today().strftime("%Y-%m")
+    assert client.get(f"/api/v1/accounts/{checking['account_id']}/statements?month={month}%0A").status_code == 400
+
+
+@pytest.mark.parametrize("query", ["to=9999-12-31", "from=0001-01-01", "q=coffee&to=9999-12-31"])
+def test_out_of_range_dates_are_400(client, query):
+    r = client.get(f"/api/v1/transactions?{query}")
+    assert r.status_code == 400 and r.get_json()["error"]
+
+
+@pytest.mark.parametrize("body", [{"users": True}, {"users": 3.7}, {"users": "3"}, {"users": 2, "months": False},
+                                  {"users": 2, "months": 1.5}])
+def test_admin_seed_needs_whole_numbers(client, body):
+    assert client.post("/api/v1/admin/seed", json=body).status_code == 400
+
+
+def test_admin_reset_keeps_going_after_one_persona_fails(client, monkeypatch):
+    import threading
+
+    from banko_ai.services import seeding
+
+    calls, done = [], threading.Event()
+
+    def fake_reset(uid, *, url=None, **kwargs):
+        calls.append(uid)
+        if len(calls) == 3:
+            done.set()
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return 0
+
+    monkeypatch.setattr(seeding, "reset_user", fake_reset)
+    r = client.post("/api/v1/admin/reset", json={"all": True, "confirm": "all users"})
+    assert r.status_code == 202 and r.get_json()["users"] == 3
+    assert done.wait(10) and len(calls) == 3
+
+
+def test_ai_survives_a_model_list_failure(monkeypatch):
+    from banko_ai.ai_providers.ollama_provider import OllamaProvider
+
+    def broken(self):
+        raise RuntimeError("Cannot reach Ollama at http://localhost:11434")
+
+    monkeypatch.setattr(OllamaProvider, "get_available_models", broken)
+    c = app_client(monkeypatch, AI_SERVICE="ollama")
+    r = c.get("/api/v1/ai")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["models"] == [] and body["provider"] == "ollama" and "localhost" not in str(body)
 
 
 def test_api_v1_is_gated_with_json_503_while_warming_up(monkeypatch):

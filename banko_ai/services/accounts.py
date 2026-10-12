@@ -13,7 +13,7 @@ from sqlalchemy import text
 from ._sql import jsonable, read_session, valid_uuid
 
 _KIND_ORDER = {"checking": 0, "savings": 1, "credit": 2}
-_MONTH = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
+_MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
 _ACCOUNT_COLS = "account_id, kind, name, institution, mask, balance, credit_limit, apr, opened_at"
 
 
@@ -51,7 +51,7 @@ def get_account(user_id: str, account_id: str, *, url: str | None = None) -> dic
 
 
 def _month_bounds(month: str) -> tuple[datetime, datetime]:
-    match = _MONTH.match(month or "")
+    match = _MONTH.fullmatch(month or "")
     if not match:
         raise ValueError("month must look like 2026-09")
     year, mon = int(match.group(1)), int(match.group(2))

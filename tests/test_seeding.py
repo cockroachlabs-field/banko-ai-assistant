@@ -182,6 +182,24 @@ def test_reset_while_a_seed_holds_the_lease_deletes_nothing(saver, monkeypatch):
         S._release_lease(saver, "running-seed", None)
 
 
+def test_reset_goes_ahead_when_the_seed_finishes_during_the_wait(saver, monkeypatch):
+    import threading
+
+    S.seed_user(saver, months=1, today=TODAY)
+    assert S._claim_lease(saver, "running-seed", None)
+    monkeypatch.setattr(S, "LEASE_WAIT_SECONDS", 20)
+    timer = threading.Timer(1.5, S._release_lease, args=(saver, "running-seed", None))
+    timer.start()
+    try:
+        assert S.reset_user(saver, today=TODAY, months=1) > 0
+    finally:
+        timer.cancel()
+        S._release_lease(saver, "running-seed", None)
+    assert _count("accounts", saver) == 3
+    assert invariant_violations(saver) == []
+    assert not S._lease_held(saver, None)
+
+
 def test_reset_holds_the_lease_until_the_reseed_is_done(saver, monkeypatch):
     S.seed_user(saver, months=1, today=TODAY)
     seen = []
