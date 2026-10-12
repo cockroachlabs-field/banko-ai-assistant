@@ -46,7 +46,7 @@ class NotFound(LedgerError):
 
 @dataclass(frozen=True)
 class TransferResult:
-    status: str  # ok | insufficient_funds | replay | not_found
+    status: str  # ok | insufficient_funds | replay | key_conflict | not_found
     transfer_id: str | None = None
 
 
@@ -63,7 +63,12 @@ def money(value: Any) -> Decimal:
         raise InvalidAmount(_ENTER_AMOUNT) from None
     if not amount.is_finite():
         raise InvalidAmount(_ENTER_AMOUNT)
-    rounded = amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+    if amount.adjusted() > 11:
+        raise InvalidAmount("That amount is too large")
+    try:
+        rounded = amount.quantize(CENTS, rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise InvalidAmount(_ENTER_AMOUNT) from None
     if not isinstance(value, float) and rounded != amount:
         raise InvalidAmount("Amounts have at most two decimal places")
     return rounded
@@ -94,6 +99,14 @@ def _vector_text(embedding: Sequence[float] | None) -> str | None:
     return "[" + ",".join(repr(float(x)) for x in embedding) + "]"
 
 
+def _uuid(value: Any) -> str:
+    """Normalize and validate a UUID, returning its canonical lowercase form."""
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError):
+        raise NotFound("That account was not found") from None
+
+
 def bump_data_version(conn: Connection, user_id: str, region: str | None) -> None:
     """Advance the user's data version in the same transaction as the write,
     so caches keyed on it can never serve an answer from before the write."""
@@ -118,10 +131,17 @@ def open_account(user_id: str, *, kind: str, name: str, institution: str, mask: 
                  payment_method: str | None = None, opened_at: date | None = None,
                  url: str | None = None) -> str:
     if kind not in ACCOUNT_KINDS:
-        raise LedgerError(f"Unknown account kind '{kind}'")
+        raise LedgerError("Pick checking, savings or credit")
     opening = money(opening_balance)
     limit = money(credit_limit) if credit_limit is not None else None
-    rate = Decimal(str(apr)) if apr is not None else None
+    rate = None
+    if apr is not None:
+        try:
+            rate = Decimal(str(apr))
+            if not (0 <= rate < 1000):
+                raise ValueError
+        except (InvalidOperation, ValueError):
+            raise InvalidAmount("APR must be a number between 0 and 999.99") from None
 
     def fn(conn: Connection) -> str:
         region = money_region(conn, user_id, url)
@@ -144,10 +164,11 @@ def open_account(user_id: str, *, kind: str, name: str, institution: str, mask: 
 def create_goal(user_id: str, *, name: str, icon: str, target_amount: Any, account_id: str,
                 target_date: date | None = None, url: str | None = None) -> str:
     target = _positive(target_amount)
+    acct = _uuid(account_id)
 
     def fn(conn: Connection) -> str:
         owned = conn.execute(text("SELECT 1 FROM accounts WHERE account_id = CAST(:a AS UUID) "
-                                  "AND user_id = CAST(:u AS UUID)"), {"a": account_id, "u": user_id}).fetchone()
+                                  "AND user_id = CAST(:u AS UUID)"), {"a": acct, "u": user_id}).fetchone()
         if owned is None:
             raise NotFound("That account was not found")
         region = money_region(conn, user_id, url)
@@ -157,7 +178,7 @@ def create_goal(user_id: str, *, name: str, icon: str, target_amount: Any, accou
             VALUES ({rval}CAST(:u AS UUID), :name, :icon, :target, :tdate, CAST(:a AS UUID))
             RETURNING goal_id
         """), {"u": user_id, "name": name, "icon": icon, "target": target, "tdate": target_date,
-               "a": account_id, "crdb_region": region}).fetchone()
+               "a": acct, "crdb_region": region}).fetchone()
         bump_data_version(conn, user_id, region)
         return str(row[0])
 
@@ -181,19 +202,20 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
                   expense_id: str | None = None, url: str | None = None) -> str:
     """Record a purchase: the expense, its ledger entry and the balance, together."""
     amt = _positive(amount)
+    acct = _uuid(account_id)
     eid = expense_id or str(uuid.uuid4())
     today = datetime.now(timezone.utc).date()
     day = expense_date or today
 
     def fn(conn: Connection) -> str:
-        kind, balance, limit, account_pm = _lock_account(conn, user_id, account_id)
+        kind, balance, limit, account_pm = _lock_account(conn, user_id, acct)
         if not _can_debit(kind, balance, limit, amt):
             raise InsufficientFunds("Not enough available on that account")
         pay = payment_method or account_pm or ("Credit Card" if kind == "credit" else "Debit Card")
         desc = description or f"Spent ${amt:.2f} on {category.lower()} at {merchant} using {pay}."
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
-        params = {"u": user_id, "a": account_id, "eid": eid, "d": day, "amt": amt, "neg": -amt,
+        params = {"u": user_id, "a": acct, "eid": eid, "d": day, "amt": amt, "neg": -amt,
                   "cat": category, "desc": desc, "merchant": merchant, "pay": pay,
                   "tags": [category.lower(), merchant.lower().replace(" ", "_")],
                   "emb": _vector_text(embedding), "crdb_region": region,
@@ -220,20 +242,21 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
 def record_income(user_id: str, account_id: str, amount: Any, *, description: str = "Income",
                   posted_at: datetime | None = None, url: str | None = None) -> str:
     amt = _positive(amount)
+    acct = _uuid(account_id)
 
     def fn(conn: Connection) -> str:
-        _lock_account(conn, user_id, account_id)
+        _lock_account(conn, user_id, acct)
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
         row = conn.execute(text(f"""
             INSERT INTO ledger_entries ({rcol}user_id, account_id, posted_at, amount, kind, description)
             VALUES ({rval}CAST(:u AS UUID), CAST(:a AS UUID), :posted, :amt, 'income', :desc)
             RETURNING entry_id
-        """), {"u": user_id, "a": account_id, "amt": amt, "desc": description, "crdb_region": region,
+        """), {"u": user_id, "a": acct, "amt": amt, "desc": description, "crdb_region": region,
                "posted": posted_at or datetime.now(timezone.utc)}).fetchone()
         conn.execute(text("UPDATE accounts SET balance = balance + :amt "
                           "WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)"),
-                     {"amt": amt, "a": account_id, "u": user_id})
+                     {"amt": amt, "a": acct, "u": user_id})
         bump_data_version(conn, user_id, region)
         return str(row[0])
 
@@ -244,20 +267,34 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
              kind: str = "transfer", goal_id: str | None = None, url: str | None = None) -> TransferResult:
     """Move money between two of the user's accounts, once per idempotency key."""
     if kind not in TRANSFER_KINDS:
-        raise LedgerError(f"Unknown transfer kind '{kind}'")
-    if from_account == to_account:
+        raise LedgerError("Pick transfer, card payment or goal contribution")
+    from_acct = _uuid(from_account)
+    to_acct = _uuid(to_account) if kind != "goal_contribution" else from_acct
+    if from_acct == to_acct and kind != "goal_contribution":
         raise LedgerError("Pick two different accounts")
     if not idempotency_key or len(idempotency_key) > 128:
         raise LedgerError("An idempotency key of at most 128 characters is required")
     amt = _positive(amount)
+    goal = _uuid(goal_id) if goal_id else None
     out_kind, in_kind = ("card_payment", "card_payment") if kind == "card_payment" else ("transfer_out", "transfer_in")
     label = {"transfer": "Transfer", "card_payment": "Card payment", "goal_contribution": "Goal contribution"}[kind]
 
     def fn(conn: Connection) -> TransferResult:
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
-        params = {"u": user_id, "f": from_account, "t": to_account, "amt": amt, "neg": -amt,
-                  "kind": kind, "g": goal_id, "key": idempotency_key, "desc": label,
+        actual_to_acct = to_acct
+        if goal:
+            goal_row = conn.execute(text("SELECT account_id FROM goals WHERE goal_id = CAST(:g AS UUID) "
+                                         "AND user_id = CAST(:u AS UUID)"), {"g": goal, "u": user_id}).fetchone()
+            if goal_row is None:
+                raise NotFound("That account was not found")
+            goal_acct = str(goal_row[0])
+            if kind == "goal_contribution":
+                actual_to_acct = goal_acct
+            elif goal_acct != to_acct:
+                raise NotFound("That account was not found")
+        params = {"u": user_id, "f": from_acct, "t": actual_to_acct, "amt": amt, "neg": -amt,
+                  "kind": kind, "g": goal, "key": idempotency_key, "desc": label,
                   "ok": out_kind, "ik": in_kind, "crdb_region": region}
         row = conn.execute(text(f"""
             INSERT INTO transfers ({rcol}user_id, kind, from_account, to_account, amount, goal_id, idempotency_key)
@@ -266,8 +303,11 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
             RETURNING transfer_id
         """), params).fetchone()
         if row is None:
-            prior = conn.execute(text("SELECT transfer_id FROM transfers WHERE user_id = CAST(:u AS UUID) "
-                                      "AND idempotency_key = :key"), params).fetchone()
+            prior = conn.execute(text("SELECT transfer_id, from_account, to_account, amount, kind FROM transfers "
+                                      "WHERE user_id = CAST(:u AS UUID) AND idempotency_key = :key"),
+                                 params).fetchone()
+            if prior and (str(prior[1]) != from_acct or str(prior[2]) != actual_to_acct or prior[3] != amt or prior[4] != kind):
+                return TransferResult("key_conflict", str(prior[0]))
             return TransferResult("replay", str(prior[0]) if prior else None)
         params["tid"] = str(row[0])
         accounts = {str(r[0]): r for r in conn.execute(text("""
@@ -275,10 +315,10 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
             WHERE account_id IN (CAST(:f AS UUID), CAST(:t AS UUID)) AND user_id = CAST(:u AS UUID)
             FOR UPDATE
         """), params)}
-        if from_account not in accounts or to_account not in accounts:
+        if from_acct not in accounts or actual_to_acct not in accounts:
             raise NotFound("That account was not found")
-        _, src_kind, src_balance, src_limit = accounts[from_account]
-        _, dst_kind, dst_balance, _ = accounts[to_account]
+        _, src_kind, src_balance, src_limit = accounts[from_acct]
+        _, dst_kind, dst_balance, _ = accounts[actual_to_acct]
         if not _can_debit(src_kind, src_balance, src_limit, amt):
             raise InsufficientFunds("Not enough available on that account")
         if dst_kind == "credit" and dst_balance + amt > 0:
@@ -314,16 +354,7 @@ def card_payment(user_id: str, from_account: str, card_account: str, amount: Any
 
 def goal_contribution(user_id: str, goal_id: str, from_account: str, amount: Any, *,
                       idempotency_key: str, url: str | None = None) -> TransferResult:
-    try:
-        uuid.UUID(str(goal_id))
-    except ValueError:
-        return TransferResult("not_found")
-    with get_engine(url).connect() as conn:
-        row = conn.execute(text("SELECT account_id FROM goals WHERE goal_id = CAST(:g AS UUID) "
-                                "AND user_id = CAST(:u AS UUID)"), {"g": goal_id, "u": user_id}).fetchone()
-    if row is None:
-        return TransferResult("not_found")
-    return transfer(user_id, from_account, str(row[0]), amount, idempotency_key=idempotency_key,
+    return transfer(user_id, from_account, from_account, amount, idempotency_key=idempotency_key,
                     kind="goal_contribution", goal_id=goal_id, url=url)
 
 

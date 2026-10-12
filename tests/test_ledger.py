@@ -39,9 +39,12 @@ def test_money_parsing():
     assert L.money("12.340") == Decimal("12.34")
     assert L.money(Decimal("1e2")) == Decimal("100.00")
     assert L.money(0.1) + L.money(0.2) == Decimal("0.30")
-    for bad in ("12.345", "abc", "NaN", "Infinity", None, [], "1,000", True):
+    assert L.money("-0") == Decimal("0.00")
+    for bad in ("12.345", "abc", "NaN", "Infinity", None, [], "1,000", True, "1e400", "1e30", "1e26", 10**30):
         with pytest.raises(L.InvalidAmount):
             L.money(bad)
+    with pytest.raises(L.InvalidAmount):
+        L._positive("-0")
 
 
 def test_open_account_starts_at_its_opening_balance(user):
@@ -75,6 +78,17 @@ def test_purchase_beyond_funds_writes_nothing(user):
     assert _balance(acct) == Decimal("10.00")
 
 
+def test_record_income_raises_balance_and_writes_income_leg(user):
+    acct = _checking(user, "100.00")
+    entry_id = L.record_income(user, acct, "500.00", description="Payroll")
+    assert _balance(acct) == Decimal("600.00")
+    with get_engine().connect() as c:
+        leg = c.execute(text("SELECT amount, kind, description FROM ledger_entries WHERE entry_id = CAST(:e AS UUID)"),
+                        {"e": entry_id}).fetchone()
+    assert leg == (Decimal("500.00"), "income", "Payroll")
+    assert invariant_violations(user) == []
+
+
 def test_credit_card_respects_its_limit(user):
     card = L.open_account(user, kind="credit", name="Card", institution="Test Bank", mask="0002",
                           opening_balance="-90.00", credit_limit="100.00")
@@ -105,6 +119,36 @@ def test_replayed_key_moves_money_once(user):
     assert (first.status, second.status) == ("ok", "replay")
     assert second.transfer_id == first.transfer_id
     assert _balance(a) == Decimal("75.00")
+
+
+def test_same_key_different_request_returns_key_conflict(user):
+    a, b = _checking(user), _checking(user, "0")
+    first = L.transfer(user, a, b, "25.00", idempotency_key="conflict")
+    second = L.transfer(user, a, b, "30.00", idempotency_key="conflict")
+    assert first.status == "ok"
+    assert second.status == "key_conflict"
+    assert _balance(a) == Decimal("75.00")
+    assert _balance(b) == Decimal("25.00")
+
+
+def test_transfer_refused_for_insufficient_funds_leaves_no_transfer_row(user):
+    a, b = _checking(user, "10.00"), _checking(user, "0")
+    result = L.transfer(user, a, b, "20.00", idempotency_key="poor")
+    assert result.status == "insufficient_funds"
+    with get_engine().connect() as c:
+        assert c.execute(text("SELECT count(*) FROM transfers WHERE user_id = CAST(:u AS UUID)"),
+                         {"u": user}).scalar() == 0
+    L.record_income(user, a, "15.00")
+    result2 = L.transfer(user, a, b, "20.00", idempotency_key="poor")
+    assert result2.status == "ok"
+    assert _balance(a) == Decimal("5.00")
+
+
+def test_transfer_bumps_data_version(user):
+    a, b = _checking(user), _checking(user, "0")
+    assert L.data_version(user) == 2
+    L.transfer(user, a, b, "10.00", idempotency_key="v1")
+    assert L.data_version(user) == 3
 
 
 def test_concurrent_same_key_moves_money_once(user):
@@ -180,6 +224,20 @@ def test_goal_contribution_tags_both_legs(user):
                            {"g": goal}).scalar()
     assert tagged == 2
     assert L.goal_contribution(user, str(uuid.uuid4()), chk, "1.00", idempotency_key="g2").status == "not_found"
+
+
+def test_tagging_transfer_with_another_users_goal_returns_not_found(user):
+    other = make_user()
+    try:
+        my_chk = _checking(user, "100.00")
+        my_sav = L.open_account(user, kind="savings", name="Savings", institution="Test Bank", mask="0006")
+        their_sav = L.open_account(other, kind="savings", name="Savings", institution="Test Bank", mask="0007")
+        their_goal = L.create_goal(other, name="Trip", icon="✈️", target_amount="1000.00", account_id=their_sav)
+        result = L.transfer(user, my_chk, my_sav, "50.00", idempotency_key="x", goal_id=their_goal)
+        assert result.status == "not_found"
+        assert _balance(my_chk) == Decimal("100.00")
+    finally:
+        drop_user(other)
 
 
 def test_history_is_idempotent_and_rebalance_restores_the_invariant(user):
