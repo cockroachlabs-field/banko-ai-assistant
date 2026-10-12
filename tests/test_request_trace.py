@@ -70,11 +70,10 @@ def trace_client(monkeypatch):
     from banko_ai.db.engine import get_engine
     from banko_ai.utils.embeddings import load_embedding_model
     from banko_ai.web.app import create_app
-    from banko_ai.web.auth import UserManager
 
     app = create_app()
     app.extensions["banko_readiness"].wait_for("schema", 60)
-    UserManager(os.environ["DATABASE_URL"]).backfill_personas()
+    app.extensions["banko_readiness"].wait_for("personas", 60)
     model = load_embedding_model(wait_seconds=600)
 
     engine = get_engine()

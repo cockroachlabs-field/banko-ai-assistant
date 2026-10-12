@@ -1,11 +1,12 @@
-"""Shared plumbing for read services: a user-scoped read transaction and a
-converter that makes service results safe to hand to jsonify."""
+"""Shared plumbing for the services: a user-scoped read transaction, a
+converter that makes service results safe to hand to jsonify, and the small
+formatting helpers more than one service needs."""
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
@@ -83,3 +84,17 @@ def valid_uuid(value: Any) -> bool:
         return True
     except ValueError:
         return False
+
+
+def vector_text(embedding: Iterable[float]) -> str:
+    """An embedding as CockroachDB VECTOR text: [0.1,0.2,...]."""
+    return "[" + ",".join(repr(float(x)) for x in embedding) + "]"
+
+
+def month_labels(today: date, months: int) -> list[str]:
+    """The last `months` calendar months as YYYY-MM, oldest first, ending with today's."""
+    labels, year, mon = [], today.year, today.month
+    for _ in range(months):
+        labels.append(f"{year:04d}-{mon:02d}")
+        year, mon = (year - 1, 12) if mon == 1 else (year, mon - 1)
+    return labels[::-1]

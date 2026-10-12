@@ -11,7 +11,7 @@ from decimal import Decimal
 from sqlalchemy import text
 
 from ..db.rls import request_url
-from ._sql import jsonable, read_session, valid_uuid
+from ._sql import jsonable, month_labels, read_session, valid_uuid
 
 _KIND_ORDER = {"checking": 0, "savings": 1, "credit": 2}
 _MONTH = re.compile(r"(\d{4})-(0[1-9]|1[0-2])")
@@ -63,14 +63,6 @@ def _month_bounds(month: str) -> tuple[datetime, datetime]:
     return start, end
 
 
-def _labels(today: date, months: int) -> list[str]:
-    out, year, mon = [], today.year, today.month
-    for _ in range(months):
-        out.append(f"{year:04d}-{mon:02d}")
-        year, mon = (year - 1, 12) if mon == 1 else (year, mon - 1)
-    return out[::-1]
-
-
 def net_worth_history(user_id: str, *, months: int = 12, today: date | None = None,
                       url: str | None = None) -> list[dict]:
     url = request_url(url)
@@ -85,7 +77,7 @@ def net_worth_history(user_id: str, *, months: int = 12, today: date | None = No
             GROUP BY m ORDER BY m
         """), {"u": user_id}).fetchall()
     by_month = {m: total for m, total in rows}
-    labels = _labels(today, months)
+    labels = month_labels(today, months)
     running = opening + sum((v for m, v in by_month.items() if m < labels[0]), Decimal("0"))
     out = []
     for label in labels:

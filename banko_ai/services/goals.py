@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import calendar
 import math
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -13,12 +12,7 @@ from sqlalchemy import text
 from ..db.rls import request_url
 from . import ledger
 from ._sql import jsonable, read_session
-
-
-def _add_months(day: date, months: int) -> date:
-    total = day.year * 12 + day.month - 1 + months
-    year, month = total // 12, total % 12 + 1
-    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+from .seed_plan import add_months
 
 
 def list_goals(user_id: str, *, today: date | None = None, url: str | None = None) -> list[dict]:
@@ -45,7 +39,7 @@ def list_goals(user_id: str, *, today: date | None = None, url: str | None = Non
         if remaining == 0:
             projected = today
         elif pace > 0:
-            projected = _add_months(today, math.ceil(remaining / pace))
+            projected = add_months(today, math.ceil(remaining / pace))
         out.append({"goal_id": str(goal_id), "name": name, "icon": icon, "target_amount": target,
                     "target_date": target_date, "account_id": str(account_id), "saved": saved,
                     "remaining": remaining, "progress": float(round(min(saved / target, Decimal("1")), 4)),

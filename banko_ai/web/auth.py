@@ -164,11 +164,6 @@ class UserManager:
             )
             conn.commit()
 
-    def backfill_personas(self) -> None:
-        """Upsert the catalog's demo personas (idempotent)."""
-        from ..services.seeding import ensure_personas
-        ensure_personas(self.database_url)
-
     def get_current_user(self) -> dict[str, Any] | None:
         """Get current user from Flask session."""
         user_id = session.get('user_id')

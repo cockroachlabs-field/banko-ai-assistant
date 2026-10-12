@@ -26,14 +26,14 @@ needs_db = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_UR
 def client(monkeypatch):
     monkeypatch.setenv("MAX_UPLOAD_MB", "1")
     from banko_ai.web.app import create_app
-    from banko_ai.web.auth import UserManager
     app = create_app()
     app.config["TESTING"] = True
     c = app.test_client()
     app.extensions["banko_readiness"].wait_for("schema", 60)
-    # The warm-up backfills personas asynchronously; the cookie test signs in as maya now.
-    UserManager(os.environ["DATABASE_URL"]).backfill_personas()
-    return c
+    # The warm-up writes the personas asynchronously; the cookie test signs in as maya now.
+    app.extensions["banko_readiness"].wait_for("personas", 60)
+    yield c
+    app.extensions["banko_warmup_stop"].set()
 
 
 @needs_db

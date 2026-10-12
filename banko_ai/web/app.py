@@ -735,7 +735,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         region = None
         if username and session.get('user_id'):
             try:
-                from ..utils.migration import regional_tables_ready
+                from ..db.regions import regional_tables_ready
                 if regional_tables_ready(config.database_url):
                     from .auth import resolve_user_region
                     region = resolve_user_region(session['user_id'], config.database_url)
@@ -1089,7 +1089,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             # cluster's gateway region when multi-region, 'local' otherwise.
             # Hardcoded AWS names here used to reach the dashboard no
             # matter what cluster was underneath.
-            from banko_ai.utils.migration import agent_home_region
+            from banko_ai.db.regions import agent_home_region
             agent_region = agent_home_region(config.database_url)
 
             # Initialize Receipt Agent
@@ -1259,7 +1259,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         # Pin the row to the uploader's home region like every
                         # other expenses writer, or the region-pruned reads
                         # silently exclude uploaded receipts.
-                        from banko_ai.utils.migration import regional_tables_ready
+                        from banko_ai.db.regions import regional_tables_ready
 
                         from .auth import resolve_user_region as _resolve_region
                         receipt_region = (_resolve_region(user_id, config.database_url)
@@ -1550,7 +1550,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             # the other branches crash on it. Gated on the deployment being
             # regional so a failed RBR migration (tables without
             # crdb_region) can never poison the read path.
-            from ..utils.migration import regional_tables_ready
+            from ..db.regions import regional_tables_ready
             from .auth import resolve_user_region as _resolve_region_raw
 
             def resolve_user_region(user_id, database_url):
@@ -2057,7 +2057,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         the same envelope twice without producing duplicate nudges."""
         from sqlalchemy.exc import IntegrityError
 
-        from banko_ai.utils.migration import regional_tables_ready
+        from banko_ai.db.regions import regional_tables_ready
         from banko_ai.web.auth import resolve_user_region as _resolve_region
 
         from ..db.engine import get_engine

@@ -11,21 +11,13 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..db.rls import request_url
 from . import accounts, budgets, recurring, transactions
-from ._sql import jsonable, read_session
-
-
-def _month_labels(today: date, months: int) -> list[str]:
-    labels, year, mon = [], today.year, today.month
-    for _ in range(months):
-        labels.append(f"{year:04d}-{mon:02d}")
-        year, mon = (year - 1, 12) if mon == 1 else (year, mon - 1)
-    return labels[::-1]
+from ._sql import jsonable, month_labels, read_session
 
 
 def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: str | None = None) -> dict:
     url = request_url(url)
     today = today or datetime.now(timezone.utc).date()
-    labels = _month_labels(today, months)
+    labels = month_labels(today, months)
     start = date.fromisoformat(f"{labels[0]}-01")
     with read_session(user_id, url=url, follower=True) as conn:
         income = dict(conn.execute(text("""

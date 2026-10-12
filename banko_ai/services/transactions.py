@@ -13,7 +13,7 @@ from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.regions import regional_tables_ready
 from ..db.rls import request_url
-from ._sql import jsonable, read_session, valid_uuid
+from ._sql import jsonable, read_session, valid_uuid, vector_text
 
 MAX_LIMIT = 200
 MAX_K = 500
@@ -140,13 +140,9 @@ def semantic_sql(filters: str = "") -> str:
     """
 
 
-def _vector_text(vec) -> str:
-    return "[" + ",".join(repr(float(x)) for x in vec) + "]"
-
-
 def _qvec(text_query: str) -> str:
     from ..utils.embeddings import load_embedding_model
-    return _vector_text(load_embedding_model().encode([text_query])[0])
+    return vector_text(load_embedding_model().encode([text_query])[0])
 
 
 def _semantic_rows(conn, user_id: str, qvec: str, *, limit: int, k: int, filters: str = "", extra=None):
@@ -163,7 +159,8 @@ def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, categ
         return {"items": []}
     limit = max(1, min(int(limit), MAX_LIMIT))
     k = max(limit, min(int(k), MAX_K))
-    filters, extra = [], {}
+    filters: list[str] = []
+    extra: dict[str, Any] = {}
     if category:
         filters.append("AND lower(e.shopping_type) = ANY(CAST(:cats AS STRING[]))")
         extra["cats"] = _category_names(category)

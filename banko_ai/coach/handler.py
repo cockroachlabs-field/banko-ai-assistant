@@ -152,7 +152,7 @@ class SignalHandler:
     def _persist_nudge(self, signal: Signal, nudge: dict[str, Any]) -> str:
         eng = self._engine()
         with eng.begin() as conn:
-            from ..utils.migration import regional_tables_ready
+            from ..db.regions import regional_tables_ready
             from ..web.auth import resolve_user_region
 
             cols = ["signal_id", "user_id", "message", "tool_trace",

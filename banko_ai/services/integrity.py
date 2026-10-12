@@ -43,9 +43,10 @@ def _run(url: str | None, follower: bool, user_id: str | None) -> IntegrityRepor
     aost = _FOLLOWER if follower else ""
     where = "WHERE a.user_id = CAST(:u AS UUID)" if user_id else ""
     with get_engine(url).connect() as conn:
-        count = conn.execute(text(f"SELECT count(*) FROM accounts AS a {aost} {where}"), {"u": user_id}).scalar()
+        count = int(conn.execute(text(f"SELECT count(*) FROM accounts AS a {aost} {where}"),
+                                 {"u": user_id}).scalar() or 0)
         if count > cfg.integrity_max_accounts:
-            return IntegrityReport(datetime.now(timezone.utc), int(count), (),
+            return IntegrityReport(datetime.now(timezone.utc), count, (),
                                    skipped=f"more than {cfg.integrity_max_accounts} accounts",
                                    follower_reads=follower)
         rows = conn.execute(text(f"""
@@ -59,7 +60,7 @@ def _run(url: str | None, follower: bool, user_id: str | None) -> IntegrityRepor
     drifted = tuple({"account_id": str(r[0]), "user_id": str(r[1]),
                      "balance": float(r[2]), "expected": float(r[3])}
                     for r in rows if r[2] != r[3])
-    return IntegrityReport(datetime.now(timezone.utc), int(count), drifted, follower_reads=follower)
+    return IntegrityReport(datetime.now(timezone.utc), count, drifted, follower_reads=follower)
 
 
 def check_integrity(*, url: str | None = None, follower_reads: bool = True,

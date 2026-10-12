@@ -22,6 +22,7 @@ from ..config.settings import get_config
 from ..db.engine import get_engine, run_transaction
 from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
+from ._sql import vector_text
 
 CENTS = Decimal("0.01")
 ACCOUNT_KINDS = ("checking", "savings", "credit")
@@ -92,12 +93,6 @@ def _can_debit(kind: str, balance: Decimal, limit: Decimal | None, amount: Decim
     if kind == "checking":
         return after >= -Decimal(str(get_config().checking_overdraft_limit))
     return after >= 0
-
-
-def _vector_text(embedding: Sequence[float] | None) -> str | None:
-    if embedding is None:
-        return None
-    return "[" + ",".join(repr(float(x)) for x in embedding) + "]"
 
 
 def _uuid(value: Any) -> str:
@@ -223,7 +218,8 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
         params = {"u": user_id, "a": acct, "eid": eid, "d": day, "amt": amt, "neg": -amt,
                   "cat": category, "desc": desc, "merchant": merchant, "pay": pay,
                   "tags": [category.lower(), merchant.lower().replace(" ", "_")],
-                  "emb": _vector_text(embedding), "crdb_region": region,
+                  "emb": vector_text(embedding) if embedding is not None else None,
+                  "crdb_region": region,
                   "posted": datetime.now(timezone.utc) if day == today
                   else datetime.combine(day, time(12, 0), tzinfo=timezone.utc)}
         conn.execute(text(f"""
@@ -320,7 +316,8 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
             if prior and (str(prior[1]) != from_acct or str(prior[2]) != actual_to_acct or prior[3] != amt or prior[4] != kind):
                 return TransferResult("key_conflict", str(prior[0]))
             return TransferResult("replay", str(prior[0]) if prior else None)
-        params["tid"] = str(row[0])
+        transfer_id = str(row[0])
+        params["tid"] = transfer_id
         accounts = {str(r[0]): r for r in conn.execute(text("""
             SELECT account_id, kind, balance, credit_limit FROM accounts
             WHERE account_id IN (CAST(:f AS UUID), CAST(:t AS UUID)) AND user_id = CAST(:u AS UUID)
@@ -347,7 +344,7 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
                    ({rval}CAST(:u AS UUID), CAST(:t AS UUID), now(), :amt, :ik, :desc, CAST(:tid AS UUID), CAST(:g AS UUID))
         """), params)
         bump_data_version(conn, user_id, region)
-        return TransferResult("ok", params["tid"])
+        return TransferResult("ok", transfer_id)
 
     try:
         return run_transaction(fn, url=url, user_id=user_id, idempotent=True)

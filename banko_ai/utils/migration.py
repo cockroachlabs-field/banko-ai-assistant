@@ -11,19 +11,7 @@ from .db_retry import get_database_url
 
 log = logging.getLogger("banko.migration")
 
-from ..db.regions import (  # noqa: F401  (re-exported for older imports)
-    agent_home_region,
-    clear_region_caches,
-    detect_database_regions,
-    detect_regions,
-    has_region_column,
-    is_regional_deployment,
-    money_region,
-    region_columns,
-    regional_tables_ready,
-    resolve_primary_region,
-    resolve_user_region_cache_clear,
-)
+from ..db.regions import detect_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 
 

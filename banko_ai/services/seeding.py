@@ -23,6 +23,7 @@ from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine, run_transaction
 from ..db.regions import detect_database_regions, has_region_column, money_region, region_columns
+from ._sql import vector_text
 from .ledger import HistoryRow, bump_data_version, create_goal, open_account, post_history, rebalance
 from .seed_plan import SeedPlan, build_plan, history_start
 
@@ -51,10 +52,6 @@ def _report(user_id: str, done: int, total: int, state: str, on_progress: Progre
 
 def _batch_size() -> int:
     return max(1, get_config().seed_batch_size)
-
-
-def _vector_text(vec) -> str:
-    return "[" + ",".join(repr(float(x)) for x in vec) + "]"
 
 
 def upsert_categories(url: str | None = None) -> int:
@@ -325,17 +322,18 @@ def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
         for i in range(0, total, size):
             batch = todo[i:i + size]
             purchases = [e for e in batch if e.is_purchase]
-            vectors = iter(model.encode([e.description for e in purchases])) if purchases else iter(())
+            vectors = iter(model.encode([e.description for e in purchases])) if model and purchases else iter(())
             rows = []
             for e in batch:
                 expense = None
                 if e.is_purchase:
+                    category, merchant = e.category or "", e.merchant or ""  # always set on purchases
                     expense = {"expense_id": e.expense_id, "expense_date": e.posted_at.date(),
-                               "expense_amount": -e.amount, "shopping_type": e.category,
-                               "merchant": e.merchant, "payment_method": payment_by_key[e.account_key],
+                               "expense_amount": -e.amount, "shopping_type": category,
+                               "merchant": merchant, "payment_method": payment_by_key[e.account_key],
                                "recurring": e.recurring,
-                               "tags": [e.category.lower(), e.merchant.lower().replace(" ", "_")],
-                               "embedding": _vector_text(next(vectors))}
+                               "tags": [category.lower(), merchant.lower().replace(" ", "_")],
+                               "embedding": vector_text(next(vectors))}
                 rows.append(HistoryRow(entry_id=e.entry_id, account_id=account_ids[e.account_key],
                                        posted_at=e.posted_at, amount=e.amount, kind=e.kind,
                                        description=e.description, expense=expense,

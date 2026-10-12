@@ -58,10 +58,9 @@ def persona_client(monkeypatch):
     monkeypatch.setenv("AI_DISPLAY_PROVIDER", "watsonx")
     monkeypatch.setenv("AI_DISPLAY_MODEL", "ibm/granite-3-3-8b-instruct")
     from banko_ai.web.app import create_app
-    from banko_ai.web.auth import UserManager
     app = create_app()
     app.extensions["banko_readiness"].wait_for("schema", 60)
-    UserManager(os.environ["DATABASE_URL"]).backfill_personas()
+    app.extensions["banko_readiness"].wait_for("personas", 60)
     client = app.test_client()
     client.post("/login", data={"username": "maya"})
     yield client
@@ -111,7 +110,6 @@ def test_rag_api_metadata_shows_the_persona(monkeypatch):
     monkeypatch.setenv("AI_DISPLAY_MODEL", "ibm/granite-3-3-8b-instruct")
 
     from banko_ai.web.app import create_app
-    from banko_ai.web.auth import UserManager
 
     fake_response = FakeRAGResponse(
         response="Here's your answer",
@@ -123,7 +121,7 @@ def test_rag_api_metadata_shows_the_persona(monkeypatch):
     with patch('banko_ai.ai_providers.ollama_provider.OllamaProvider.generate_rag_response', return_value=fake_response):
         app = create_app()
         app.extensions["banko_readiness"].wait_for("schema", 60)
-        UserManager(os.environ["DATABASE_URL"]).backfill_personas()
+        app.extensions["banko_readiness"].wait_for("personas", 60)
 
         client = app.test_client()
         client.post("/login", data={"username": "maya"})
@@ -149,12 +147,11 @@ def test_no_persona_keeps_the_real_provider(monkeypatch):
     # No AI_DISPLAY_PROVIDER set
 
     from banko_ai.web.app import create_app
-    from banko_ai.web.auth import UserManager
 
     with patch('banko_ai.ai_providers.ollama_provider.OllamaProvider.set_model', return_value=True) as mock_set_model:
         app = create_app()
         app.extensions["banko_readiness"].wait_for("schema", 60)
-        UserManager(os.environ["DATABASE_URL"]).backfill_personas()
+        app.extensions["banko_readiness"].wait_for("personas", 60)
 
         client = app.test_client()
         client.post("/login", data={"username": "maya"})

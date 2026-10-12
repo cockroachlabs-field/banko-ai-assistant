@@ -301,8 +301,8 @@ class EnhancedExpenseGenerator:
         import pandas as pd
         from sqlalchemy.exc import DBAPIError, OperationalError
 
+        from ..db.regions import regional_tables_ready
         from ..utils.db_retry import is_transient_error
-        from ..utils.migration import regional_tables_ready
         from ..web.auth import resolve_user_region
 
         is_regional = regional_tables_ready(self.database_url)
