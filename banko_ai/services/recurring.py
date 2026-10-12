@@ -20,6 +20,7 @@ from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
+from ..db.rls import request_url
 from ._sql import jsonable, read_session
 
 _CADENCES = (("weekly", 5, 9, 2), ("monthly", 26, 35, 4), ("yearly", 350, 380, 10))
@@ -57,6 +58,7 @@ def _steady(amounts: list[Decimal]) -> bool:
 
 
 def detect_recurring(user_id: str, *, today: date | None = None, url: str | None = None) -> list[Recurring]:
+    url = request_url(url)
     cfg = get_config()
     today = today or datetime.now(timezone.utc).date()
     with read_session(user_id, url=url, follower=True) as conn:

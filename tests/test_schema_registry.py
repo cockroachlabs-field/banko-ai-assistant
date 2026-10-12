@@ -28,6 +28,10 @@ def test_fingerprint_is_stable_and_topology_aware():
     assert S.fingerprint(PLAIN) != S.fingerprint(REGIONAL)
 
 
+def test_fingerprint_changes_with_rls():
+    assert S.fingerprint(PLAIN, rls=True) != S.fingerprint(PLAIN, rls=False)
+
+
 def test_regional_tables_are_born_with_their_locality():
     sql = _sql(REGIONAL)
     assert sql["expenses"].endswith("LOCALITY REGIONAL BY ROW")

@@ -9,6 +9,7 @@ from decimal import Decimal
 from sqlalchemy import text
 
 from ..config.catalog import get_catalog
+from ..db.rls import request_url
 from . import accounts, budgets, recurring, transactions
 from ._sql import jsonable, read_session
 
@@ -22,6 +23,7 @@ def _month_labels(today: date, months: int) -> list[str]:
 
 
 def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: str | None = None) -> dict:
+    url = request_url(url)
     today = today or datetime.now(timezone.utc).date()
     labels = _month_labels(today, months)
     start = date.fromisoformat(f"{labels[0]}-01")
@@ -65,6 +67,7 @@ def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: s
 
 
 def spending_pace(user_id: str, *, today: date | None = None, url: str | None = None) -> dict:
+    url = request_url(url)
     today = today or datetime.now(timezone.utc).date()
     this_first = today.replace(day=1)
     last_first = date(this_first.year - (this_first.month == 1),
@@ -91,6 +94,7 @@ def spending_pace(user_id: str, *, today: date | None = None, url: str | None = 
 
 
 def latest_insight(user_id: str, *, url: str | None = None) -> dict | None:
+    url = request_url(url)
     with read_session(user_id, url=url) as conn:
         row = conn.execute(text("SELECT message, created_at FROM coach_nudges WHERE user_id = CAST(:u AS UUID) "
                                 "ORDER BY created_at DESC LIMIT 1"), {"u": user_id}).fetchone()

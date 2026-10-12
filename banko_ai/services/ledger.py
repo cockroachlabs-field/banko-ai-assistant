@@ -21,6 +21,7 @@ from sqlalchemy.engine import Connection
 from ..config.settings import get_config
 from ..db.engine import get_engine, run_transaction
 from ..db.regions import money_region, region_columns
+from ..db.rls import request_url
 
 CENTS = Decimal("0.01")
 ACCOUNT_KINDS = ("checking", "savings", "credit")
@@ -120,6 +121,7 @@ def bump_data_version(conn: Connection, user_id: str, region: str | None) -> Non
 
 
 def data_version(user_id: str, url: str | None = None) -> int:
+    url = request_url(url)
     with get_engine(url).connect() as conn:
         value = conn.execute(text("SELECT version FROM user_data_versions WHERE user_id = CAST(:u AS UUID)"),
                              {"u": user_id}).scalar()
@@ -130,6 +132,7 @@ def open_account(user_id: str, *, kind: str, name: str, institution: str, mask: 
                  opening_balance: Any = 0, credit_limit: Any = None, apr: Any = None,
                  payment_method: str | None = None, opened_at: date | None = None,
                  url: str | None = None) -> str:
+    url = request_url(url)
     if kind not in ACCOUNT_KINDS:
         raise LedgerError("Pick checking, savings or credit")
     opening = money(opening_balance)
@@ -163,6 +166,7 @@ def open_account(user_id: str, *, kind: str, name: str, institution: str, mask: 
 
 def create_goal(user_id: str, *, name: str, icon: str, target_amount: Any, account_id: str,
                 target_date: date | None = None, url: str | None = None) -> str:
+    url = request_url(url)
     target = _positive(target_amount)
     acct = _uuid(account_id)
 
@@ -201,6 +205,7 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
                   expense_date: date | None = None, embedding: Sequence[float] | None = None,
                   expense_id: str | None = None, url: str | None = None) -> str:
     """Record a purchase: the expense, its ledger entry and the balance, together."""
+    url = request_url(url)
     amt = _positive(amount)
     acct = _uuid(account_id)
     eid = expense_id or str(uuid.uuid4())
@@ -241,6 +246,7 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
 
 def record_income(user_id: str, account_id: str, amount: Any, *, description: str = "Income",
                   posted_at: datetime | None = None, url: str | None = None) -> str:
+    url = request_url(url)
     amt = _positive(amount)
     acct = _uuid(account_id)
 
@@ -266,6 +272,7 @@ def record_income(user_id: str, account_id: str, amount: Any, *, description: st
 def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, idempotency_key: str,
              kind: str = "transfer", goal_id: str | None = None, url: str | None = None) -> TransferResult:
     """Move money between two of the user's accounts, once per idempotency key."""
+    url = request_url(url)
     if kind not in TRANSFER_KINDS:
         raise LedgerError("Pick transfer, card payment or goal contribution")
     from_acct = _uuid(from_account)
@@ -354,6 +361,7 @@ def card_payment(user_id: str, from_account: str, card_account: str, amount: Any
 
 def goal_contribution(user_id: str, goal_id: str, from_account: str, amount: Any, *,
                       idempotency_key: str, url: str | None = None) -> TransferResult:
+    url = request_url(url)
     return transfer(user_id, from_account, from_account, amount, idempotency_key=idempotency_key,
                     kind="goal_contribution", goal_id=goal_id, url=url)
 

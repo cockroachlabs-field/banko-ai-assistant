@@ -29,6 +29,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from ..config.settings import get_config
 from .engine import get_engine
+from .rls import rls_statements, supports_rls
 
 log = logging.getLogger("banko.schema")
 narration = logging.getLogger("banko.migration")  # the lines the demo console shows
@@ -385,9 +386,9 @@ def tables() -> tuple[Table, ...]:
     )
 
 
-def fingerprint(topo: Topology) -> str:
+def fingerprint(topo: Topology, *, rls: bool = False) -> str:
     rendered = "\n".join(t.create_sql(topo) for t in tables())
-    digest = hashlib.sha256(f"{REGISTRY_VERSION}|{topo.regional}|{rendered}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{REGISTRY_VERSION}|{topo.regional}|rls={rls}|{rendered}".encode()).hexdigest()
     return digest[:16]
 
 
@@ -591,7 +592,7 @@ def _refresh_lease(conn: Connection, owner: str) -> None:
         raise RuntimeError(f"lease was taken over by another process (owner {owner} no longer holds it)")
 
 
-def _apply(conn: Connection, topo: Topology, owner: str) -> int:
+def _apply(conn: Connection, topo: Topology, owner: str, *, rls_on: bool = False) -> int:
     existing = set(current_localities(conn))
     is_fresh = len(existing) <= 1  # only banko_meta exists
     count = 0
@@ -673,11 +674,20 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
         if count > len(missing_tables):
             log.info("schema: ran upgrades in %.1fs", time.monotonic() - upgrade_started)
 
+    # Row-level security on the money tables, never on vector tables.
+    if rls_on:
+        for sql in rls_statements([t.name for t in tables()], regional=topo.regional):
+            log.info("schema: %s", sql)
+            conn.execute(text(sql))
+            count += 1
+        _refresh_lease(conn, owner)
+
     return count
 
 
-def _write_fingerprint(conn: Connection, fp: str, topo: Topology) -> None:
-    value = json.dumps({"fingerprint": fp, "regional": topo.regional, "version": REGISTRY_VERSION})
+def _write_fingerprint(conn: Connection, fp: str, topo: Topology, *, rls_on: bool = False) -> None:
+    value = json.dumps({"fingerprint": fp, "regional": topo.regional, "version": REGISTRY_VERSION,
+                        "rls": rls_on, "rls_mode": get_config().rls_mode})
     conn.execute(text("UPSERT INTO banko_meta (key, value, updated_at) VALUES (:k, :v, now())"),
                  {"k": FINGERPRINT_KEY, "v": value})
 
@@ -697,7 +707,11 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
     with get_engine(url).connect() as conn:
         conn.execution_options(isolation_level="AUTOCOMMIT")
         stored = None if force else _stored(conn)
-        if stored and stored.get("fingerprint") == fingerprint(Topology(regional=bool(stored.get("regional")))):
+        # The fast path stays one SELECT: whether RLS was applied comes from
+        # the stored value, and a changed RLS_MODE forces the slow path.
+        if (stored and stored.get("rls_mode") == get_config().rls_mode
+                and stored.get("fingerprint") == fingerprint(Topology(regional=bool(stored.get("regional"))),
+                                                             rls=bool(stored.get("rls")))):
             return SchemaResult(changed=False, fingerprint=stored["fingerprint"],
                                 seconds=time.monotonic() - started)
 
@@ -712,7 +726,9 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
 
         topo = detect_topology(conn)
         _ensure_meta(conn, topo)
-        want = fingerprint(topo)
+        # After _ensure_meta: supports_rls probes SHOW POLICIES on banko_meta.
+        rls_on = get_config().rls_mode != "off" and supports_rls(conn)
+        want = fingerprint(topo, rls=rls_on)
 
         owner = uuid.uuid4().hex
         if not _acquire_lock(conn, owner):
@@ -739,14 +755,14 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
             else:
                 progress("Creating the schema.")
             apply_started = time.monotonic()
-            count = _apply(conn, topo, owner)
+            count = _apply(conn, topo, owner, rls_on=rls_on)
             log.info("schema: apply phase %.1fs (%d statements)",
                      time.monotonic() - apply_started, count)
 
             # Phase 3: Plan locality conversions and write fingerprint
             fp_started = time.monotonic()
             conversions = plan_locality_conversions(current_localities(conn), topo)
-            _write_fingerprint(conn, want, topo)
+            _write_fingerprint(conn, want, topo, rls_on=rls_on)
             log.info("schema: fingerprint phase %.1fs", time.monotonic() - fp_started)
 
             return SchemaResult(changed=True, fingerprint=want, statements=count,

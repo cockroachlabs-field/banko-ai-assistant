@@ -12,6 +12,7 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.regions import regional_tables_ready
+from ..db.rls import request_url
 from ._sql import jsonable, read_session, valid_uuid
 
 MAX_LIMIT = 200
@@ -72,6 +73,7 @@ def list_transactions(user_id: str, *, limit: int = 50, cursor: str | None = Non
                       category: str | None = None, account_id: str | None = None, kind: str | None = None,
                       date_from: date | None = None, date_to: date | None = None,
                       min_amount: Any = None, max_amount: Any = None, url: str | None = None) -> dict:
+    url = request_url(url)
     limit = max(1, min(int(limit), MAX_LIMIT))
     where, params = [], {"u": user_id, "limit": limit + 1}
     after = _decode_cursor(cursor)
@@ -155,6 +157,7 @@ def _semantic_rows(conn, user_id: str, qvec: str, *, limit: int, k: int, filters
 def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, category: str | None = None,
                     date_from: date | None = None, date_to: date | None = None,
                     url: str | None = None) -> dict:
+    url = request_url(url)
     q = (q or "").strip()[:500]
     if not q:
         return {"items": []}
@@ -183,9 +186,12 @@ def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, categ
 
 def transaction_detail(user_id: str, txn_id: str, *, url: str | None = None) -> dict | None:
     """One transaction by ledger entry id or by expense id, for this user only."""
+    # The regional check reads schema metadata, so it keeps the admin URL.
+    admin_url = url or get_config().database_url
+    url = request_url(url)
     if not valid_uuid(txn_id):
         return None
-    regional = regional_tables_ready(url or get_config().database_url)
+    regional = regional_tables_ready(admin_url)
     region_col = "crdb_region::STRING" if regional else "NULL::STRING"
     params = {"u": user_id, "t": txn_id}
     with read_session(user_id, url=url) as conn:

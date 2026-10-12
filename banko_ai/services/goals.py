@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from ..db.rls import request_url
 from . import ledger
 from ._sql import jsonable, read_session
 
@@ -21,6 +22,7 @@ def _add_months(day: date, months: int) -> date:
 
 
 def list_goals(user_id: str, *, today: date | None = None, url: str | None = None) -> list[dict]:
+    url = request_url(url)
     today = today or datetime.now(timezone.utc).date()
     since = datetime.combine(today - timedelta(days=90), datetime.min.time(), tzinfo=timezone.utc)
     with read_session(user_id, url=url) as conn:

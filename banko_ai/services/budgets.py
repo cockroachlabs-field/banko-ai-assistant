@@ -12,11 +12,13 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..db.engine import run_transaction
 from ..db.regions import has_region_column, money_region, region_columns
+from ..db.rls import request_url
 from ._sql import jsonable, read_session
 from .ledger import LedgerError, bump_data_version, money
 
 
 def budget_progress(user_id: str, *, today: date | None = None, url: str | None = None) -> dict:
+    url = request_url(url)
     today = today or datetime.now(timezone.utc).date()
     first = today.replace(day=1)
     days = calendar.monthrange(today.year, today.month)[1]
@@ -51,6 +53,7 @@ def budget_progress(user_id: str, *, today: date | None = None, url: str | None 
 
 
 def set_budget(user_id: str, category: str, amount: Any, *, url: str | None = None) -> dict:
+    url = request_url(url)
     cat = get_catalog().category_for(category)
     if cat.key == "other" and (category or "").strip().lower() != "other":
         raise LedgerError("Unknown category")

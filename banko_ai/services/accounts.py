@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from sqlalchemy import text
 
+from ..db.rls import request_url
 from ._sql import jsonable, read_session, valid_uuid
 
 _KIND_ORDER = {"checking": 0, "savings": 1, "credit": 2}
@@ -23,6 +24,7 @@ def _account_dict(r) -> dict:
 
 
 def list_accounts(user_id: str, *, url: str | None = None) -> dict:
+    url = request_url(url)
     with read_session(user_id, url=url) as conn:
         rows = conn.execute(text(f"SELECT {_ACCOUNT_COLS} FROM accounts WHERE user_id = CAST(:u AS UUID)"),
                             {"u": user_id}).fetchall()
@@ -42,6 +44,7 @@ def list_accounts(user_id: str, *, url: str | None = None) -> dict:
 
 
 def get_account(user_id: str, account_id: str, *, url: str | None = None) -> dict | None:
+    url = request_url(url)
     if not valid_uuid(account_id):
         return None
     with read_session(user_id, url=url) as conn:
@@ -70,6 +73,7 @@ def _labels(today: date, months: int) -> list[str]:
 
 def net_worth_history(user_id: str, *, months: int = 12, today: date | None = None,
                       url: str | None = None) -> list[dict]:
+    url = request_url(url)
     today = today or datetime.now(timezone.utc).date()
     months = max(1, int(months))
     with read_session(user_id, url=url, follower=True) as conn:
@@ -98,6 +102,7 @@ def net_worth_history(user_id: str, *, months: int = 12, today: date | None = No
 
 
 def statement_months(user_id: str, account_id: str, *, url: str | None = None) -> list[str]:
+    url = request_url(url)
     if not valid_uuid(account_id):
         return []
     with read_session(user_id, url=url) as conn:
@@ -110,6 +115,7 @@ def statement_months(user_id: str, account_id: str, *, url: str | None = None) -
 
 
 def statement(user_id: str, account_id: str, month: str, *, url: str | None = None) -> dict | None:
+    url = request_url(url)
     start, end = _month_bounds(month)
     if not valid_uuid(account_id):
         return None

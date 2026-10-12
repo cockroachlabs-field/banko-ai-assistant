@@ -253,6 +253,13 @@ def create_app() -> Flask:
         result = _with_backoff("schema", lambda: ensure_schema(
             config.database_url,
             on_progress=lambda detail: readiness.set("schema", "running", detail)))
+        from ..db.rls import refresh_status
+        try:
+            status = refresh_status(config.database_url)
+            readiness.set("rls", "ready", status.reason)
+        except Exception as e:  # the schema is fine; RLS just stays off
+            boot_log.warning("rls: status check failed (%s); row-level security stays off", e)
+            readiness.set("rls", "degraded", "row-level security status could not be checked")
         if not result.changed:
             return f"current ({result.fingerprint})"
         return f"applied {result.statements} statements in {result.seconds:.1f}s"
@@ -2402,5 +2409,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     # for it; progress shows on /api/health and the "seeding" socket event.
     readiness.mark_background("persona_data")
     readiness.mark_background("integrity")
+    readiness.mark_background("rls")
     start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-warmup-seed")
     return app
