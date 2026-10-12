@@ -53,6 +53,32 @@ def test_seed_user_writes_a_whole_bank(saver):
     assert S.seeding_status(saver)["state"] == "done"
 
 
+def test_seeding_writes_only_through_the_admin_url_even_with_rls_on(saver, monkeypatch):
+    from banko_ai.config.settings import get_config
+    from banko_ai.db import rls
+
+    # A sentinel app URL: if seeding ever resolved through request_url, the
+    # spies below would see it instead of the admin URL.
+    monkeypatch.setattr(rls, "_app_url", "cockroachdb+psycopg://banko_app@localhost:1/x?sslmode=disable")
+    seen = []
+    real_open, real_goal = S.open_account, S.create_goal
+
+    def spy_open(*args, **kwargs):
+        seen.append(("open_account", kwargs.get("url")))
+        return real_open(*args, **kwargs)
+
+    def spy_goal(*args, **kwargs):
+        seen.append(("create_goal", kwargs.get("url")))
+        return real_goal(*args, **kwargs)
+
+    monkeypatch.setattr(S, "open_account", spy_open)
+    monkeypatch.setattr(S, "create_goal", spy_goal)
+    assert S.seed_user(saver, months=1, today=TODAY) > 0
+    admin = get_config().database_url
+    assert {name for name, _ in seen} == {"open_account", "create_goal"}
+    assert all(url == admin for _, url in seen), seen
+
+
 def test_second_run_the_same_day_writes_nothing(saver):
     S.seed_user(saver, months=1, today=TODAY)
     before = _entry_ids(saver)

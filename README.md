@@ -226,6 +226,8 @@ The important knobs:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DATABASE_URL` | CockroachDB connection string | `cockroachdb://root@localhost:26257/defaultdb?sslmode=disable` |
+| `RLS_MODE` | `auto` puts row-level security on the money tables and serves requests as the `banko_app` role when it can log in. `off` stops routing through that role but leaves the policies in place, which is harmless because the admin role bypasses them. `/api/health` says which one is active and why | `auto` |
+| `DATABASE_APP_URL` | Connection string for the `banko_app` role. Empty derives it from `DATABASE_URL` on an insecure cluster; a secure cluster needs it set, or row-level security stays off | empty |
 | `AI_SERVICE` | `watsonx`, `openai`, `aws`, `gemini`, or `ollama` | `watsonx` |
 | `SECRET_KEY` | Flask session key. Auto-generated per boot in dev, which signs everyone out on restart; set it for stable demo sessions | random |
 | `CDC_WEBHOOK_HMAC_SECRET` | Signs Coach webhook posts; unset disables `/api/cdc/signals` and the welcome nudge | unset |

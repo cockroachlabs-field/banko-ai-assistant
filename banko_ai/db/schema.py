@@ -29,7 +29,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from ..config.settings import get_config
 from .engine import get_engine
-from .rls import rls_statements, supports_rls
+from .rls import policy_tables, rls_statements, supports_rls
 
 log = logging.getLogger("banko.schema")
 narration = logging.getLogger("banko.migration")  # the lines the demo console shows
@@ -676,7 +676,10 @@ def _apply(conn: Connection, topo: Topology, owner: str, *, rls_on: bool = False
 
     # Row-level security on the money tables, never on vector tables.
     if rls_on:
-        for sql in rls_statements([t.name for t in tables()], regional=topo.regional):
+        # Tables that already have the policy get ALTER POLICY: no window
+        # where a live banko_app request meets RLS without a policy.
+        for sql in rls_statements([t.name for t in tables()], regional=topo.regional,
+                                  existing=policy_tables(conn)):
             log.info("schema: %s", sql)
             conn.execute(text(sql))
             count += 1

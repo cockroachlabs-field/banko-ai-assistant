@@ -256,9 +256,11 @@ def create_app() -> Flask:
         from ..db.rls import refresh_status
         try:
             status = refresh_status(config.database_url)
-            readiness.set("rls", "ready", status.reason)
+            readiness.set("rls", "ready" if status.enabled else "degraded", status.reason)
         except Exception as e:  # the schema is fine; RLS just stays off
-            boot_log.warning("rls: status check failed (%s); row-level security stays off", e)
+            # Class name only: the message could echo a URL with a password.
+            boot_log.warning("rls: status check failed (%s); row-level security stays off",
+                             e.__class__.__name__)
             readiness.set("rls", "degraded", "row-level security status could not be checked")
         if not result.changed:
             return f"current ({result.fingerprint})"

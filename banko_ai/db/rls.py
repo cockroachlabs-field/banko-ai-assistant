@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from sqlalchemy import text
@@ -20,13 +21,14 @@ from sqlalchemy.exc import DBAPIError
 
 from ..config.settings import get_config
 from ..utils.db_retry import normalize_db_url
-from .engine import get_engine
+from .engine import _sqlstate, get_engine
 
 log = logging.getLogger("banko.rls")
 RLS_TABLES = ("accounts", "ledger_entries", "transfers", "goals", "user_budgets")
 APP_ROLE = "banko_app"
 POLICY = "banko_user_isolation"
 _USER = "NULLIF(current_setting('banko.user_id', true), '')::UUID"
+_INSUFFICIENT_PRIVILEGE = "42501"
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,19 @@ def supports_rls(conn: Connection) -> bool:
         return False
 
 
-def rls_statements(table_names: list[str], *, regional: bool = False) -> list[str]:
+def policy_tables(conn: Connection) -> set[str]:
+    """The money tables that already carry banko's policy."""
+    return {t for t in RLS_TABLES if conn.execute(
+        text(f"SELECT count(*) FROM [SHOW POLICIES FOR {t}] WHERE name = :p"), {"p": POLICY}).scalar()}
+
+
+def rls_statements(table_names: list[str], *, regional: bool = False,
+                   existing: Collection[str] = ()) -> list[str]:
+    """existing names the tables that already have the policy. Those get an
+    ALTER POLICY instead of DROP plus CREATE, so a live banko_app request
+    never sees a table with RLS on and no policy. (A transaction cannot hold
+    the pair: CockroachDB commits before each DDL by default, and with
+    autocommit_before_ddl off it refuses DROP POLICY.)"""
     granted = [t for t in table_names if t != "banko_meta"]
     out = [f"CREATE ROLE IF NOT EXISTS {APP_ROLE} WITH LOGIN",
            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {', '.join(granted)} TO {APP_ROLE}",
@@ -59,9 +73,9 @@ def rls_statements(table_names: list[str], *, regional: bool = False) -> list[st
     if regional:
         out.append(f"GRANT USAGE ON TYPE crdb_internal_region TO {APP_ROLE}")
     for table in RLS_TABLES:
+        verb = "ALTER" if table in existing else "CREATE"
         out += [f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY",
-                f"DROP POLICY IF EXISTS {POLICY} ON {table}",
-                f"CREATE POLICY {POLICY} ON {table} USING (user_id = {_USER}) WITH CHECK (user_id = {_USER})"]
+                f"{verb} POLICY {POLICY} ON {table} USING (user_id = {_USER}) WITH CHECK (user_id = {_USER})"]
     return out
 
 
@@ -85,24 +99,33 @@ def refresh_status(admin_url: str | None = None) -> RlsStatus:
             if not supports_rls(conn):
                 status = RlsStatus(False, "this CockroachDB version has no row-level security")
             else:
-                active = [t for t in RLS_TABLES if conn.execute(
-                    text(f"SELECT count(*) FROM [SHOW POLICIES FOR {t}]")).scalar()]
+                active = policy_tables(conn)
                 candidate = derive_app_url(admin)
                 if len(active) != len(RLS_TABLES):
-                    status = RlsStatus(False, "policies are not in place yet (schema pending)")
+                    status = RlsStatus(False, "RLS is supported but not applied yet; it applies on the next "
+                                              "schema change or a forced migrate")
                 elif candidate is None:
                     status = RlsStatus(False, "secure cluster: set DATABASE_APP_URL for the banko_app role")
                 else:
-                    try:
-                        with get_engine(candidate).connect() as app_conn:
-                            app_conn.execute(text("SELECT 1"))
-                        status, app = RlsStatus(True, "on for the money tables", RLS_TABLES), candidate
-                    except DBAPIError as exc:
-                        status = RlsStatus(False, f"the banko_app role cannot log in ({exc.__class__.__name__})")
+                    status, app = _probe_app_role(candidate)
     with _lock:
         _status, _app_url = status, app
     log.info("row-level security: %s", status.reason)
     return status
+
+
+def _probe_app_role(candidate: str) -> tuple[RlsStatus, str | None]:
+    """Log in as the app role and read a money table, so a role without
+    grants is caught too. Only exception class names reach the status: a
+    malformed DATABASE_APP_URL must never put its password in a log."""
+    try:
+        with get_engine(candidate).connect() as app_conn:
+            app_conn.execute(text("SELECT 1 FROM accounts LIMIT 0"))
+    except Exception as exc:
+        if isinstance(exc, DBAPIError) and _sqlstate(exc) == _INSUFFICIENT_PRIVILEGE:
+            return RlsStatus(False, f"the app role in DATABASE_APP_URL lacks grants (it must be {APP_ROLE})"), None
+        return RlsStatus(False, f"the {APP_ROLE} role cannot log in ({exc.__class__.__name__})"), None
+    return RlsStatus(True, "on for the money tables", RLS_TABLES), candidate
 
 
 def status() -> RlsStatus:

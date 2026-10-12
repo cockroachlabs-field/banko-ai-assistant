@@ -58,6 +58,7 @@ def _vector_text(vec) -> str:
 
 
 def upsert_categories(url: str | None = None) -> int:
+    url = url or get_config().database_url  # seeding always writes as the admin role
     cats = get_catalog().categories
     with get_engine(url).begin() as conn:
         conn.execute(text("""
@@ -74,6 +75,7 @@ def ensure_personas(url: str | None = None) -> list[str]:
     """Upsert the catalog's personas: display fields refresh, a home region
     someone already chose is kept, and an ordinary user who took a persona's
     username keeps it (the persona waits)."""
+    url = url or get_config().database_url  # seeding always writes as the admin role
     cfg = get_config()
     personas = get_catalog().personas
     regions = sorted(detect_database_regions(url or cfg.database_url))
@@ -263,6 +265,7 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
     """Seed or catch up one user's history through today. Returns the number
     of ledger entries written this run (0 when already current, or when
     another run holds this user's seeding lease)."""
+    url = url or get_config().database_url  # seeding always writes as the admin role
     today = today or datetime.now(timezone.utc).date()
     style, profile = _profile_for(user_id, style, url)
     owner = secrets.token_hex(8)
@@ -355,6 +358,7 @@ def _present_persona_ids(ids: list[str], url: str | None) -> set[str]:
 
 
 def seed_personas(url: str | None = None, on_progress: ProgressFn | None = None) -> dict[str, int]:
+    url = url or get_config().database_url  # seeding always writes as the admin role
     ensure_personas(url)
     upsert_categories(url)
     personas = get_catalog().personas
@@ -384,6 +388,7 @@ def seed_personas(url: str | None = None, on_progress: ProgressFn | None = None)
 
 def seed_generated_users(count: int, *, months: int | None = None, url: str | None = None,
                          on_progress: ProgressFn | None = None) -> list[str]:
+    url = url or get_config().database_url  # seeding always writes as the admin role
     cfg = get_config()
     styles = sorted(get_catalog().profiles)
     regions = sorted(detect_database_regions(url or cfg.database_url))
@@ -430,6 +435,7 @@ def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn 
     When a seed holds it, the reset waits for that seed and tries once more;
     if the lease is still taken, it gives up without deleting anything
     (returns 0)."""
+    url = url or get_config().database_url  # seeding always writes as the admin role
     today = today or datetime.now(timezone.utc).date()
     style, profile = _profile_for(user_id, None, url)
     owner = secrets.token_hex(8)
