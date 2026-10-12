@@ -133,3 +133,91 @@ def test_generated_users_get_distinct_names_and_history():
     finally:
         for uid in ids:
             drop_user(uid)
+
+
+def test_interrupted_seed_resumed_the_next_day_keeps_the_original_window(saver, monkeypatch):
+    real = S.post_history
+    calls = {"n": 0}
+
+    def flaky(user_id, rows, *, url=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash")
+        return real(user_id, rows, url=url)
+
+    monkeypatch.setattr(S, "post_history", flaky)
+    monkeypatch.setattr(S, "_batch_size", lambda: 20)
+    with pytest.raises(RuntimeError):
+        S.seed_user(saver, months=1, today=TODAY)
+    monkeypatch.setattr(S, "post_history", real)
+    tomorrow = TODAY + timedelta(days=1)
+    S.seed_user(saver, months=1, today=tomorrow)
+    cat = get_catalog()
+    plan = build_plan(saver, cat.profiles["saver"], cat, start=history_start(TODAY, 1), end=tomorrow)
+    assert _entry_ids(saver) == {e.entry_id for e in plan.entries}
+    assert invariant_violations(saver) == []
+
+
+def test_missing_meta_with_existing_accounts_resumes_from_the_accounts_open_date(saver, monkeypatch):
+    S.seed_user(saver, months=1, today=TODAY)
+    first = _entry_ids(saver)
+    with get_engine().begin() as c:
+        c.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{saver}"})
+    S.seed_user(saver, months=1, today=TODAY + timedelta(days=3))
+    assert first <= _entry_ids(saver)
+    assert invariant_violations(saver) == []
+
+
+def test_concurrent_seeds_of_one_user_never_duplicate(saver):
+    import threading
+
+    results, errors = [], []
+
+    def run():
+        try:
+            results.append(S.seed_user(saver, months=1, today=TODAY))
+        except Exception as exc:  # surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(120)
+    assert errors == []
+    assert _count("accounts", saver) == 3
+    assert _count("goals", saver) == 2
+    assert len(_entry_ids(saver)) == _count("ledger_entries", saver)
+    assert sorted(results)[0] == 0 and sorted(results)[1] > 0
+    assert invariant_violations(saver) == []
+    with get_engine().connect() as c:
+        lock = c.execute(text("SELECT count(*) FROM banko_meta WHERE key = :k"),
+                         {"k": f"seed_lock:{saver}"}).scalar()
+    assert lock == 0
+
+
+def test_seed_personas_skips_a_persona_whose_username_is_taken(monkeypatch, caplog):
+    import uuid
+
+    from banko_ai.config.catalog import Persona
+
+    squatter = make_user("diner")
+    with get_engine().connect() as c:
+        squatted_name = c.execute(text("SELECT username FROM users WHERE user_id = CAST(:u AS UUID)"),
+                                  {"u": squatter}).scalar()
+    ghost = Persona(user_id=str(uuid.uuid4()), username=squatted_name, display_name="Ghost",
+                    avatar_color="#000000", spending_style="diner")
+    real_catalog = get_catalog()
+    catalog = real_catalog.model_copy(update={"personas": (*real_catalog.personas, ghost)})
+    monkeypatch.setattr(S, "get_catalog", lambda: catalog)
+    seeded = []
+    monkeypatch.setattr(S, "seed_user", lambda uid, **kw: seeded.append(uid) or 0)
+    try:
+        with caplog.at_level("WARNING", logger="banko.seeding"):
+            result = S.seed_personas()
+        assert ghost.user_id not in seeded
+        assert {p.user_id for p in real_catalog.personas} <= set(seeded)
+        assert squatted_name not in result
+        assert any(squatted_name in r.getMessage() for r in caplog.records)
+    finally:
+        drop_user(squatter)

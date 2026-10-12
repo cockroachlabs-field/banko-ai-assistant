@@ -7,12 +7,12 @@ from sqlalchemy import text
 
 from banko_ai.db.engine import get_engine
 from banko_ai.services.seeding import seed_user
-from tests._money import drop_user
+from tests._money import drop_user, make_user
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
 
-# A fixed day and fixed user ids make the seeded history identical on every
-# run, so the style assertions never depend on a lucky random draw.
+# A fixed day keeps runs comparable; the idempotency check also uses a
+# fixed user id so its history is identical on every run.
 TODAY = date(2026, 10, 11)
 
 
@@ -27,10 +27,11 @@ def _user(style: str) -> str:
 
 
 @pytest.fixture
-def diner():
-    uid = _user("diner")
-    yield uid
-    drop_user(uid)
+def diners():
+    ids = [make_user("diner") for _ in range(5)]
+    yield ids
+    for uid in ids:
+        drop_user(uid)
 
 
 @pytest.fixture
@@ -40,20 +41,21 @@ def subscriber():
     drop_user(uid)
 
 
-def test_diner_style_is_restaurant_heavy(diner):
-    n = seed_user(diner, months=1, today=TODAY)
-    assert n > 40
-    with get_engine().connect() as c:
-        total, rest = c.execute(text("""
-            SELECT count(*),
-                   count(*) FILTER (WHERE shopping_type = 'Restaurant')
-            FROM expenses WHERE user_id = CAST(:u AS UUID)"""), {"u": diner}).fetchone()
-        assert rest / total > 0.3
-        # embeddings present so vector search works immediately
-        missing = c.execute(text(
-            "SELECT count(*) FROM expenses WHERE user_id = CAST(:u AS UUID) "
-            "AND embedding IS NULL"), {"u": diner}).scalar()
-    assert missing == 0
+def test_diner_style_is_restaurant_heavy(diners):
+    # What the demo relies on: for any diner, Restaurant is the category
+    # they buy most often. Random ids, a six-month window.
+    for uid in diners:
+        assert seed_user(uid, months=6, today=TODAY) > 40
+        with get_engine().connect() as c:
+            top = c.execute(text("""
+                SELECT shopping_type FROM expenses WHERE user_id = CAST(:u AS UUID)
+                GROUP BY shopping_type ORDER BY count(*) DESC LIMIT 1"""), {"u": uid}).scalar()
+            # embeddings present so vector search works immediately
+            missing = c.execute(text(
+                "SELECT count(*) FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                "AND embedding IS NULL"), {"u": uid}).scalar()
+        assert top == "Restaurant", uid
+        assert missing == 0
 
 
 def test_seeding_is_idempotent(subscriber):

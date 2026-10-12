@@ -5,7 +5,7 @@ import uuid
 
 from sqlalchemy import text
 
-from banko_ai.db.engine import get_engine
+from banko_ai.db.engine import get_engine, run_transaction
 
 MONEY_TABLES = ("ledger_entries", "transfers", "goals", "accounts", "user_budgets",
                 "user_data_versions", "expenses")
@@ -21,11 +21,16 @@ def make_user(style: str = "saver", home_region: str | None = None) -> str:
 
 
 def drop_user(user_id: str) -> None:
-    with get_engine().begin() as c:
+    # Retried: deleting expenses touches C-SPANN partition metadata, which
+    # can lose a 40001 race with another user's delete right next to it.
+    def fn(c) -> None:
         for table in MONEY_TABLES:
             c.execute(text(f"DELETE FROM {table} WHERE user_id = CAST(:u AS UUID)"), {"u": user_id})
-        c.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{user_id}"})
+        c.execute(text("DELETE FROM banko_meta WHERE key IN (:k, :lock)"),
+                  {"k": f"seed:{user_id}", "lock": f"seed_lock:{user_id}"})
         c.execute(text("DELETE FROM users WHERE user_id = CAST(:u AS UUID)"), {"u": user_id})
+
+    run_transaction(fn)
 
 
 def invariant_violations(user_id: str) -> list[tuple]:

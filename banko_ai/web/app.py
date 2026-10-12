@@ -343,9 +343,17 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     def _emit_seeding(user_id: str, done: int, total: int, state: str) -> None:
         socketio.emit("seeding", {"user_id": user_id, "done": done, "total": total, "state": state})
 
+    # Personas seed in parallel; health shows their combined progress.
+    persona_counts: dict[str, tuple[int, int]] = {}
+    persona_counts_lock = threading.Lock()
+
     def _persona_progress(user_id: str, done: int, total: int, state: str) -> None:
+        with persona_counts_lock:
+            persona_counts[user_id] = (done, total)
+            all_done = sum(d for d, _ in persona_counts.values())
+            all_total = sum(t for _, t in persona_counts.values())
         if state == "running":
-            readiness.set("persona_data", "running", f"seeding {done}/{total}")
+            readiness.set("persona_data", "running", f"seeding {all_done}/{all_total}")
         _emit_seeding(user_id, done, total, state)
 
     def _persona_data_step() -> str:

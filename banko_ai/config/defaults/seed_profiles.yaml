@@ -10,9 +10,9 @@ profiles:
     income: {account: checking, amount: 2650, every_days: 14, description: Payroll deposit}
     card_payment: {from: checking, to: card, day_of_month: 25}
     purchases:
-      - {category: Restaurant, merchants: [Italian Bistro, Thai Garden, Pizza Hut, "Domino's", Chipotle, Sushi Bar], per_month: 14, amount: [18, 85], account: card}
+      - {category: Restaurant, merchants: [Italian Bistro, Thai Garden, Pizza Hut, "Domino's", Chipotle, Sushi Bar], per_month: 18, amount: [18, 85], account: card}
       - {category: Groceries, merchants: [Whole Foods, Local Market, "Trader Joe's"], per_month: 6, amount: [25, 140], account: card}
-      - {category: Coffee, merchants: [Starbucks, Blue Bottle, "Peet's Coffee"], per_month: 12, amount: [4, 12], account: card}
+      - {category: Coffee, merchants: [Starbucks, Blue Bottle, "Peet's Coffee"], per_month: 8, amount: [4, 12], account: card}
       - {category: Transport, merchants: [Uber, Lyft], per_month: 6, amount: [9, 38], account: card}
       - {category: Entertainment, merchants: [Movie Theater, Concert Venue], per_month: 2, amount: [18, 95], account: card}
     bills:

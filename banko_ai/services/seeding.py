@@ -12,6 +12,7 @@ import json
 import logging
 import secrets
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
@@ -170,14 +171,94 @@ def _ensure_goals(user_id: str, plan: SeedPlan, account_ids: dict[str, str], url
             account_id=account_ids[goal.account_key], target_date=goal.target_date, url=url)
     return ids
 
+LEASE_MINUTES = 15
+LEASE_WAIT_SECONDS = 30
+
+
+def _lease_key(user_id: str) -> str:
+    return f"seed_lock:{user_id}"
+
+
+def _claim_lease(user_id: str, owner: str, url: str | None) -> bool:
+    """Take the per-user seeding lease, or take over one that has expired.
+    The expiry is computed on the database clock, so app hosts with skewed
+    clocks still agree on it."""
+
+    def fn(conn) -> bool:
+        conn.execute(text(f"""
+            INSERT INTO banko_meta (key, value, updated_at)
+            VALUES (:k, json_build_object('owner', CAST(:owner AS STRING),
+                                          'expires_at', now() + INTERVAL '{LEASE_MINUTES} minutes')::STRING, now())
+            ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()
+            WHERE CAST(CAST(banko_meta.value AS JSONB)->>'expires_at' AS TIMESTAMPTZ) < now()
+        """), {"k": _lease_key(user_id), "owner": owner})
+        stored = conn.execute(text("SELECT value FROM banko_meta WHERE key = :k"),
+                              {"k": _lease_key(user_id)}).scalar()
+        return bool(stored) and json.loads(stored).get("owner") == owner
+
+    return run_transaction(fn, url=url)
+
+
+def _refresh_lease(user_id: str, owner: str, url: str | None) -> None:
+    def fn(conn) -> None:
+        conn.execute(text(f"""
+            UPDATE banko_meta
+            SET value = json_build_object('owner', CAST(:owner AS STRING),
+                                          'expires_at', now() + INTERVAL '{LEASE_MINUTES} minutes')::STRING,
+                updated_at = now()
+            WHERE key = :k AND CAST(value AS JSONB)->>'owner' = :owner
+        """), {"k": _lease_key(user_id), "owner": owner})
+
+    run_transaction(fn, url=url)
+
+
+def _release_lease(user_id: str, owner: str, url: str | None) -> None:
+    def fn(conn) -> None:
+        conn.execute(text("DELETE FROM banko_meta WHERE key = :k AND CAST(value AS JSONB)->>'owner' = :owner"),
+                     {"k": _lease_key(user_id), "owner": owner})
+
+    try:
+        run_transaction(fn, url=url)
+    except Exception:  # the lease expires on its own; never mask the real outcome
+        log.warning("could not release the seeding lease for %s", user_id, exc_info=True)
+
+
+def _lease_held(user_id: str, url: str | None) -> bool:
+    with get_engine(url).connect() as conn:
+        return conn.execute(text("SELECT 1 FROM banko_meta WHERE key = :k"),
+                            {"k": _lease_key(user_id)}).fetchone() is not None
+
+
+def _wait_for_owner(user_id: str, today: date, on_progress: ProgressFn | None, url: str | None) -> int:
+    """Someone else is seeding this user: give them a moment, never write."""
+    deadline = time.monotonic() + LEASE_WAIT_SECONDS
+    while time.monotonic() < deadline and _lease_held(user_id, url):
+        time.sleep(1.0)
+    meta = _read_meta(user_id, url)
+    current = bool(meta and meta.get("through") and date.fromisoformat(meta["through"]) >= today)
+    _report(user_id, 0, 0, "done" if current else "running", on_progress)
+    return 0
+
+
+def _history_start(user_id: str, meta: dict | None, today: date, months: int, url: str | None) -> date:
+    """The window start a previous run chose wins, so a resume on a later day
+    regenerates the same entry ids instead of shifting the whole history."""
+    if meta and meta.get("start"):
+        return date.fromisoformat(meta["start"])
+    with get_engine(url).connect() as conn:
+        opened = conn.execute(text("SELECT min(opened_at) FROM accounts WHERE user_id = CAST(:u AS UUID)"),
+                              {"u": user_id}).scalar()
+    if opened is not None:
+        return opened.date() if isinstance(opened, datetime) else opened
+    return history_start(today, months)
+
 
 def seed_user(user_id: str, style: str | None = None, *, months: int | None = None,
               today: date | None = None, on_progress: ProgressFn | None = None,
               url: str | None = None) -> int:
     """Seed or catch up one user's history through today. Returns the number
-    of ledger entries written this run (0 when already current)."""
-    from ..utils.embeddings import load_embedding_model
-
+    of ledger entries written this run (0 when already current, or when
+    another run holds this user's seeding lease)."""
     cfg = get_config()
     catalog = get_catalog()
     today = today or datetime.now(timezone.utc).date()
@@ -190,10 +271,26 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
     profile = catalog.profiles.get(style)
     if profile is None:
         raise ValueError(f"no seed profile for spending style '{style}'")
+    owner = secrets.token_hex(8)
+    if not _claim_lease(user_id, owner, url):
+        return _wait_for_owner(user_id, today, on_progress, url)
+    try:
+        return _seed_owned(user_id, style, profile, months or profile.months or cfg.seed_history_months,
+                           today, on_progress, url, owner)
+    finally:
+        _release_lease(user_id, owner, url)
+
+
+def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
+                on_progress: ProgressFn | None, url: str | None, owner: str) -> int:
+    from ..utils.embeddings import load_embedding_model
+
+    catalog = get_catalog()
     meta = _read_meta(user_id, url)
-    start = date.fromisoformat(meta["start"]) if meta else history_start(
-        today, months or profile.months or cfg.seed_history_months)
-    through = date.fromisoformat(meta["through"]) if meta else None
+    start = _history_start(user_id, meta, today, months, url)
+    # through None means a run started but never finished: redo the whole
+    # window, and ON CONFLICT turns the batches already written into no-ops.
+    through = date.fromisoformat(meta["through"]) if meta and meta.get("through") else None
     if through is not None and through >= today:
         _report(user_id, 0, 0, "done", on_progress)
         return 0
@@ -203,6 +300,8 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
         plan = build_plan(user_id, profile, catalog, start=start, end=today)
         payment_by_key = {a.key: a.payment_method for a in plan.accounts}
         account_ids = _ensure_accounts(user_id, plan, start, url)
+        if meta is None:
+            _write_meta(user_id, {"start": start.isoformat(), "through": None, "style": style}, url)
         _ensure_budgets(user_id, plan, url)
         goal_ids = _ensure_goals(user_id, plan, account_ids, url)
         todo = plan.entries_after(through) if through else plan.entries
@@ -231,6 +330,7 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
                                        transfer_id=e.transfer_ref))
             post_history(user_id, rows, url=url)
             done += len(batch)
+            _refresh_lease(user_id, owner, url)
             _report(user_id, done, total, "running", on_progress)
         rebalance(user_id, url=url)
         _write_meta(user_id, {"start": start.isoformat(), "through": today.isoformat(), "style": style}, url)
@@ -241,16 +341,29 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
     return total
 
 
+def _present_persona_ids(ids: list[str], url: str | None) -> set[str]:
+    with get_engine(url).connect() as conn:
+        return {str(r[0]) for r in conn.execute(text(
+            "SELECT user_id FROM users WHERE user_id = ANY(CAST(:ids AS UUID[]))"), {"ids": ids})}
+
+
 def seed_personas(url: str | None = None, on_progress: ProgressFn | None = None) -> dict[str, int]:
     ensure_personas(url)
     upsert_categories(url)
     personas = get_catalog().personas
+    present = _present_persona_ids([p.user_id for p in personas], url)
+    for p in personas:
+        if p.user_id not in present:
+            # An ordinary user took this persona's username before the
+            # persona existed; seeding it would fail on every boot.
+            log.warning("persona %s is not present (username taken by another user); skipping its seed",
+                        p.username)
     results: dict[str, int] = {}
     failures: list[str] = []
     with ThreadPoolExecutor(max_workers=max(1, get_config().seed_parallelism),
                             thread_name_prefix="banko-seed") as pool:
         futures = {p.username: pool.submit(seed_user, p.user_id, on_progress=on_progress, url=url)
-                   for p in personas}
+                   for p in personas if p.user_id in present}
         for name, future in futures.items():
             try:
                 results[name] = future.result()
@@ -267,15 +380,19 @@ def seed_generated_users(count: int, *, months: int | None = None, url: str | No
     cfg = get_config()
     styles = sorted(get_catalog().profiles)
     regions = sorted(detect_database_regions(url or cfg.database_url))
-    ids: list[str] = []
+    if count <= 0:
+        return []
     with get_engine(url).begin() as conn:
-        for i in range(count):
-            row = conn.execute(text("""
-                INSERT INTO users (username, spending_style, home_region, demo_user)
-                VALUES (:name, :style, :region, true) RETURNING user_id
-            """), {"name": f"demo-{secrets.token_hex(3)}", "style": styles[i % len(styles)],
-                   "region": regions[i % len(regions)] if regions else None}).fetchone()
-            ids.append(str(row[0]))
+        rows = conn.execute(text("""
+            INSERT INTO users (username, spending_style, home_region, demo_user)
+            SELECT t.name, t.style, t.region, true
+            FROM unnest(CAST(:names AS STRING[]), CAST(:styles AS STRING[]), CAST(:regions AS STRING[]))
+                 AS t(name, style, region)
+            RETURNING user_id
+        """), {"names": [f"demo-{secrets.token_hex(3)}" for _ in range(count)],
+               "styles": [styles[i % len(styles)] for i in range(count)],
+               "regions": [regions[i % len(regions)] if regions else None for i in range(count)]}).fetchall()
+    ids = [str(r[0]) for r in rows]
     with ThreadPoolExecutor(max_workers=max(1, cfg.seed_parallelism), thread_name_prefix="banko-seed") as pool:
         for future in [pool.submit(seed_user, uid, months=months, on_progress=on_progress, url=url) for uid in ids]:
             future.result()
@@ -284,9 +401,13 @@ def seed_generated_users(count: int, *, months: int | None = None, url: str | No
 
 def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn | None = None,
                today: date | None = None, months: int | None = None) -> int:
-    """Delete the user's money rows and seed state, then reseed. Coach
-    signals and nudges are left alone."""
+    """Delete the user's seed state and money rows, then reseed. Coach
+    signals and nudges are left alone. The seed meta goes first, so a crash
+    midway leaves a user who reseeds from scratch, not one whose meta claims
+    history that is gone."""
     eng = get_engine(url)
+    with eng.begin() as conn:
+        conn.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{user_id}"})
     for table in ("ledger_entries", "transfers", "goals", "accounts", "user_budgets",
                   "user_data_versions", "expenses"):
         while True:
@@ -295,6 +416,4 @@ def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn 
                                        {"u": user_id}).rowcount
             if deleted < 1000:
                 break
-    with eng.begin() as conn:
-        conn.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{user_id}"})
     return seed_user(user_id, months=months, today=today, on_progress=on_progress, url=url)

@@ -100,32 +100,44 @@ class DatabaseMigration:
 
         from sqlalchemy import text
 
-        personas = ("00000000-0000-0000-0000-0000000000a1",
-                    "00000000-0000-0000-0000-0000000000a2",
-                    "00000000-0000-0000-0000-0000000000a3")
+        from ..config.catalog import get_catalog
+
+        personas = [p.user_id for p in get_catalog().personas]
         cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+        limit = 1000
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text("""
                     SELECT user_id FROM users
                     WHERE demo_user AND created_at < :cutoff
-                      AND user_id NOT IN (:p1, :p2, :p3)
-                """), {"cutoff": cutoff, "p1": personas[0],
-                       "p2": personas[1], "p3": personas[2]}).fetchall()
-                ids = [str(r[0]) for r in rows]
-                if not ids:
-                    return 0
+                      AND user_id <> ALL(CAST(:personas AS UUID[]))
+                """), {"cutoff": cutoff, "personas": personas}).fetchall()
+            ids = [str(r[0]) for r in rows]
+            if not ids:
+                return 0
 
-                placeholders = ", ".join(f":u{i}" for i in range(len(ids)))
-                params = {f"u{i}": uid for i, uid in enumerate(ids)}
-                for table in ("coach_nudges", "spending_signals",
-                              "user_budgets", "expenses", "users"):
-                    conn.execute(text(
-                        f"DELETE FROM {table} WHERE user_id IN ({placeholders})"),
-                        params)
-                conn.commit()
-                print(f"Expired {len(ids)} demo users older than {ttl_days} days")
-                return len(ids)
+            # Bounded, set-based deletes, children before parents, each in
+            # its own short transaction so no sweep holds intents on every
+            # row an expired user ever wrote.
+            for i in range(0, len(ids), limit):
+                chunk = ids[i:i + limit]
+                for table in ("coach_nudges", "spending_signals", "ledger_entries", "transfers",
+                              "goals", "accounts", "user_budgets", "user_data_versions", "expenses"):
+                    while True:
+                        with self.engine.begin() as conn:
+                            deleted = conn.execute(text(
+                                f"DELETE FROM {table} WHERE user_id = ANY(CAST(:ids AS UUID[])) LIMIT {limit}"),
+                                {"ids": chunk}).rowcount
+                        if deleted < limit:
+                            break
+                keys = [f"seed:{u}" for u in chunk] + [f"seed_lock:{u}" for u in chunk]
+                with self.engine.begin() as conn:
+                    conn.execute(text("DELETE FROM banko_meta WHERE key = ANY(CAST(:keys AS STRING[]))"),
+                                 {"keys": keys})
+                    conn.execute(text("DELETE FROM users WHERE user_id = ANY(CAST(:ids AS UUID[]))"),
+                                 {"ids": chunk})
+            print(f"Expired {len(ids)} demo users older than {ttl_days} days")
+            return len(ids)
         except Exception as e:
             print(f"Demo user expiry sweep failed (non-fatal): {e}")
             return 0
