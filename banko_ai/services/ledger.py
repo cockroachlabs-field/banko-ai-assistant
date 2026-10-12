@@ -297,6 +297,10 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
                 raise NotFound("That account was not found")
             goal_acct = str(goal_row[0])
             if kind == "goal_contribution":
+                if goal_acct == from_acct:
+                    # One account on both legs nets to zero in the ledger
+                    # while the balance update would still debit it.
+                    raise LedgerError("Pick an account other than the goal's")
                 actual_to_acct = goal_acct
             elif goal_acct != to_acct:
                 raise NotFound("That account was not found")

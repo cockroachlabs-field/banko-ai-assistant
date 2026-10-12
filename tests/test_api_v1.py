@@ -10,7 +10,7 @@ import pytest
 from banko_ai.services.accounts import list_accounts
 from banko_ai.services.ledger import open_account
 from banko_ai.services.seeding import seed_user
-from tests._money import drop_user, make_user
+from tests._money import drop_user, invariant_violations, make_user
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
 
@@ -172,6 +172,17 @@ def test_goals_recurring_cashflow(client, member):
                              "idempotency_key": "nope"}).status_code == 404
     assert "items" in client.get("/api/v1/recurring").get_json()
     assert len(client.get("/api/v1/cashflow?months=3").get_json()["months"]) == 3
+
+
+def test_contributing_from_the_goals_own_account_is_400_and_moves_nothing(client, member):
+    goal = client.get("/api/v1/goals").get_json()["items"][0]
+    before = {a["account_id"]: a["balance"] for a in list_accounts(member)["accounts"]}
+    r = client.post(f"/api/v1/goals/{goal['goal_id']}/contribute",
+                    json={"from_account": goal["account_id"], "amount": "50.00",
+                          "idempotency_key": f"self-{uuid.uuid4()}"})
+    assert r.status_code == 400 and "other than the goal's" in r.get_json()["error"]
+    assert {a["account_id"]: a["balance"] for a in list_accounts(member)["accounts"]} == before
+    assert invariant_violations(member) == []
 
 
 def test_ai_shows_the_persona(monkeypatch, member):

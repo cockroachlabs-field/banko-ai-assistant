@@ -226,6 +226,19 @@ def test_goal_contribution_tags_both_legs(user):
     assert L.goal_contribution(user, str(uuid.uuid4()), chk, "1.00", idempotency_key="g2").status == "not_found"
 
 
+def test_goal_contribution_from_the_goals_own_account_is_refused(user):
+    sav = L.open_account(user, kind="savings", name="Savings", institution="Test Bank",
+                         mask="0008", opening_balance="200.00")
+    goal = L.create_goal(user, name="Trip", icon="✈️", target_amount="1000.00", account_id=sav)
+    with pytest.raises(L.LedgerError, match="other than the goal's"):
+        L.goal_contribution(user, goal, sav, "50.00", idempotency_key="self")
+    assert _balance(sav) == Decimal("200.00")
+    assert invariant_violations(user) == []
+    with get_engine().connect() as c:
+        assert c.execute(text("SELECT count(*) FROM transfers WHERE user_id = CAST(:u AS UUID)"),
+                         {"u": user}).scalar() == 0
+
+
 def test_tagging_transfer_with_another_users_goal_returns_not_found(user):
     other = make_user()
     try:
