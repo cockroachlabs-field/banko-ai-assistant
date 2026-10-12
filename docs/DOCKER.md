@@ -265,13 +265,18 @@ docker run -d --name banko-ai-3 -p 5003:5000 ... virag/banko-ai-assistant:latest
 
 ### Health Checks
 
-The container includes health checks via `/api/health` endpoint:
+The container health check hits `/api/health/live`, which answers as soon
+as the server is listening, even while warm-up is still running.
+`/api/health/ready` returns 200 once the schema and the demo personas are in
+place, and `/api/health` shows every warm-up step:
 
 ```bash
 # Check container health
 docker inspect --format='{{.State.Health.Status}}' banko-ai
 
-# Manual health check
+# Manual checks
+curl http://localhost:5000/api/health/live
+curl http://localhost:5000/api/health/ready
 curl http://localhost:5000/api/health
 ```
 

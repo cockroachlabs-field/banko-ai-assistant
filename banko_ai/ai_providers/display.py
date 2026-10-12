@@ -67,7 +67,7 @@ def display_label(cfg, value: str | None) -> str | None:
     """Map a stored provider_used value (coach nudges) to what the UI shows."""
     if not cfg.ai_display_provider or not value or value == "fallback":
         return value
-    return cfg.ai_display_provider
+    return str(cfg.ai_display_provider)
 
 
 def ui_context(identity: Identity, *, status: str) -> dict[str, str]:

@@ -7,6 +7,7 @@ that all components (vectorstore, chat history, checkpointer) share.
 
 from langchain_cockroachdb import CockroachDBEngine
 
+from ..config.settings import get_config
 from .db_retry import get_database_url, normalize_db_url
 
 
@@ -21,8 +22,8 @@ def get_crdb_engine(database_url: str | None = None) -> CockroachDBEngine:
     """Get or create the singleton CockroachDBEngine.
 
     Args:
-        database_url: CockroachDB connection string.  Falls back to
-            DATABASE_URL env var, then localhost default.
+        database_url: CockroachDB connection string. Falls back to
+            the DATABASE_URL setting.
 
     Returns:
         Shared CockroachDBEngine instance.
@@ -33,12 +34,17 @@ def get_crdb_engine(database_url: str | None = None) -> CockroachDBEngine:
 
     url = normalize_crdb_url(get_database_url(database_url))
 
+    # langchain-cockroachdb wants an async engine, so this can't reuse the
+    # sync pool in banko_ai.db.engine. It honors the same DB_POOL_* settings.
+    cfg = get_config()
     _engine = CockroachDBEngine.from_connection_string(
         url,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=True,
-        pool_recycle=3600,
+        pool_size=cfg.db_pool_size,
+        max_overflow=cfg.db_max_overflow,
+        pool_pre_ping=cfg.db_pool_pre_ping,
+        pool_recycle=cfg.db_pool_recycle,
+        pool_timeout=cfg.db_pool_timeout,
+        retry_max_attempts=cfg.db_retry_max_attempts,
     )
     return _engine
 

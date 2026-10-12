@@ -230,58 +230,58 @@ def clear_demo_users(database_url: str) -> dict[str, int]:
     ]
 
     with engine.connect() as conn:
-            demo_user_ids_result = conn.execute(
-                text("""
-                    SELECT user_id FROM users
-                    WHERE demo_user = true
-                    AND user_id NOT IN (:p1, :p2, :p3)
-                """),
-                {"p1": legacy_persona_ids[0], "p2": legacy_persona_ids[1], "p3": legacy_persona_ids[2]}
-            )
-            demo_user_ids = [str(row[0]) for row in demo_user_ids_result]
+        demo_user_ids_result = conn.execute(
+            text("""
+                SELECT user_id FROM users
+                WHERE demo_user = true
+                AND user_id NOT IN (:p1, :p2, :p3)
+            """),
+            {"p1": legacy_persona_ids[0], "p2": legacy_persona_ids[1], "p3": legacy_persona_ids[2]}
+        )
+        demo_user_ids = [str(row[0]) for row in demo_user_ids_result]
 
-            if not demo_user_ids:
-                return {"users": 0, "expenses": 0, "user_budgets": 0, "spending_signals": 0, "coach_nudges": 0}
+        if not demo_user_ids:
+            return {"users": 0, "expenses": 0, "user_budgets": 0, "spending_signals": 0, "coach_nudges": 0}
 
-            placeholders = ", ".join([f":uid{i}" for i in range(len(demo_user_ids))])
-            uid_params = {f"uid{i}": uid for i, uid in enumerate(demo_user_ids)}
+        placeholders = ", ".join([f":uid{i}" for i in range(len(demo_user_ids))])
+        uid_params = {f"uid{i}": uid for i, uid in enumerate(demo_user_ids)}
 
-            result = conn.execute(
-                text(f"""
-                    DELETE FROM coach_nudges
-                    WHERE signal_id IN (
-                        SELECT signal_id FROM spending_signals
-                        WHERE user_id IN ({placeholders})
-                    )
-                """),
-                uid_params
-            )
-            counts["coach_nudges"] = result.rowcount
+        result = conn.execute(
+            text(f"""
+                DELETE FROM coach_nudges
+                WHERE signal_id IN (
+                    SELECT signal_id FROM spending_signals
+                    WHERE user_id IN ({placeholders})
+                )
+            """),
+            uid_params
+        )
+        counts["coach_nudges"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM spending_signals WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["spending_signals"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM spending_signals WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["spending_signals"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM user_budgets WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["user_budgets"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM user_budgets WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["user_budgets"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM expenses WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["expenses"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM expenses WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["expenses"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM users WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["users"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM users WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["users"] = result.rowcount
 
-            conn.commit()
+        conn.commit()
 
     return counts

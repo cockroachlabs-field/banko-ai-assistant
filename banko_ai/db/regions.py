@@ -190,8 +190,8 @@ def resolve_user_region_cache_clear() -> None:
     """Drop auth.resolve_user_region's cache. Local import because auth
     imports from this module."""
     try:
-        from ..web.auth import resolve_user_region
-        resolve_user_region.cache_clear()
+        from ..web.auth import _user_region_cache
+        _user_region_cache.clear()
     except Exception:
         pass
 

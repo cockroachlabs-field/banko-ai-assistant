@@ -189,7 +189,7 @@ def get_agent_stats():
                     'pending_tasks': tasks['pending_tasks'],
                     'completed_tasks': tasks['completed_tasks']
                 })
-# Overall stats
+        # Overall stats
         total_memory = sum(a['memory_count'] for a in agent_stats)
         total_pending = sum(a['pending_tasks'] for a in agent_stats)
         total_completed = sum(a['completed_tasks'] for a in agent_stats)

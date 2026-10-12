@@ -87,7 +87,7 @@ EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/api/health/live || exit 1
+    CMD curl -f http://localhost:${PORT:-5000}/api/health/live || exit 1
 
 # Set entrypoint
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
@@ -96,5 +96,5 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # Flask-SocketIO in threading mode (long-polling transport), and gunicorn
 # 26 removed the eventlet worker class the old command asked for.
 # One worker: SocketIO sessions and the in-process coach queue don't
-# share state across processes.
-CMD ["gunicorn", "--worker-class", "gthread", "-w", "1", "--threads", "16", "--bind", "0.0.0.0:5000", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "banko_ai.web.app:create_app()"]
+# share state across processes. sh -c so the bind honors PORT.
+CMD ["sh", "-c", "exec gunicorn --worker-class gthread -w 1 --threads 16 --bind 0.0.0.0:${PORT:-5000} --timeout 120 --access-logfile - --error-logfile - 'banko_ai.web.app:create_app()'"]

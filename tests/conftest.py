@@ -1,6 +1,29 @@
 import os
+from urllib.parse import urlsplit
 
 import pytest
+
+
+def _guard_database_url() -> None:
+    """The suite writes and drops tables. A shell profile that exports the
+    live demo cluster (port 26257) must never be picked up by accident, so
+    the target has to be named explicitly, and 26257 needs an opt-in."""
+    url = os.environ.get("DATABASE_URL", "")
+    if not url:
+        pytest.exit(
+            "DATABASE_URL is not set. Point the suite at a throwaway CockroachDB, for example\n"
+            '  DATABASE_URL="postgresql://root@localhost:26258/defaultdb?sslmode=disable" uv run pytest tests/',
+            returncode=4)
+    port = urlsplit(url).port or 26257
+    if port == 26257 and os.environ.get("BANKO_ALLOW_CHAOS_TESTS") != "1":
+        pytest.exit(
+            "DATABASE_URL points at port 26257, which is usually the live demo cluster.\n"
+            "Use a throwaway node (for example port 26258), or set BANKO_ALLOW_CHAOS_TESTS=1 "
+            "if that database really is disposable (CI does).",
+            returncode=4)
+
+
+_guard_database_url()
 
 # The app no longer sniffs PYTEST_CURRENT_TEST; tests opt out of sample data explicitly.
 os.environ.setdefault("BANKO_SKIP_AUTOSETUP", "1")

@@ -36,7 +36,7 @@ def _lan_ip() -> str | None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
             probe.connect(("10.255.255.255", 1))
-            return probe.getsockname()[0]
+            return str(probe.getsockname()[0])
         except OSError:
             return None
 
