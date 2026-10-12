@@ -57,6 +57,27 @@ from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
 
+PROVIDER_CHECK_SECONDS = 8.0
+
+
+def bounded_connection_test(provider, seconds: float = PROVIDER_CHECK_SECONDS) -> bool:
+    """provider.test_connection(), given up on after `seconds`. Each provider
+    already uses short timeouts; this is the backstop for SDK paths we don't
+    control (an SSO refresh, a Vertex token fetch) on a black-holed network,
+    so neither the ready line nor /api/health?refresh=1 waits on them."""
+    result: list[bool] = []
+
+    def check() -> None:
+        try:
+            result.append(bool(provider.test_connection()))
+        except Exception:
+            result.append(False)
+
+    worker = threading.Thread(target=check, name="banko-provider-check", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return bool(result and result[0])
+
 
 def auto_setup_data_if_needed(database_url: str) -> str:
     """Generate demo data when the database has almost none. Runs in the
@@ -198,7 +219,7 @@ def create_app() -> Flask:
     def _provider_step(narrate: bool = True) -> str:
         # The startup lines the CLI printed before boot moved here.
         service = config.ai_service.upper()
-        if ai_provider is None or not ai_provider.test_connection():
+        if ai_provider is None or not bounded_connection_test(ai_provider):
             if narrate:
                 print(f"🔧 {service} Available: False", flush=True)
                 print(f"⚠️  {service} running in demo mode", flush=True)

@@ -307,14 +307,15 @@ class WatsonxProvider(AIProvider):
         try:
             # Just test if we can get an access token - this is faster and more reliable
             # than making a full API call for status checks
-            access_token = self._get_access_token()
+            access_token = self._get_access_token(timeout=5)
             return access_token is not None
         except Exception:
             # If token request fails, the connection is not available
             return False
     
-    def _get_access_token(self):
-        """Get IBM Cloud access token from API key (copied from original)."""
+    def _get_access_token(self, timeout: float | None = None):
+        """Get IBM Cloud access token from API key. The health check passes a
+        short timeout; chat calls use WATSONX_TIMEOUT."""
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json"
@@ -325,7 +326,8 @@ class WatsonxProvider(AIProvider):
         }
         
         try:
-            response = requests.post(self.token_url, headers=headers, data=data, timeout=self.timeout)
+            response = requests.post(self.token_url, headers=headers, data=data,
+                                     timeout=timeout if timeout is not None else self.timeout)
             if response.status_code != 200:
                 raise Exception(f"Failed to get access token (status {response.status_code}): {response.text}")
             token_data = response.json()

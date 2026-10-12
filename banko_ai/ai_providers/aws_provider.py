@@ -613,5 +613,20 @@ class AWSProvider(AIProvider):
             raise AIConnectionError(f"Embedding generation failed: {str(e)}")
     
     def test_connection(self) -> bool:
-        """Test AWS Bedrock connection by checking if the client is initialized."""
-        return self.bedrock_client is not None
+        """Credentials resolve and are current. get_frozen_credentials forces
+        an SSO refresh, so an expired token shows up here instead of on the
+        first chat. Never logs the identity behind the credentials."""
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        if self.session is None:
+            return False
+        try:
+            creds = self.session.get_credentials()
+            if creds is None:
+                return False
+            creds.get_frozen_credentials()
+        except (BotoCoreError, ClientError):
+            # TokenRetrievalError, UnauthorizedSSOTokenError and
+            # NoCredentialsError are all BotoCoreError subclasses.
+            return False
+        return True

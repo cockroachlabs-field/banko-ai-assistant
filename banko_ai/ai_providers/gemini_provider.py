@@ -660,8 +660,10 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
         """Test Gemini connection by listing models (no tokens consumed)."""
         try:
             if GEMINI_AVAILABLE and self.genai_client:
-                models = list(self.genai_client.models.list())
-                return len(models) > 0
+                # One page of one model with a 5 s timeout (milliseconds here).
+                pager = self.genai_client.models.list(
+                    config={"page_size": 1, "http_options": {"timeout": 5000}})
+                return next(iter(pager), None) is not None
             return False
         except Exception:
             return False

@@ -601,7 +601,9 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
             return False
         
         try:
-            self.client.models.list()
+            # Short and single-shot: a health check must not sit through the
+            # SDK's default 10 minute timeout and two retries.
+            self.client.with_options(timeout=5, max_retries=0).models.list()
             return True
         except Exception:
             return False
