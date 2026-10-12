@@ -23,3 +23,9 @@ def test_static_assets_stay_small():
 
 def test_version_matches_the_package():
     assert banko_ai.__version__ == version("banko-ai-assistant")
+
+
+def test_catalog_yaml_ships():
+    defaults = Path(banko_ai.__file__).parent / "config" / "defaults"
+    for name in ("categories.yaml", "personas.yaml", "seed_profiles.yaml"):
+        assert (defaults / name).is_file(), name

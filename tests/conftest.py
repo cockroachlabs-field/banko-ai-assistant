@@ -40,11 +40,14 @@ if os.getenv("DATABASE_URL"):
 def _fresh_settings():
     """Settings are cached per process. Tests change the environment, so
     each one starts from a clean read."""
+    from banko_ai.config.catalog import reset_catalog
     from banko_ai.config.settings import reset_config
 
     reset_config()
+    reset_catalog()
     yield
     reset_config()
+    reset_catalog()
 
 
 @pytest.fixture(scope="session", autouse=True)

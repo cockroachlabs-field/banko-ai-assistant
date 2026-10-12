@@ -1,0 +1,22 @@
+# Demo personas. user_id stays fixed: COACH_DEFAULT_USER_ID points at maya.
+# home_region: auto spreads personas across the database's regions in order;
+# name a region to pin one.
+personas:
+  - user_id: 00000000-0000-0000-0000-0000000000a1
+    username: maya
+    display_name: Maya Chen
+    avatar_color: "#6933FF"
+    spending_style: diner
+    home_region: auto
+  - user_id: 00000000-0000-0000-0000-0000000000a2
+    username: sam
+    display_name: Sam Rivera
+    avatar_color: "#0EA5E9"
+    spending_style: subscriber
+    home_region: auto
+  - user_id: 00000000-0000-0000-0000-0000000000a3
+    username: riley
+    display_name: Riley Okafor
+    avatar_color: "#10B981"
+    spending_style: saver
+    home_region: auto

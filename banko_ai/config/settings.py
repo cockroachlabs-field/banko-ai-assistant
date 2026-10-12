@@ -69,7 +69,7 @@ REMOVED_SETTINGS = {
     "COACH_RATE_LIMIT_PER_5MIN": "nothing reads it",
     "COACH_VELOCITY_HORIZON_DAYS": "nothing reads it",
     "COACH_TOP_MERCHANTS_K": "nothing reads it",
-    "COACH_SUBSCRIPTION_MIN_OCCURRENCES": "nothing reads it",
+    "COACH_SUBSCRIPTION_MIN_OCCURRENCES": "use RECURRING_MIN_OCCURRENCES",
 }
 
 _WATSONX_CHAT_PATH = "/ml/v1/text/chat?version=2023-05-29"
@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     db_pool_pre_ping: bool = _field(True, group="database", env="DB_POOL_PRE_PING", description="Check a connection before using it, so a restarted node or a haproxy reset stays invisible.")
     db_connect_timeout: int = _field(10, group="database", env="DB_CONNECT_TIMEOUT", description="Seconds to wait when opening a connection.")
     db_retry_max_attempts: int = _field(5, group="database", env="DB_RETRY_MAX_ATTEMPTS", description="Attempts for a transaction that hits a retryable error (40001, a dropped connection).")
+    rls_mode: str = _field("auto", group="database", env="RLS_MODE",
+        description="auto turns on row-level security for the money tables when the app role can log in; off keeps it off.")
+    database_app_url: str = _field("", group="database", env="DATABASE_APP_URL", secret=True,
+        description="Connection URL for the non-admin app role used with row-level security. Empty derives it from DATABASE_URL on insecure clusters.")
 
     # AI providers
     ai_service: str = _field("watsonx", group="ai", env="AI_SERVICE", description="Provider that actually serves requests: watsonx, openai, aws, gemini or ollama.")
@@ -193,6 +197,32 @@ class Settings(BaseSettings):
     demo_user_ttl_days: int = _field(0, group="data", env="DEMO_USER_TTL_DAYS", description="Delete signed-up demo users older than this many days at boot. 0 keeps them.")
     monthly_budget_default: float = _field(10000.0, group="data", env="MONTHLY_BUDGET_DEFAULT", description="Monthly budget the budget agent assumes when a user has none.")
     fraud_duplicate_window_days: int = _field(60, group="data", env="FRAUD_DUPLICATE_WINDOW_DAYS", description="Days the fraud agent looks back for duplicate charges.")
+    categories_file: str = _field("", group="data", env="CATEGORIES_FILE",
+        description="YAML file replacing the packaged category list. Empty uses banko_ai/config/defaults/categories.yaml.")
+    personas_file: str = _field("", group="data", env="PERSONAS_FILE",
+        description="YAML file replacing the packaged demo personas. Empty uses banko_ai/config/defaults/personas.yaml.")
+    seed_profiles_file: str = _field("", group="data", env="SEED_PROFILES_FILE",
+        description="YAML file replacing the packaged seed profiles. Empty uses banko_ai/config/defaults/seed_profiles.yaml.")
+    seed_history_months: int = _field(6, group="data", env="SEED_HISTORY_MONTHS",
+        description="Months of history seeded for each persona or new user, unless the profile says otherwise.")
+    seed_batch_size: int = _field(200, group="data", env="SEED_BATCH_SIZE",
+        description="Ledger entries written per seeding transaction.")
+    seed_parallelism: int = _field(3, group="data", env="SEED_PARALLELISM",
+        description="Users seeded at the same time.")
+    checking_overdraft_limit: float = _field(0.0, group="data", env="CHECKING_OVERDRAFT_LIMIT",
+        description="How far below zero a checking account may go. 0 means no overdraft.")
+    max_transfer_amount: float = _field(1000000.0, group="data", env="MAX_TRANSFER_AMOUNT",
+        description="Largest single purchase, deposit or transfer the API accepts.")
+    integrity_interval_seconds: int = _field(300, group="data", env="INTEGRITY_INTERVAL_SECONDS",
+        description="Seconds between money integrity checks. 0 turns the checker off.")
+    integrity_max_accounts: int = _field(5000, group="data", env="INTEGRITY_MAX_ACCOUNTS",
+        description="The integrity checker skips itself above this many accounts.")
+    reporting_follower_reads: bool = _field(True, group="data", env="REPORTING_FOLLOWER_READS",
+        description="Read reports (cash flow, net worth history, statements) with follower reads, a few seconds stale.")
+    recurring_min_occurrences: int = _field(3, group="data", env="RECURRING_MIN_OCCURRENCES",
+        description="Charges needed before a merchant counts as a recurring bill or subscription.")
+    recurring_price_change_pct: float = _field(5.0, group="data", env="RECURRING_PRICE_CHANGE_PCT",
+        description="Percent change between a subscription's old and new price that counts as a price change.")
 
     # Coach and CDC
     cdc_webhook_hmac_secret: str = _field("", group="coach", env="CDC_WEBHOOK_HMAC_SECRET", secret=True, description="Shared secret for the /api/cdc/signals webhook. Empty rejects every webhook.")
@@ -224,6 +254,14 @@ class Settings(BaseSettings):
         parts = urlsplit(value)
         if parts.path in ("", "/"):
             return f"{parts.scheme}://{parts.netloc}{_WATSONX_CHAT_PATH}"
+        return value
+
+    @field_validator("rls_mode", mode="after")
+    @classmethod
+    def _check_rls_mode(cls, value: str) -> str:
+        allowed = {"auto", "off"}
+        if value not in allowed:
+            raise ValueError(f"RLS_MODE={value!r} must be one of {', '.join(sorted(allowed))}")
         return value
 
     @model_validator(mode="after")

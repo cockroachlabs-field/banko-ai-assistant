@@ -1,0 +1,20 @@
+# Every category banko knows. `label` is what expenses.shopping_type stores
+# (Title Case); `aliases` fold other spellings (receipt OCR, imports) into it.
+categories:
+  - {key: housing, label: Housing, icon: "🏠", color: "#8B5CF6", grp: needs, sort: 10, aliases: [rent, mortgage]}
+  - {key: groceries, label: Groceries, icon: "🛒", color: "#10B981", grp: needs, sort: 20, aliases: [grocery, supermarket]}
+  - {key: utilities, label: Utilities, icon: "💡", color: "#EAB308", grp: needs, sort: 30, aliases: [bills, electric, internet, phone]}
+  - {key: transport, label: Transport, icon: "🚕", color: "#0EA5E9", grp: needs, sort: 40, aliases: [transportation, rideshare, transit]}
+  - {key: fuel, label: Fuel, icon: "⛽", color: "#64748B", grp: needs, sort: 50, aliases: [gas]}
+  - {key: health, label: Health, icon: "💊", color: "#EF4444", grp: needs, sort: 60, aliases: [pharmacy, medical]}
+  - {key: home_improvement, label: Home Improvement, icon: "🔨", color: "#78716C", grp: needs, sort: 70, aliases: [hardware]}
+  - {key: restaurant, label: Restaurant, icon: "🍽️", color: "#F97316", grp: wants, sort: 80, aliases: [food, dining, restaurants]}
+  - {key: coffee, label: Coffee, icon: "☕", color: "#A16207", grp: wants, sort: 90, aliases: [cafe]}
+  - {key: subscription, label: Subscription, icon: "🔁", color: "#EC4899", grp: wants, sort: 100, aliases: [subscriptions, streaming]}
+  - {key: shopping, label: Shopping, icon: "🛍️", color: "#6366F1", grp: wants, sort: 110, aliases: [retail, clothing]}
+  - {key: electronics, label: Electronics, icon: "💻", color: "#3B82F6", grp: wants, sort: 120, aliases: []}
+  - {key: entertainment, label: Entertainment, icon: "🎬", color: "#D946EF", grp: wants, sort: 130, aliases: [movies, concerts]}
+  - {key: travel, label: Travel, icon: "✈️", color: "#14B8A6", grp: wants, sort: 140, aliases: [hotel, flights]}
+  - {key: income, label: Income, icon: "💰", color: "#22C55E", grp: income, sort: 200, aliases: [salary, payroll]}
+  - {key: transfer, label: Transfer, icon: "🔄", color: "#94A3B8", grp: transfer, sort: 210, aliases: []}
+  - {key: other, label: Other, icon: "📦", color: "#9CA3AF", grp: wants, sort: 999, aliases: []}

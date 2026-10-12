@@ -1,0 +1,88 @@
+# One profile per spending style. Amounts are dollars; a [low, high] pair is
+# drawn uniformly per charge. per_month is the average number of charges.
+# Every account key referenced below must exist in that profile's accounts.
+profiles:
+  diner:
+    accounts:
+      - {key: checking, kind: checking, name: Everyday Checking, institution: Roachathon Bank, opening_balance: 2400, payment_method: Debit Card}
+      - {key: savings, kind: savings, name: High-Yield Savings, institution: Roachathon Bank, opening_balance: 6000}
+      - {key: card, kind: credit, name: Rewards Card, institution: Roachathon Bank, opening_balance: -450, credit_limit: 8000, apr: 22.99, payment_method: Credit Card}
+    income: {account: checking, amount: 2650, every_days: 14, description: Payroll deposit}
+    card_payment: {from: checking, to: card, day_of_month: 25}
+    purchases:
+      - {category: Restaurant, merchants: [Italian Bistro, Thai Garden, Pizza Hut, "Domino's", Chipotle, Sushi Bar], per_month: 14, amount: [18, 85], account: card}
+      - {category: Groceries, merchants: [Whole Foods, Local Market, "Trader Joe's"], per_month: 6, amount: [25, 140], account: card}
+      - {category: Coffee, merchants: [Starbucks, Blue Bottle, "Peet's Coffee"], per_month: 12, amount: [4, 12], account: card}
+      - {category: Transport, merchants: [Uber, Lyft], per_month: 6, amount: [9, 38], account: card}
+      - {category: Entertainment, merchants: [Movie Theater, Concert Venue], per_month: 2, amount: [18, 95], account: card}
+    bills:
+      - {merchant: Greenway Apartments, category: Housing, amount: 1850, day_of_month: 1, account: checking}
+      - {merchant: Electric Company, category: Utilities, amount: [88, 112], day_of_month: 3, account: checking}
+      - {merchant: Internet Provider, category: Utilities, amount: 79.99, day_of_month: 7, account: card}
+      - {merchant: Spotify, category: Subscription, amount: 11.99, day_of_month: 15, account: card}
+    budgets: {Restaurant: 600, Groceries: 450, Coffee: 90, Transport: 180, Entertainment: 120, Utilities: 200}
+    goals:
+      - {name: Japan trip, icon: "✈️", target_amount: 5000, target_months: 10, account: savings, monthly_contribution: 300, from: checking, day_of_month: 2}
+  subscriber:
+    accounts:
+      - {key: checking, kind: checking, name: Everyday Checking, institution: Roachathon Bank, opening_balance: 1800, payment_method: Debit Card}
+      - {key: savings, kind: savings, name: Rainy Day Savings, institution: Roachathon Bank, opening_balance: 3500}
+      - {key: card, kind: credit, name: Cashback Card, institution: Roachathon Bank, opening_balance: -620, credit_limit: 6000, apr: 24.49, payment_method: Credit Card}
+    income: {account: checking, amount: 2300, every_days: 14, description: Payroll deposit}
+    card_payment: {from: checking, to: card, day_of_month: 22}
+    purchases:
+      - {category: Groceries, merchants: [Whole Foods, Target, Costco], per_month: 5, amount: [30, 160], account: card}
+      - {category: Restaurant, merchants: [Italian Bistro, Chipotle, Subway], per_month: 5, amount: [12, 60], account: card}
+      - {category: Shopping, merchants: [Amazon, Target, Best Buy], per_month: 6, amount: [15, 180], account: card}
+      - {category: Electronics, merchants: [Apple Store, Best Buy], per_month: 0.5, amount: [60, 400], account: card}
+    bills:
+      - {merchant: Maple Street Lofts, category: Housing, amount: 1650, day_of_month: 1, account: checking}
+      - {merchant: Netflix, category: Subscription, amount: 15.99, day_of_month: 12, account: card, price_change: {to: 22.99, months_ago: 2}}
+      - {merchant: Spotify, category: Subscription, amount: 11.99, day_of_month: 15, account: card}
+      - {merchant: Disney Plus, category: Subscription, amount: 13.99, day_of_month: 18, account: card}
+      - {merchant: Planet Fitness, category: Subscription, amount: 24.99, day_of_month: 5, account: card}
+      - {merchant: Cloud Storage Co, category: Subscription, amount: 9.99, day_of_month: 20, account: card}
+      - {merchant: Electric Company, category: Utilities, amount: [95, 118], day_of_month: 3, account: checking}
+      - {merchant: Internet Provider, category: Utilities, amount: 79.99, day_of_month: 7, account: card}
+    budgets: {Subscription: 90, Groceries: 400, Shopping: 300, Restaurant: 200, Utilities: 220}
+    goals:
+      - {name: New laptop, icon: "💻", target_amount: 2200, target_months: 8, account: savings, monthly_contribution: 150, from: checking, day_of_month: 2}
+  saver:
+    accounts:
+      - {key: checking, kind: checking, name: Everyday Checking, institution: Roachathon Bank, opening_balance: 3200, payment_method: Debit Card}
+      - {key: savings, kind: savings, name: High-Yield Savings, institution: Roachathon Bank, opening_balance: 18500}
+      - {key: card, kind: credit, name: No-Fee Card, institution: Roachathon Bank, opening_balance: -120, credit_limit: 4000, apr: 19.99, payment_method: Credit Card}
+    income: {account: checking, amount: 2900, every_days: 14, description: Payroll deposit}
+    card_payment: {from: checking, to: card, day_of_month: 20}
+    purchases:
+      - {category: Groceries, merchants: [Local Market, Costco, Aldi], per_month: 5, amount: [20, 110], account: card}
+      - {category: Transport, merchants: [Metro Transit], per_month: 8, amount: [2.75, 15], account: card}
+      - {category: Coffee, merchants: [Local Cafe], per_month: 2, amount: [3, 7], account: card}
+    bills:
+      - {merchant: Harbor View Co-op, category: Housing, amount: 1400, day_of_month: 1, account: checking}
+      - {merchant: Electric Company, category: Utilities, amount: [60, 85], day_of_month: 3, account: checking}
+      - {merchant: Phone Company, category: Utilities, amount: 35, day_of_month: 9, account: card}
+    budgets: {Groceries: 350, Transport: 120, Coffee: 30, Utilities: 150}
+    goals:
+      - {name: Emergency fund, icon: "🛟", target_amount: 30000, target_months: 18, account: savings, monthly_contribution: 900, from: checking, day_of_month: 2}
+      - {name: House down payment, icon: "🏡", target_amount: 60000, target_months: 48, account: savings, monthly_contribution: 600, from: checking, day_of_month: 3}
+  balanced:
+    accounts:
+      - {key: checking, kind: checking, name: Everyday Checking, institution: Roachathon Bank, opening_balance: 2000, payment_method: Debit Card}
+      - {key: savings, kind: savings, name: Savings, institution: Roachathon Bank, opening_balance: 5000}
+      - {key: card, kind: credit, name: Everyday Card, institution: Roachathon Bank, opening_balance: -300, credit_limit: 5000, apr: 21.99, payment_method: Credit Card}
+    income: {account: checking, amount: 2500, every_days: 14, description: Payroll deposit}
+    card_payment: {from: checking, to: card, day_of_month: 24}
+    purchases:
+      - {category: Groceries, merchants: [Whole Foods, Local Market, Costco, Target], per_month: 6, amount: [15, 120], account: card}
+      - {category: Restaurant, merchants: [Pizza Hut, Italian Bistro, Chipotle, Subway], per_month: 6, amount: [15, 70], account: card}
+      - {category: Transport, merchants: [Uber, Lyft, Metro Transit], per_month: 5, amount: [5, 45], account: card}
+      - {category: Shopping, merchants: [Amazon, Target, Walmart, IKEA], per_month: 4, amount: [15, 150], account: card}
+      - {category: Fuel, merchants: [Shell Gas Station, Chevron], per_month: 3, amount: [30, 65], account: card}
+    bills:
+      - {merchant: Oak Park Rentals, category: Housing, amount: 1500, day_of_month: 1, account: checking}
+      - {merchant: Electric Company, category: Utilities, amount: [80, 105], day_of_month: 3, account: checking}
+      - {merchant: Netflix, category: Subscription, amount: 15.99, day_of_month: 12, account: card}
+    budgets: {Groceries: 400, Restaurant: 250, Transport: 150, Shopping: 250, Fuel: 160, Utilities: 150}
+    goals:
+      - {name: Vacation, icon: "🏖️", target_amount: 3000, target_months: 12, account: savings, monthly_contribution: 200, from: checking, day_of_month: 2}

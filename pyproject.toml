@@ -117,7 +117,7 @@ where = ["."]
 include = ["banko_ai*"]
 
 [tool.setuptools.package-data]
-banko_ai = ["templates/*", "static/*", "static/**/*", "*.html", "*.css", "*.js"]
+banko_ai = ["templates/*", "static/*", "static/**/*", "*.html", "*.css", "*.js", "config/defaults/*.yaml"]
 
 [tool.ruff]
 line-length = 120
