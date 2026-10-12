@@ -247,8 +247,9 @@ def create_app() -> Flask:
         return f"{config.ai_service} reachable"
 
     def _personas_step() -> str:
-        _with_backoff("personas", UserManager(config.database_url).backfill_personas)
-        return "maya, sam, riley present"
+        from ..services.seeding import ensure_personas
+        names = _with_backoff("personas", lambda: ensure_personas(config.database_url))
+        return f"{', '.join(names)} present"
 
     def _expiry_step() -> str:
         from banko_ai.utils.migration import DatabaseMigration
@@ -338,6 +339,22 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         else:
             msg = 'Request body too large'
         return jsonify({'success': False, 'error': msg}), 413
+
+    def _emit_seeding(user_id: str, done: int, total: int, state: str) -> None:
+        socketio.emit("seeding", {"user_id": user_id, "done": done, "total": total, "state": state})
+
+    def _persona_progress(user_id: str, done: int, total: int, state: str) -> None:
+        if state == "running":
+            readiness.set("persona_data", "running", f"seeding {done}/{total}")
+        _emit_seeding(user_id, done, total, state)
+
+    def _persona_data_step() -> str:
+        if config.banko_skip_autosetup:
+            return "skipped (BANKO_SKIP_AUTOSETUP)"
+        readiness.wait_for("personas", timeout=600)
+        from ..services.seeding import seed_personas
+        written = seed_personas(config.database_url, on_progress=_persona_progress)
+        return ", ".join(f"{name} +{n}" for name, n in written.items())
 
     def _emit_welcome_signal(user: dict) -> None:
         """Post a welcome signal matched to the user's spending style.
@@ -456,7 +473,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             home_region = None
 
         um = UserManager(config.database_url)
-        gen = EnhancedExpenseGenerator(config.database_url)
 
         # A taken username is a sign-in, not an error: never touch the
         # existing account from the signup path.
@@ -468,8 +484,15 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         user = None
         try:
             user = um.create(username, spending_style, home_region, demo_user=True)
-            gen.seed_user_history(user["user_id"], spending_style)
-            _emit_welcome_signal(user)
+            def _seed_then_welcome(new_user=user):
+                from ..services.seeding import seed_user
+                try:
+                    seed_user(new_user["user_id"], on_progress=_emit_seeding)
+                    _emit_welcome_signal(new_user)
+                except Exception as exc:
+                    print(f"⚠️  seeding {new_user['username']} failed: {exc}")
+            threading.Thread(target=_seed_then_welcome, daemon=True,
+                             name=f"seed-{user['username']}").start()
 
             session['user_id'] = user["user_id"]
             session['username'] = user["username"]
@@ -2203,6 +2226,11 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         count = data.get('count', 1000)
         clear_existing = data.get('clear_existing', False)
         continuous = data.get('continuous', False)
+        # Clearing wipes every user's expenses, personas included, so the
+        # request has to say so in words, not just tick a box.
+        if clear_existing and data.get('confirm_clear') != 'all users':
+            return jsonify({'success': False,
+                            'error': 'Clearing deletes every user\'s expenses. Confirm with "all users".'}), 400
         
         def generate_in_background():
             # CRITICAL: Need Flask app context for SocketIO in background thread
@@ -2336,4 +2364,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
         ("sample_data", lambda: auto_setup_data_if_needed(config.database_url)),
     ], stop=warmup_stop, name="banko-warmup-db")
+    # Lane C: persona history. Background, so the ready line never waits
+    # for it; progress shows on /api/health and the "seeding" socket event.
+    readiness.mark_background("persona_data")
+    start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-warmup-seed")
     return app

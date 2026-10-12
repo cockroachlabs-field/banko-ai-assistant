@@ -35,7 +35,15 @@ class Readiness:
 
     def __init__(self) -> None:
         self._components: dict[str, Component] = {}
+        self._background: set[str] = set()
         self._changed = threading.Condition()
+
+    def mark_background(self, name: str) -> None:
+        """A background component reports progress but never holds the
+        ready line (persona seeding can take minutes on a fresh database)."""
+        with self._changed:
+            self._background.add(name)
+            self._changed.notify_all()
 
     def set(self, name: str, state: str, detail: str = "") -> None:
         with self._changed:
@@ -51,9 +59,10 @@ class Readiness:
         return component is not None and component.state == "ready"
 
     def finished(self) -> bool:
-        """True once no step is pending or running."""
+        """True once no foreground step is pending or running."""
         with self._changed:
-            return all(c.state not in UNFINISHED for c in self._components.values())
+            return all(c.state not in UNFINISHED for name, c in self._components.items()
+                       if name not in self._background)
 
     def wait_for(self, name: str, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

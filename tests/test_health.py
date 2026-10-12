@@ -74,16 +74,16 @@ def test_app_boots_with_database_down(monkeypatch, make_app):
 def test_ready_waits_for_the_personas(monkeypatch, make_app):
     """A presenter typing "maya" before the personas exist would create an
     ordinary user the backfill never repairs, so /login waits for them."""
-    from banko_ai.web.auth import UserManager
+    from banko_ai.services import seeding
 
     release = threading.Event()
-    real_backfill = UserManager.backfill_personas
+    real_ensure = seeding.ensure_personas
 
-    def slow_backfill(self, *args, **kwargs):
+    def slow_ensure(*args, **kwargs):
         release.wait(30)
-        return real_backfill(self, *args, **kwargs)
+        return real_ensure(*args, **kwargs)
 
-    monkeypatch.setattr(UserManager, "backfill_personas", slow_backfill)
+    monkeypatch.setattr(seeding, "ensure_personas", slow_ensure)
     monkeypatch.setenv("WARMUP_WAIT_SECONDS", "1")
     app = make_app()
     readiness = app.extensions["banko_readiness"]
@@ -147,3 +147,12 @@ def test_a_loading_model_answers_503_warming_up(monkeypatch, make_app):
     resp = client.post("/api/search", json={"query": f"coffee {uuid.uuid4()}"})
     assert resp.status_code == 503
     assert resp.get_json()["error"] == "warming_up"
+
+
+def test_background_components_never_hold_the_ready_line():
+    from banko_ai.workers.warmup import Readiness
+    r = Readiness()
+    r.set("schema", "ready")
+    r.mark_background("persona_data")
+    r.set("persona_data", "running", "seeding 10/400")
+    assert r.finished()

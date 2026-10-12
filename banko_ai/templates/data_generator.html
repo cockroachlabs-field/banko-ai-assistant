@@ -277,7 +277,10 @@
             
             const clearData = document.getElementById('clear-data').checked;
             const continuousMode = document.getElementById('continuous-mode').checked;
-            
+            if (clearData && !window.confirm("This deletes every user's expenses, not just yours. Continue?")) {
+                return;
+            }
+
             console.log('🚀 Starting generation:', {recordCount, clearData, continuousMode});
             
             // Reset state for new generation
@@ -295,11 +298,11 @@
             fetch('/api/generate-data', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                body: JSON.stringify(Object.assign({
                     count: recordCount,
                     clear_existing: clearData,
                     continuous: continuousMode
-                })
+                }, clearData ? { confirm_clear: 'all users' } : {}))
             }).catch(error => {
                 console.error('Error starting generation:', error);
                 handleError({ message: error.message });

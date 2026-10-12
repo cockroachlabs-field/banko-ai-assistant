@@ -117,3 +117,10 @@ def test_413_on_non_receipt_paths_uses_generic_message(client):
     assert json_response["success"] is False
     assert "Request body too large" in json_response["error"]
     assert "Receipt" not in json_response["error"]
+
+
+@needs_db
+def test_clearing_all_data_needs_explicit_confirmation(client):
+    response = client.post("/api/generate-data", json={"count": 1, "clear_existing": True})
+    assert response.status_code == 400
+    assert "all users" in response.get_json()["error"]

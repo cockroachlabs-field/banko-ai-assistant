@@ -165,27 +165,9 @@ class UserManager:
             conn.commit()
 
     def backfill_personas(self) -> None:
-        """UPSERT the three legacy demo personas (idempotent)."""
-        personas = [
-            ("00000000-0000-0000-0000-0000000000a1", "maya", "diner"),
-            ("00000000-0000-0000-0000-0000000000a2", "sam", "subscriber"),
-            ("00000000-0000-0000-0000-0000000000a3", "riley", "saver"),
-        ]
-        with self.engine.connect() as conn:
-            for user_id, username, spending_style in personas:
-                conn.execute(
-                    text("""
-                        INSERT INTO users (user_id, username, spending_style, demo_user)
-                        VALUES (:user_id, :username, :spending_style, true)
-                        ON CONFLICT (username) DO NOTHING
-                    """),
-                    {
-                        "user_id": user_id,
-                        "username": username,
-                        "spending_style": spending_style,
-                    }
-                )
-            conn.commit()
+        """Upsert the catalog's demo personas (idempotent)."""
+        from ..services.seeding import ensure_personas
+        ensure_personas(self.database_url)
 
     def get_current_user(self) -> dict[str, Any] | None:
         """Get current user from Flask session."""

@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, text
 
 from banko_ai.web.app import create_app
 from banko_ai.web.auth import UserManager
+from tests._money import drop_user
 
 DB = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
@@ -37,10 +38,10 @@ def client():
                     conn.execute(text(
                         "DELETE FROM spending_signals WHERE user_id IN "
                         "(SELECT user_id FROM users WHERE username = 'flow-test-user')"))
-                    conn.execute(text(
-                        "DELETE FROM expenses WHERE user_id IN "
-                        "(SELECT user_id FROM users WHERE username = 'flow-test-user')"))
-                    conn.execute(text("DELETE FROM users WHERE username = 'flow-test-user'"))
+                    row = conn.execute(text(
+                        "SELECT user_id FROM users WHERE username = 'flow-test-user'")).fetchone()
+                if row is not None:
+                    drop_user(str(row[0]))
                 break
             except Exception:
                 if attempt == 3:
@@ -61,6 +62,23 @@ def test_signup_creates_seeds_and_logs_in(client):
     assert r.status_code == 302
     r2 = client.get("/")
     assert r2.status_code == 200
+    # History seeds in the background; wait for it so later tests (and
+    # teardown) see a finished user, not a half-written one.
+    user = UserManager(DB).get_by_username("flow-test-user")
+    assert _wait_seeded(user["user_id"]) == "done"
+
+
+def _wait_seeded(user_id: str, seconds: float = 300) -> str | None:
+    import time
+
+    from banko_ai.services.seeding import seeding_status
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        status = seeding_status(user_id)
+        if status and status["state"] in ("done", "failed"):
+            return status["state"]
+        time.sleep(0.5)
+    return None
 
 
 def test_returning_username_signs_in(client):
