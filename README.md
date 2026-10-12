@@ -136,10 +136,27 @@ Swap the `AI_SERVICE` line and credentials for any provider above; only
 Ollama needs the `OLLAMA_HOST` override.
 
 Useful flags for every mode: `banko-ai run --port 5001` (macOS AirPlay
-holds 5000), `banko-ai run --no-data` (skip the sample-data generator;
-the first normal start generates 5000 sample records).
+holds 5000), `banko-ai run --no-data` (skip the sample-data generator),
+`banko-ai run --generate-data 2000` (how many sample records an empty
+database gets; the default is 5000, or `SAMPLE_DATA_COUNT`).
 
-Open <http://localhost:5000>.
+Open <http://localhost:5000>. The server listens in about two seconds and
+does the slow work afterwards. Until the schema and the demo personas are
+ready, pages show a getting-ready card that refreshes itself, and
+`/api/health` lists each warm-up step with its state.
+
+### Show a different provider
+
+Sometimes the venue has no network, but the audience came to see
+watsonx. `AI_SERVICE` picks the provider that really answers;
+`AI_DISPLAY_PROVIDER` picks the one the UI shows, with `AI_DISPLAY_MODEL`
+for the model name on screen and `AI_DISPLAY_MODELS` for what the model
+dropdown offers (picking one never changes the real model). For example
+`AI_SERVICE=ollama AI_DISPLAY_PROVIDER=watsonx
+AI_DISPLAY_MODEL=ibm/granite-3-8b-instruct banko-ai run` serves from a
+local Ollama while the badges say watsonx. The truth is never hidden from
+you: the terminal prints both at startup, and `/api/health` reports the
+real provider and model under `actual`.
 
 ### Sign up and it's yours
 
@@ -212,18 +229,28 @@ The important knobs:
 | `AI_SERVICE` | `watsonx`, `openai`, `aws`, `gemini`, or `ollama` | `watsonx` |
 | `SECRET_KEY` | Flask session key. Auto-generated per boot in dev, which signs everyone out on restart; set it for stable demo sessions | random |
 | `CDC_WEBHOOK_HMAC_SECRET` | Signs Coach webhook posts; unset disables `/api/cdc/signals` and the welcome nudge | unset |
+| `SAMPLE_DATA_COUNT` | Sample expenses generated when the database is empty; `--generate-data N` overrides it | `5000` |
+| `OLLAMA_NUM_CTX` | Context window Ollama loads the model with | `8192` |
+| `OLLAMA_KEEP_ALIVE` | How long Ollama keeps the model loaded when idle; `0` unloads right away | `5m` |
+| `WARMUP_WAIT_SECONDS` | How long a request waits for warm-up before getting the getting-ready reply | `20` |
+| `MAX_UPLOAD_MB` | Largest request body accepted, receipt uploads included | `10` |
+| `SOCKETIO_CORS_ORIGINS` | Comma-separated origins allowed to open Socket.IO; empty means same origin only | empty |
+| `SESSION_COOKIE_SECURE` | Mark the session cookie Secure; turn it on behind HTTPS | `false` |
 
 Per-provider credentials are in "Start the app" above; `AWS_REGION`
 defaults to `us-east-1`. Override model lists with `WATSONX_MODELS`, `OPENAI_MODELS`, `AWS_MODELS`,
-`GEMINI_MODELS` (comma-separated). Cache, fraud, and pool tuning live in
-`banko_ai/config/` (`CACHE_SIMILARITY_THRESHOLD`, `CACHE_TTL_HOURS`,
-`FRAUD_DUPLICATE_WINDOW_DAYS`, `DB_POOL_SIZE`, …).
+`GEMINI_MODELS` (comma-separated). That is not every setting: `banko-ai
+config` prints all of them with the value in effect and where it came
+from, and `banko-ai config --docs` prints the full reference (cache, pool,
+coach and the rest) as Markdown.
 
 ## API
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/health` | GET | DB + AI status |
+| `/api/health` | GET | DB + AI status, plus every warm-up step |
+| `/api/health/live` | GET | 200 as soon as the server listens |
+| `/api/health/ready` | GET | 200 once the schema and personas are ready, 503 before |
 | `/api/ai-providers` | GET | List providers |
 | `/api/models` | GET / POST | List or switch models |
 | `/api/search` | POST | Vector search |

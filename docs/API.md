@@ -6,7 +6,9 @@
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/health` | GET | Health check (DB + AI provider status) |
+| `/api/health` | GET | Health check (DB + AI provider status). `components` holds each warm-up step and its state; `display` and `actual` show the provider on screen and the one really serving. `?refresh=1` re-tests the provider now |
+| `/api/health/live` | GET | Liveness: `{"status": "alive"}` as soon as the server listens, even during warm-up |
+| `/api/health/ready` | GET | Readiness: 200 once the schema and the demo personas are ready, 503 with their current state before that |
 | `/api/ai-providers` | GET | List available AI providers |
 | `/api/models` | GET | List available models for current provider |
 | `/api/models` | POST | Switch to a different model |
@@ -151,6 +153,7 @@ The same signals can arrive over Kafka instead of the webhook: set
 ```bash
 # Health check
 curl http://localhost:5000/api/health
+curl http://localhost:5000/api/health/ready
 
 # Vector search
 curl -X POST http://localhost:5000/api/search \
