@@ -45,7 +45,7 @@ def list_goals(user_id: str, *, today: date | None = None, url: str | None = Non
             projected = _add_months(today, math.ceil(remaining / pace))
         out.append({"goal_id": str(goal_id), "name": name, "icon": icon, "target_amount": target,
                     "target_date": target_date, "account_id": str(account_id), "saved": saved,
-                    "remaining": remaining, "progress": min(saved / target, Decimal("1")),
+                    "remaining": remaining, "progress": float(round(min(saved / target, Decimal("1")), 4)),
                     "monthly_pace": pace, "projected_completion": projected,
                     "on_track": bool(projected and target_date and projected <= target_date)})
     return jsonable(out)

@@ -2,6 +2,7 @@
 
 import os
 from datetime import date
+from decimal import Decimal
 
 import pytest
 
@@ -36,7 +37,7 @@ def test_recurring_finds_monthly_bills_and_the_price_change(subscriber):
     assert {"Netflix", "Spotify", "Electric Company", "Internet Provider"} <= set(found)
     assert found["Netflix"].cadence == found["Spotify"].cadence == "monthly"
     assert found["Netflix"].price_change_pct == pytest.approx(43.78, abs=0.1)
-    assert found["Netflix"].previous_amount == pytest.approx(15.99)
+    assert found["Netflix"].previous_amount == Decimal("15.99")
     assert found["Spotify"].price_change_pct is None
     assert found["Electric Company"].price_change_pct is None  # variable bill, not a price change
     assert "Whole Foods" not in found  # irregular groceries are not a subscription

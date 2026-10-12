@@ -31,7 +31,7 @@ class Recurring:
     category: str
     cadence: str
     amount: Decimal
-    previous_amount: float
+    previous_amount: Decimal
     price_change_pct: float | None
     last_date: date
     next_due: date
@@ -89,7 +89,7 @@ def detect_recurring(user_id: str, *, today: date | None = None, url: str | None
                 change = round(pct, 2)
         found.append(Recurring(
             merchant=charges[-1][1], category=get_catalog().category_for(charges[-1][2]).label,
-            cadence=cadence, amount=last, previous_amount=float(previous), price_change_pct=change,
+            cadence=cadence, amount=last, previous_amount=previous, price_change_pct=change,
             last_date=charges[-1][3], next_due=charges[-1][3] + timedelta(days=round(statistics.median(gaps))),
             occurrences=len(charges)))
     return sorted(found, key=lambda r: r.next_due)

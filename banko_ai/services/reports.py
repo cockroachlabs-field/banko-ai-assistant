@@ -54,7 +54,7 @@ def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: s
     for label in labels:
         inc, spent = income.get(label, Decimal("0")), spending.get(label, Decimal("0"))
         month_rows.append({"month": label, "income": inc, "spending": spent, "net": inc - spent,
-                           "savings_rate": ((inc - spent) / inc) if inc else None})
+                           "savings_rate": float(round((inc - spent) / inc, 4)) if inc else None})
     return jsonable({
         "months": month_rows,
         "categories": sorted(({"category": c.label, "key": c.key, "icon": c.icon, "color": c.color,
