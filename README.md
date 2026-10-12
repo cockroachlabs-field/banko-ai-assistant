@@ -236,6 +236,17 @@ The important knobs:
 | `MAX_UPLOAD_MB` | Largest request body accepted, receipt uploads included | `10` |
 | `SOCKETIO_CORS_ORIGINS` | Comma-separated origins allowed to open Socket.IO; empty means same origin only | empty |
 | `SESSION_COOKIE_SECURE` | Mark the session cookie Secure; turn it on behind HTTPS | `false` |
+| `CATEGORIES_FILE`, `PERSONAS_FILE`, `SEED_PROFILES_FILE` | Your own YAML in place of the packaged categories, personas or seed profiles (`banko_ai/config/defaults/`) | packaged files |
+| `SEED_HISTORY_MONTHS` | Months of history seeded for each persona or new user, unless its profile says otherwise | `6` |
+| `SEED_BATCH_SIZE` | Ledger entries written per seeding transaction | `200` |
+| `SEED_PARALLELISM` | Users seeded at the same time | `3` |
+| `CHECKING_OVERDRAFT_LIMIT` | How far below zero checking may go; `0` means no overdraft | `0` |
+| `MAX_TRANSFER_AMOUNT` | Largest single purchase, deposit or transfer the API accepts | `1000000` |
+| `INTEGRITY_INTERVAL_SECONDS` | Seconds between checks that every balance matches its ledger; `0` turns the checker off | `300` |
+| `INTEGRITY_MAX_ACCOUNTS` | The integrity checker skips itself above this many accounts | `5000` |
+| `REPORTING_FOLLOWER_READS` | Read cash flow, net worth history and statements with follower reads, a few seconds stale | `true` |
+| `RECURRING_MIN_OCCURRENCES` | Charges needed before a merchant counts as a recurring bill | `3` |
+| `RECURRING_PRICE_CHANGE_PCT` | Price change, in percent, that flags a subscription as changed | `5` |
 
 Per-provider credentials are in "Start the app" above; `AWS_REGION`
 defaults to `us-east-1`. Override model lists with `WATSONX_MODELS`, `OPENAI_MODELS`, `AWS_MODELS`,
@@ -258,6 +269,13 @@ coach and the rest) as Markdown.
 | `/api/upload-receipt` | POST | Run a receipt through the agent pipeline |
 | `/api/agents/status` | GET | Agent dashboard data |
 | `/api/chat-history/<id>` | GET / DELETE | Persistent chat per session |
+
+The banking data has its own JSON API under `/api/v1`: dashboard, accounts
+with statements and CSV export, paged and semantic transaction search, cash
+flow, budgets, recurring bills, goals and transfers, all scoped to the
+signed-in persona. Transfers take an idempotency key, so a double submit
+moves money once. Routes, conventions and examples are in
+[`docs/API.md`](docs/API.md#api-v1).
 
 Full list with examples in [`docs/API.md`](docs/API.md). Quick check:
 

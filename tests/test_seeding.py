@@ -168,6 +168,40 @@ def test_missing_meta_with_existing_accounts_resumes_from_the_accounts_open_date
     assert invariant_violations(saver) == []
 
 
+def test_reset_while_a_seed_holds_the_lease_deletes_nothing(saver, monkeypatch):
+    S.seed_user(saver, months=1, today=TODAY)
+    before = _entry_ids(saver)
+    assert S._claim_lease(saver, "running-seed", None)
+    monkeypatch.setattr(S, "LEASE_WAIT_SECONDS", 1)
+    try:
+        assert S.reset_user(saver, today=TODAY, months=1) == 0
+        assert _entry_ids(saver) == before
+        assert _count("accounts", saver) == 3
+        assert S._read_meta(saver, None)["through"] == TODAY.isoformat()
+    finally:
+        S._release_lease(saver, "running-seed", None)
+
+
+def test_reset_holds_the_lease_until_the_reseed_is_done(saver, monkeypatch):
+    S.seed_user(saver, months=1, today=TODAY)
+    seen = []
+    real_delete, real_seed = S._delete_money_rows, S._seed_owned
+
+    def spy_delete(*args, **kwargs):
+        seen.append(("delete", S._lease_held(saver, None)))
+        return real_delete(*args, **kwargs)
+
+    def spy_seed(*args, **kwargs):
+        seen.append(("seed", S._lease_held(saver, None)))
+        return real_seed(*args, **kwargs)
+
+    monkeypatch.setattr(S, "_delete_money_rows", spy_delete)
+    monkeypatch.setattr(S, "_seed_owned", spy_seed)
+    assert S.reset_user(saver, today=TODAY, months=1) > 0
+    assert seen == [("delete", True), ("seed", True)]
+    assert not S._lease_held(saver, None)
+
+
 def test_concurrent_seeds_of_one_user_never_duplicate(saver):
     import threading
 

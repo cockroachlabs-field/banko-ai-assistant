@@ -229,11 +229,15 @@ def _lease_held(user_id: str, url: str | None) -> bool:
                             {"k": _lease_key(user_id)}).fetchone() is not None
 
 
-def _wait_for_owner(user_id: str, today: date, on_progress: ProgressFn | None, url: str | None) -> int:
-    """Someone else is seeding this user: give them a moment, never write."""
+def _wait_for_lease(user_id: str, url: str | None) -> None:
     deadline = time.monotonic() + LEASE_WAIT_SECONDS
     while time.monotonic() < deadline and _lease_held(user_id, url):
         time.sleep(1.0)
+
+
+def _wait_for_owner(user_id: str, today: date, on_progress: ProgressFn | None, url: str | None) -> int:
+    """Someone else is seeding this user: give them a moment, never write."""
+    _wait_for_lease(user_id, url)
     meta = _read_meta(user_id, url)
     current = bool(meta and meta.get("through") and date.fromisoformat(meta["through"]) >= today)
     _report(user_id, 0, 0, "done" if current else "running", on_progress)
@@ -259,26 +263,29 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
     """Seed or catch up one user's history through today. Returns the number
     of ledger entries written this run (0 when already current, or when
     another run holds this user's seeding lease)."""
-    cfg = get_config()
-    catalog = get_catalog()
     today = today or datetime.now(timezone.utc).date()
+    style, profile = _profile_for(user_id, style, url)
+    owner = secrets.token_hex(8)
+    if not _claim_lease(user_id, owner, url):
+        return _wait_for_owner(user_id, today, on_progress, url)
+    try:
+        return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
+                           today, on_progress, url, owner)
+    finally:
+        _release_lease(user_id, owner, url)
+
+
+def _profile_for(user_id: str, style: str | None, url: str | None):
     with get_engine(url).connect() as conn:
         row = conn.execute(text("SELECT spending_style FROM users WHERE user_id = CAST(:u AS UUID)"),
                            {"u": user_id}).fetchone()
     if row is None:
         raise LookupError(f"no user {user_id}")
     style = style or row[0]
-    profile = catalog.profiles.get(style)
+    profile = get_catalog().profiles.get(style)
     if profile is None:
         raise ValueError(f"no seed profile for spending style '{style}'")
-    owner = secrets.token_hex(8)
-    if not _claim_lease(user_id, owner, url):
-        return _wait_for_owner(user_id, today, on_progress, url)
-    try:
-        return _seed_owned(user_id, style, profile, months or profile.months or cfg.seed_history_months,
-                           today, on_progress, url, owner)
-    finally:
-        _release_lease(user_id, owner, url)
+    return style, profile
 
 
 def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
@@ -399,12 +406,9 @@ def seed_generated_users(count: int, *, months: int | None = None, url: str | No
     return ids
 
 
-def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn | None = None,
-               today: date | None = None, months: int | None = None) -> int:
-    """Delete the user's seed state and money rows, then reseed. Coach
-    signals and nudges are left alone. The seed meta goes first, so a crash
-    midway leaves a user who reseeds from scratch, not one whose meta claims
-    history that is gone."""
+def _delete_money_rows(user_id: str, url: str | None) -> None:
+    """The seed meta goes first, so a crash midway leaves a user who reseeds
+    from scratch, not one whose meta claims history that is gone."""
     eng = get_engine(url)
     with eng.begin() as conn:
         conn.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{user_id}"})
@@ -416,4 +420,25 @@ def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn 
                                        {"u": user_id}).rowcount
             if deleted < 1000:
                 break
-    return seed_user(user_id, months=months, today=today, on_progress=on_progress, url=url)
+
+
+def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn | None = None,
+               today: date | None = None, months: int | None = None) -> int:
+    """Delete the user's seed state and money rows, then reseed. Coach
+    signals and nudges are left alone. The whole reset holds the user's
+    seeding lease, so it never deletes rows out from under a running seed;
+    when a seed already holds it, the reset waits a moment and then gives
+    up without deleting anything (returns 0)."""
+    today = today or datetime.now(timezone.utc).date()
+    style, profile = _profile_for(user_id, None, url)
+    owner = secrets.token_hex(8)
+    if not _claim_lease(user_id, owner, url):
+        _wait_for_lease(user_id, url)
+        log.warning("reset of %s skipped: a seed of this user was still running", user_id)
+        return 0
+    try:
+        _delete_money_rows(user_id, url)
+        return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
+                           today, on_progress, url, owner)
+    finally:
+        _release_lease(user_id, owner, url)

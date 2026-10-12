@@ -191,6 +191,36 @@ def create_app() -> Flask:
     def _provider_ui():
         return ui_context(_shown(), status="connected" if ai_provider else "disconnected")
 
+    def _switch_model(model: str) -> tuple[dict, int]:
+        """Switch the model, or the persona's shown model. Returns the JSON
+        payload and status for POST /api/models and /api/v1/ai/model."""
+        try:
+            if not ai_provider:
+                return {'success': False, 'error': 'AI provider not available'}, 500
+
+            if config.ai_display_provider:
+                # Settings guarantee a persona always has at least one model to show.
+                if model not in display_models(config, None):
+                    return {'success': False, 'error': f'Model {model} is not available'}, 400
+                app.config["DISPLAY_MODEL_OVERRIDE"] = model
+                return {'success': True, 'message': f'Switched to {model}', 'current_model': model}, 200
+
+            if ai_provider.set_model(model):
+                return {'success': True, 'message': f'Switched to {model}',
+                        'current_model': ai_provider.get_current_model()}, 200
+            return {'success': False, 'error': f'Model {model} is not available'}, 400
+
+        except Exception as e:
+            print(f"model switch failed: {e}")
+            return {'success': False, 'error': neutral_error(e)}, 500
+
+    app.extensions["banko_ai"] = {
+        "shown": _shown,
+        "models": lambda: (display_models(config, None) if config.ai_display_provider
+                           else display_models(config, ai_provider.get_available_models() if ai_provider else [])),
+        "switch_model": _switch_model,
+    }
+
     if config.ai_display_provider:
         shown, actual = _shown(), _actual()
         _coach_log.getLogger("banko.boot").info(
@@ -916,34 +946,16 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     'error': 'Model name is required'
                 }), 400
 
-            if config.ai_display_provider:
-                # Settings guarantee a persona always has at least one model to show.
-                if model not in display_models(config, None):
-                    return jsonify({'success': False, 'error': f'Model {model} is not available'}), 400
-                app.config["DISPLAY_MODEL_OVERRIDE"] = model
-                return jsonify({'success': True, 'message': f'Switched to {model}', 'current_model': model})
-
-            success = ai_provider.set_model(model)
-
-            if success:
-                return jsonify({
-                    'success': True,
-                    'message': f'Switched to {model}',
-                    'current_model': ai_provider.get_current_model()
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': f'Model {model} is not available'
-                }), 400
-
         except Exception as e:
             print(f"model switch failed: {e}")
             return jsonify({
                 'success': False,
                 'error': neutral_error(e)
             }), 500
-    
+
+        payload, status = _switch_model(model)
+        return jsonify(payload), status
+
     def _db_ping() -> str | None:
         """None when the database answers, otherwise the error."""
         try:
@@ -2365,6 +2377,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     # Register agent dashboard blueprint
     from .agent_dashboard import agent_dashboard
     app.register_blueprint(agent_dashboard)
+    from .api_v1 import api_v1
+    app.register_blueprint(api_v1)
 
     # Last, so every closure the steps call already exists.
     # Lane A needs no database. Lane B runs the gate (schema, personas)
