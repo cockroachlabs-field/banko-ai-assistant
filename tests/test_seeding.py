@@ -299,3 +299,99 @@ def test_seed_personas_skips_a_persona_whose_username_is_taken(monkeypatch, capl
         assert any(squatted_name in r.getMessage() for r in caplog.records)
     finally:
         drop_user(squatter)
+
+
+def test_the_invariant_holds_after_every_batch(saver, monkeypatch):
+    real = S.post_history
+    calls = {"n": 0}
+    after_batch = []
+
+    def flaky(user_id, rows, *, url=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash")
+        written = real(user_id, rows, url=url)
+        after_batch.append(invariant_violations(saver))
+        return written
+
+    monkeypatch.setattr(S, "post_history", flaky)
+    monkeypatch.setattr(S, "_batch_size", lambda: 20)
+    with pytest.raises(RuntimeError):
+        S.seed_user(saver, months=1, today=TODAY)
+    assert after_batch == [[]]
+    assert _count("ledger_entries", saver) == 20
+    assert invariant_violations(saver) == []  # a failed seed leaves no drift behind
+
+
+def test_a_transfer_during_a_seed_of_the_same_user_leaves_no_drift(saver, monkeypatch):
+    import threading
+
+    from banko_ai.services import ledger as L
+
+    real = S.post_history
+    first_batch, transfer_done = threading.Event(), threading.Event()
+    calls = {"n": 0}
+
+    def paced(user_id, rows, *, url=None):
+        written = real(user_id, rows, url=url)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            first_batch.set()
+            transfer_done.wait(30)
+        return written
+
+    monkeypatch.setattr(S, "post_history", paced)
+    monkeypatch.setattr(S, "_batch_size", lambda: 20)
+    errors = []
+
+    def run():
+        try:
+            S.seed_user(saver, months=1, today=TODAY)
+        except Exception as exc:  # surfaced below
+            errors.append(exc)
+
+    seeder = threading.Thread(target=run)
+    seeder.start()
+    try:
+        assert first_batch.wait(60)
+        with get_engine().connect() as c:
+            kinds = dict(c.execute(text("SELECT kind, account_id::STRING FROM accounts "
+                                        "WHERE user_id = CAST(:u AS UUID) AND kind IN ('checking', 'savings')"),
+                                   {"u": saver}).fetchall())
+        result = L.transfer(saver, kinds["checking"], kinds["savings"], "10.00", idempotency_key="mid-seed")
+        assert result.status == "ok"
+        assert invariant_violations(saver) == []
+    finally:
+        transfer_done.set()
+        seeder.join(120)
+    assert errors == []
+    assert invariant_violations(saver) == []
+
+
+def test_reset_never_moves_the_data_version_backwards(saver):
+    from banko_ai.services.ledger import data_version
+
+    S.seed_user(saver, months=1, today=TODAY)
+    before = data_version(saver)
+    S.reset_user(saver, today=TODAY, months=1)
+    assert data_version(saver) > before
+
+
+def test_ensure_personas_applies_a_changed_spending_style():
+    S.ensure_personas()
+    riley = "00000000-0000-0000-0000-0000000000a3"
+    wanted = next(p.spending_style for p in get_catalog().personas if p.user_id == riley)
+    other = next(s for s in sorted(get_catalog().profiles) if s != wanted)
+    with get_engine().begin() as c:
+        c.execute(text("UPDATE users SET spending_style = :s WHERE user_id = CAST(:u AS UUID)"),
+                  {"s": other, "u": riley})
+    try:
+        S.ensure_personas()
+        with get_engine().connect() as c:
+            style = c.execute(text("SELECT spending_style FROM users WHERE user_id = CAST(:u AS UUID)"),
+                              {"u": riley}).scalar()
+        assert style == wanted
+    finally:
+        with get_engine().begin() as c:
+            c.execute(text("UPDATE users SET spending_style = :s WHERE user_id = CAST(:u AS UUID)"),
+                      {"s": wanted, "u": riley})

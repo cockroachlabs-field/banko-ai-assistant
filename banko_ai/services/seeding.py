@@ -72,9 +72,10 @@ def upsert_categories(url: str | None = None) -> int:
 
 
 def ensure_personas(url: str | None = None) -> list[str]:
-    """Upsert the catalog's personas: display fields refresh, a home region
-    someone already chose is kept, and an ordinary user who took a persona's
-    username keeps it (the persona waits)."""
+    """Upsert the catalog's personas: display fields and the spending style
+    refresh (a new style shapes the history from the next reset), a home
+    region someone already chose is kept, and an ordinary user who took a
+    persona's username keeps it (the persona waits)."""
     url = url or get_config().database_url  # seeding always writes as the admin role
     cfg = get_config()
     personas = get_catalog().personas
@@ -98,9 +99,11 @@ def ensure_personas(url: str | None = None) -> list[str]:
     with get_engine(url).begin() as conn:
         conn.execute(text("""
             UPDATE users AS u SET display_name = t.display, avatar_color = t.color,
+                                  spending_style = t.style,
                                   home_region = COALESCE(u.home_region, t.region)
             FROM unnest(CAST(:ids AS UUID[]), CAST(:displays AS STRING[]), CAST(:colors AS STRING[]),
-                        CAST(:regions AS STRING[])) AS t(id, display, color, region)
+                        CAST(:styles AS STRING[]), CAST(:regions AS STRING[]))
+                 AS t(id, display, color, style, region)
             WHERE u.user_id = t.id
         """), params)
         conn.execute(text("""
@@ -413,18 +416,22 @@ def seed_generated_users(count: int, *, months: int | None = None, url: str | No
 
 def _delete_money_rows(user_id: str, url: str | None) -> None:
     """The seed meta goes first, so a crash midway leaves a user who reseeds
-    from scratch, not one whose meta claims history that is gone."""
+    from scratch, not one whose meta claims history that is gone.
+    user_data_versions stays: the version only ever rises, so a cache entry
+    from before the reset can never match again. The bump at the end retires
+    entries cached while the rows were going away."""
     eng = get_engine(url)
     with eng.begin() as conn:
         conn.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{user_id}"})
-    for table in ("ledger_entries", "transfers", "goals", "accounts", "user_budgets",
-                  "user_data_versions", "expenses"):
+    for table in ("ledger_entries", "transfers", "goals", "accounts", "user_budgets", "expenses"):
         while True:
             with eng.begin() as conn:
                 deleted = conn.execute(text(f"DELETE FROM {table} WHERE user_id = CAST(:u AS UUID) LIMIT 1000"),
                                        {"u": user_id}).rowcount
             if deleted < 1000:
                 break
+    run_transaction(lambda conn: bump_data_version(conn, user_id, money_region(conn, user_id, url)),
+                    url=url, user_id=user_id)
 
 
 def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn | None = None,

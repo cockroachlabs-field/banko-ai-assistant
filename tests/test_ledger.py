@@ -253,7 +253,7 @@ def test_tagging_transfer_with_another_users_goal_returns_not_found(user):
         drop_user(other)
 
 
-def test_history_is_idempotent_and_rebalance_restores_the_invariant(user):
+def test_history_moves_balances_per_batch_and_a_repost_changes_nothing(user):
     acct = _checking(user, "0")
     day = date(2026, 1, 15)
     rows = [
@@ -269,7 +269,10 @@ def test_history_is_idempotent_and_rebalance_restores_the_invariant(user):
                               "tags": ["coffee", "cafe"], "embedding": None}),
     ]
     assert L.post_history(user, rows) == 2
-    assert L.post_history(user, rows) == 2  # same ids: a no-op write
+    assert _balance(acct) == Decimal("480.00")  # balances move with the batch
+    assert invariant_violations(user) == []
+    assert L.post_history(user, rows) == 0  # same ids: nothing inserted, no delta
+    assert _balance(acct) == Decimal("480.00")
     L.rebalance(user)
     assert _balance(acct) == Decimal("480.00")
     with get_engine().connect() as c:

@@ -390,9 +390,11 @@ class HistoryRow:
 
 
 def post_history(user_id: str, rows: Sequence[HistoryRow], *, url: str | None = None) -> int:
-    """Write one bounded batch of seeded history. Ids are deterministic, so a
-    retried or repeated batch changes nothing. Balances are not touched:
-    call rebalance once the whole history is in."""
+    """Write one bounded batch of seeded history and move the balances of the
+    accounts it touched, in one transaction, so the invariant holds after
+    every batch. Ids are deterministic: only rows actually inserted count
+    toward a balance, so a retried or repeated batch changes nothing.
+    Returns the number of ledger entries inserted."""
     if not rows:
         return 0
     purchases = [r for r in rows if r.expense]
@@ -401,7 +403,7 @@ def post_history(user_id: str, rows: Sequence[HistoryRow], *, url: str | None = 
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
         if purchases:
-            exp = [r.expense for r in purchases]
+            exp = [r.expense for r in purchases if r.expense is not None]
             conn.execute(text(f"""
                 INSERT INTO expenses ({rcol}expense_id, user_id, expense_date, expense_amount, shopping_type,
                                       description, merchant, payment_method, recurring, tags, embedding)
@@ -427,7 +429,7 @@ def post_history(user_id: str, rows: Sequence[HistoryRow], *, url: str | None = 
                 "tag2s": [e["tags"][1] for e in exp],
                 "embs": [e["embedding"] for e in exp],
             })
-        conn.execute(text(f"""
+        inserted = conn.execute(text(f"""
             INSERT INTO ledger_entries ({rcol}entry_id, user_id, account_id, posted_at, amount, kind,
                                         description, expense_id, transfer_id, goal_id)
             SELECT {rval}t.id, CAST(:u AS UUID), t.acct, t.posted, t.amt, t.kind, t.descr, t.eid, t.tid, t.gid
@@ -436,6 +438,7 @@ def post_history(user_id: str, rows: Sequence[HistoryRow], *, url: str | None = 
                         CAST(:eids AS UUID[]), CAST(:tids AS UUID[]), CAST(:gids AS UUID[]))
                  AS t(id, acct, posted, amt, kind, descr, eid, tid, gid)
             ON CONFLICT (entry_id) DO NOTHING
+            RETURNING account_id, amount
         """), {
             "u": user_id, "crdb_region": region,
             "ids": [r.entry_id for r in rows],
@@ -447,15 +450,27 @@ def post_history(user_id: str, rows: Sequence[HistoryRow], *, url: str | None = 
             "eids": [r.expense["expense_id"] if r.expense else None for r in rows],
             "tids": [r.transfer_id for r in rows],
             "gids": [r.goal_id for r in rows],
-        })
-        return len(rows)
+        }).fetchall()
+        if not inserted:
+            return 0
+        deltas: dict[str, Decimal] = {}
+        for account_id, amount in inserted:
+            deltas[str(account_id)] = deltas.get(str(account_id), Decimal("0")) + amount
+        conn.execute(text("""
+            UPDATE accounts AS a SET balance = a.balance + t.delta
+            FROM unnest(CAST(:accts AS UUID[]), CAST(:deltas AS DECIMAL[])) AS t(id, delta)
+            WHERE a.account_id = t.id AND a.user_id = CAST(:u AS UUID)
+        """), {"u": user_id, "accts": list(deltas), "deltas": list(deltas.values())})
+        bump_data_version(conn, user_id, region)
+        return len(inserted)
 
     return run_transaction(fn, url=url, user_id=user_id, idempotent=True)
 
 
 def rebalance(user_id: str, *, url: str | None = None) -> None:
-    """Set every account of the user to opening balance plus its ledger,
-    which makes the invariant true by construction after seeding."""
+    """Set every account of the user to opening balance plus its ledger.
+    post_history already keeps balances right batch by batch; seeding still
+    calls this at the end as a cheap safety net."""
 
     def fn(conn: Connection) -> None:
         conn.execute(text("""
