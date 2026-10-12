@@ -57,14 +57,13 @@ def _batch_size() -> int:
 def upsert_categories(url: str | None = None) -> int:
     url = url or get_config().database_url  # seeding always writes as the admin role
     cats = get_catalog().categories
-    with get_engine(url).begin() as conn:
-        conn.execute(text("""
-            UPSERT INTO categories (key, label, icon, color, grp, sort)
-            SELECT * FROM unnest(CAST(:keys AS STRING[]), CAST(:labels AS STRING[]), CAST(:icons AS STRING[]),
-                                 CAST(:colors AS STRING[]), CAST(:grps AS STRING[]), CAST(:sorts AS INT8[]))
-        """), {"keys": [c.key for c in cats], "labels": [c.label for c in cats],
-               "icons": [c.icon for c in cats], "colors": [c.color for c in cats],
-               "grps": [c.grp for c in cats], "sorts": [c.sort for c in cats]})
+    run_transaction(lambda conn: conn.execute(text("""
+        UPSERT INTO categories (key, label, icon, color, grp, sort)
+        SELECT * FROM unnest(CAST(:keys AS STRING[]), CAST(:labels AS STRING[]), CAST(:icons AS STRING[]),
+                             CAST(:colors AS STRING[]), CAST(:grps AS STRING[]), CAST(:sorts AS INT8[]))
+    """), {"keys": [c.key for c in cats], "labels": [c.label for c in cats],
+           "icons": [c.icon for c in cats], "colors": [c.color for c in cats],
+           "grps": [c.grp for c in cats], "sorts": [c.sort for c in cats]}), url=url)
     return len(cats)
 
 
@@ -93,7 +92,10 @@ def ensure_personas(url: str | None = None) -> list[str]:
         "displays": [p.display_name for p in personas],
         "colors": [p.avatar_color for p in personas],
     }
-    with get_engine(url).begin() as conn:
+    # users is GLOBAL: its writes commit in the future, so a write right
+    # behind another one (the personas warm-up step, then seeding) can lose
+    # with a 40001. Retried like every other write.
+    def fn(conn) -> list[str]:
         conn.execute(text("""
             UPDATE users AS u SET display_name = t.display, avatar_color = t.color,
                                   spending_style = t.style,
@@ -113,7 +115,9 @@ def ensure_personas(url: str | None = None) -> list[str]:
         """), params)
         present = conn.execute(text("SELECT username FROM users WHERE user_id = ANY(CAST(:ids AS UUID[])) "
                                     "ORDER BY username"), params).fetchall()
-    return [r[0] for r in present]
+        return [r[0] for r in present]
+
+    return run_transaction(fn, url=url)
 
 
 def _read_meta(user_id: str, url: str | None) -> dict | None:
@@ -124,9 +128,9 @@ def _read_meta(user_id: str, url: str | None) -> dict | None:
 
 
 def _write_meta(user_id: str, value: dict, url: str | None) -> None:
-    with get_engine(url).begin() as conn:
-        conn.execute(text("UPSERT INTO banko_meta (key, value, updated_at) VALUES (:k, :v, now())"),
-                     {"k": f"seed:{user_id}", "v": json.dumps(value)})
+    run_transaction(lambda conn: conn.execute(
+        text("UPSERT INTO banko_meta (key, value, updated_at) VALUES (:k, :v, now())"),
+        {"k": f"seed:{user_id}", "v": json.dumps(value)}), url=url)
 
 
 def _ensure_accounts(user_id: str, plan: SeedPlan, start: date, url: str | None) -> dict[str, str]:
@@ -395,16 +399,18 @@ def seed_generated_users(count: int, *, months: int | None = None, url: str | No
     regions = sorted(detect_database_regions(url or cfg.database_url))
     if count <= 0:
         return []
-    with get_engine(url).begin() as conn:
-        rows = conn.execute(text("""
-            INSERT INTO users (username, spending_style, home_region, demo_user)
-            SELECT t.name, t.style, t.region, true
-            FROM unnest(CAST(:names AS STRING[]), CAST(:styles AS STRING[]), CAST(:regions AS STRING[]))
-                 AS t(name, style, region)
-            RETURNING user_id
-        """), {"names": [f"demo-{secrets.token_hex(3)}" for _ in range(count)],
-               "styles": [styles[i % len(styles)] for i in range(count)],
-               "regions": [regions[i % len(regions)] if regions else None for i in range(count)]}).fetchall()
+    params = {"names": [f"demo-{secrets.token_hex(3)}" for _ in range(count)],
+              "styles": [styles[i % len(styles)] for i in range(count)],
+              "regions": [regions[i % len(regions)] if regions else None for i in range(count)]}
+    # Not idempotent (a replay after an ambiguous commit would add users), so
+    # only a definite rollback is retried.
+    rows = run_transaction(lambda conn: conn.execute(text("""
+        INSERT INTO users (username, spending_style, home_region, demo_user)
+        SELECT t.name, t.style, t.region, true
+        FROM unnest(CAST(:names AS STRING[]), CAST(:styles AS STRING[]), CAST(:regions AS STRING[]))
+             AS t(name, style, region)
+        RETURNING user_id
+    """), params).fetchall(), url=url, idempotent=False)
     ids = [str(r[0]) for r in rows]
     with ThreadPoolExecutor(max_workers=max(1, cfg.seed_parallelism), thread_name_prefix="banko-seed") as pool:
         for future in [pool.submit(seed_user, uid, months=months, on_progress=on_progress, url=url) for uid in ids]:
@@ -418,14 +424,13 @@ def _delete_money_rows(user_id: str, url: str | None) -> None:
     user_data_versions stays: the version only ever rises, so a cache entry
     from before the reset can never match again. The bump at the end retires
     entries cached while the rows were going away."""
-    eng = get_engine(url)
-    with eng.begin() as conn:
-        conn.execute(text("DELETE FROM banko_meta WHERE key = :k"), {"k": f"seed:{user_id}"})
+    run_transaction(lambda conn: conn.execute(text("DELETE FROM banko_meta WHERE key = :k"),
+                                              {"k": f"seed:{user_id}"}), url=url)
     for table in ("ledger_entries", "transfers", "goals", "accounts", "user_budgets", "expenses"):
         while True:
-            with eng.begin() as conn:
-                deleted = conn.execute(text(f"DELETE FROM {table} WHERE user_id = CAST(:u AS UUID) LIMIT 1000"),
-                                       {"u": user_id}).rowcount
+            deleted = run_transaction(lambda conn, table=table: conn.execute(
+                text(f"DELETE FROM {table} WHERE user_id = CAST(:u AS UUID) LIMIT 1000"),
+                {"u": user_id}).rowcount, url=url)
             if deleted < 1000:
                 break
     run_transaction(lambda conn: bump_data_version(conn, user_id, money_region(conn, user_id, url)),

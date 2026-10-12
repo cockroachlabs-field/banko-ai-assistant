@@ -3,8 +3,10 @@
 import os
 from datetime import date, timedelta
 
+import psycopg
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 
 from banko_ai.config.catalog import get_catalog
 from banko_ai.db.engine import get_engine
@@ -395,3 +397,58 @@ def test_ensure_personas_applies_a_changed_spending_style():
         with get_engine().begin() as c:
             c.execute(text("UPDATE users SET spending_style = :s WHERE user_id = CAST(:u AS UUID)"),
                       {"s": wanted, "u": riley})
+
+
+class _FlakyEngine:
+    """The real engine, except the first transaction it opens fails with a
+    40001, the way a write to a GLOBAL table can lose to a neighbor."""
+
+    def __init__(self, real):
+        self.real = real
+        self.failed = 0
+
+    def begin(self):
+        if not self.failed:
+            self.failed += 1
+            raise OperationalError("BEGIN", {}, psycopg.errors.SerializationFailure("restart transaction"))
+        return self.real.begin()
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+@pytest.fixture
+def flaky(monkeypatch):
+    from banko_ai.db import engine as E
+    real_get = E.get_engine
+    engines: dict = {}
+
+    def get(url=None):
+        real = real_get(url)
+        return engines.setdefault(id(real), _FlakyEngine(real))
+
+    monkeypatch.setattr(E, "get_engine", get)
+    monkeypatch.setattr(S, "get_engine", get)
+    monkeypatch.setattr(E.time, "sleep", lambda seconds: None)
+    return engines
+
+
+@pytest.mark.parametrize("step", ["ensure_personas", "upsert_categories", "write_meta",
+                                  "delete_money_rows", "generated_users"])
+def test_seeding_writes_survive_a_serialization_failure(saver, flaky, monkeypatch, step):
+    if step == "ensure_personas":
+        assert {"maya", "sam", "riley"} <= set(S.ensure_personas())
+    elif step == "upsert_categories":
+        assert S.upsert_categories() >= 17
+    elif step == "write_meta":
+        S._write_meta(saver, {"start": "2026-01-01", "through": None}, None)
+        assert S._read_meta(saver, None) == {"start": "2026-01-01", "through": None}
+    elif step == "delete_money_rows":
+        S._delete_money_rows(saver, None)
+    else:
+        monkeypatch.setattr(S, "seed_user", lambda *a, **k: 0)
+        ids = S.seed_generated_users(1)
+        assert len(ids) == 1
+        for uid in ids:
+            drop_user(uid)
+    assert sum(e.failed for e in flaky.values()) == 1
