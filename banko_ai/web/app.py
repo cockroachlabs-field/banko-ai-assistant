@@ -356,13 +356,25 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             readiness.set("persona_data", "running", f"seeding {all_done}/{all_total}")
         _emit_seeding(user_id, done, total, state)
 
+    def _integrity(report) -> None:
+        if report.skipped:
+            readiness.set("integrity", "ready", f"skipped: {report.skipped}")
+        elif report.drifted:
+            readiness.set("integrity", "degraded", f"drift on {len(report.drifted)} of {report.accounts} accounts")
+        else:
+            readiness.set("integrity", "ready", f"0 drift across {report.accounts} accounts")
+
     def _persona_data_step() -> str:
-        if config.banko_skip_autosetup:
-            return "skipped (BANKO_SKIP_AUTOSETUP)"
-        readiness.wait_for("personas", timeout=600)
-        from ..services.seeding import seed_personas
-        written = seed_personas(config.database_url, on_progress=_persona_progress)
-        return ", ".join(f"{name} +{n}" for name, n in written.items())
+        from ..services.integrity import IntegrityWorker
+        try:
+            if config.banko_skip_autosetup:
+                return "skipped (BANKO_SKIP_AUTOSETUP)"
+            readiness.wait_for("personas", timeout=600)
+            from ..services.seeding import seed_personas
+            written = seed_personas(config.database_url, on_progress=_persona_progress)
+            return ", ".join(f"{name} +{n}" for name, n in written.items())
+        finally:
+            IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
 
     def _emit_welcome_signal(user: dict) -> None:
         """Post a welcome signal matched to the user's spending style.
@@ -2375,5 +2387,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     # Lane C: persona history. Background, so the ready line never waits
     # for it; progress shows on /api/health and the "seeding" socket event.
     readiness.mark_background("persona_data")
+    readiness.mark_background("integrity")
     start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-warmup-seed")
     return app
