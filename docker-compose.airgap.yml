@@ -30,6 +30,12 @@ services:
     hostname: ollama
     ports:
       - "11434:11434"
+    environment:
+      # Backstop for anything that reaches the daemon without its own
+      # options: an 8k context keeps granite3.3:8b well under the 10 GB
+      # it takes at the 32k default, and 5m frees the memory when idle.
+      - OLLAMA_CONTEXT_LENGTH=${OLLAMA_NUM_CTX:-8192}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
     volumes:
       - ollama-models:/root/.ollama
     networks:
@@ -81,6 +87,9 @@ services:
       - AI_SERVICE=ollama
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=${OLLAMA_MODEL:-granite3.3:8b}
+      # Match the daemon above so the model loads once and stays loaded
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-8192}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
       - CDC_WEBHOOK_HMAC_SECRET=${CDC_WEBHOOK_HMAC_SECRET:-airgap-demo-secret}
       - CACHE_SIMILARITY_THRESHOLD=${CACHE_SIMILARITY_THRESHOLD:-0.75}
       - CACHE_TTL_HOURS=${CACHE_TTL_HOURS:-24}

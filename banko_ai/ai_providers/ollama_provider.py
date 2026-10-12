@@ -33,6 +33,10 @@ class OllamaProvider(AIProvider):
         self.cache_manager = cache_manager
         self.embedding_model_name = cfg.embedding_model
         self.timeout = cfg.ollama_timeout_seconds
+        # Same values the agent path (llm_factory) sends, so Ollama never
+        # reloads the model when traffic switches between the two.
+        self.num_ctx = cfg.ollama_num_ctx
+        self.keep_alive = cfg.ollama_keep_alive_value
         super().__init__(config)
 
     def _validate_config(self) -> None:
@@ -53,7 +57,9 @@ class OllamaProvider(AIProvider):
             resp = requests.post(
                 f"{self.host}/api/chat",
                 json={"model": self.current_model, "messages": messages,
-                      "stream": False},
+                      "stream": False,
+                      "options": {"num_ctx": self.num_ctx},
+                      "keep_alive": self.keep_alive},
                 timeout=self.timeout)
         except requests.exceptions.ConnectionError as e:
             raise AIConnectionError(
@@ -79,11 +85,19 @@ class OllamaProvider(AIProvider):
         return True
 
     def test_connection(self) -> bool:
+        """The daemon answers and the configured model is pulled."""
         try:
-            return requests.get(f"{self.host}/api/tags",
-                                timeout=5).status_code == 200
-        except requests.exceptions.RequestException:
+            resp = requests.get(f"{self.host}/api/tags", timeout=(2, 5))
+            if resp.status_code != 200:
+                return False
+            names = {m.get("name", "") for m in resp.json().get("models", [])}
+        except (requests.exceptions.RequestException, ValueError):
             return False
+
+        def bare(name: str) -> str:
+            return name[:-len(":latest")] if name.endswith(":latest") else name
+
+        return bare(self.current_model) in {bare(n) for n in names}
 
     # ── embeddings (local, same as every provider) ─────────────────────
 

@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 import yaml
 from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -63,7 +64,7 @@ REMOVED_SETTINGS = {
     "SIMILARITY_THRESHOLD": "use CACHE_SIMILARITY_THRESHOLD",
     "CACHE_ENABLED": "caching is always on",
     "CACHE_TTL": "use CACHE_TTL_HOURS",
-    "DEFAULT_RECORD_COUNT": "use banko-ai run --generate-data",
+    "DEFAULT_RECORD_COUNT": "use SAMPLE_DATA_COUNT or banko-ai run --generate-data",
     "DEFAULT_USER_COUNT": "nothing reads it",
     "COACH_RATE_LIMIT_PER_5MIN": "nothing reads it",
     "COACH_VELOCITY_HORIZON_DAYS": "nothing reads it",
@@ -76,14 +77,35 @@ _WATSONX_CHAT_PATH = "/ml/v1/text/chat?version=2023-05-29"
 _warned: set[str] = set()
 
 
+@dataclass(frozen=True)
+class FieldMeta:
+    env: str
+    group: str
+    secret: bool
+    aliases: tuple[str, ...]
+
+
+# The same metadata as json_schema_extra, keyed by env name, with real types.
+_META: dict[str, FieldMeta] = {}
+
+
 def _field(default: Any, *, group: str, env: str, description: str,
            secret: bool = False, aliases: tuple[str, ...] = ()) -> Any:
+    _META[env] = FieldMeta(env=env, group=group, secret=secret, aliases=aliases)
     return Field(
         default,
         validation_alias=AliasChoices(env, *aliases),
         description=description,
         json_schema_extra={"group": group, "env": env, "secret": secret, "aliases": list(aliases)},
     )
+
+
+def field_meta(field: FieldInfo) -> FieldMeta:
+    """Typed metadata for one Settings field."""
+    alias = field.validation_alias
+    if not isinstance(alias, AliasChoices) or not isinstance(alias.choices[0], str):
+        raise TypeError("Settings fields are declared through _field()")
+    return _META[alias.choices[0]]
 
 
 @dataclass(frozen=True)
@@ -105,7 +127,7 @@ class Settings(BaseSettings):
     host: str = _field("0.0.0.0", group="server", env="HOST", description="Address `banko-ai run` binds.")
     port: int = _field(5000, group="server", env="PORT", description="Port `banko-ai run` and the Docker image listen on.")
     socketio_cors_origins: str = _field("", group="server", env="SOCKETIO_CORS_ORIGINS", description="Comma-separated origins allowed to open Socket.IO connections. Empty means same origin only.")
-    max_upload_mb: int = _field(10, group="server", env="MAX_UPLOAD_MB", description="Largest receipt upload accepted, in megabytes.")
+    max_upload_mb: int = _field(10, group="server", env="MAX_UPLOAD_MB", description="Largest request body accepted, in megabytes. It caps every request, receipt uploads included.")
     session_cookie_secure: bool = _field(False, group="server", env="SESSION_COOKIE_SECURE", description="Mark the session cookie Secure. Turn it on when serving over HTTPS.")
     warmup_wait_seconds: int = _field(20, group="server", env="WARMUP_WAIT_SECONDS", description="How long a request waits for background warm-up (schema, embedding model) before getting a friendly still-warming-up reply.")
 
@@ -135,6 +157,8 @@ class Settings(BaseSettings):
     ollama_host: str = _field("http://localhost:11434", group="ai", env="OLLAMA_HOST", description="Ollama daemon URL.")
     ollama_model: str = _field("granite3.3:8b", group="ai", env="OLLAMA_MODEL", description="Default Ollama model.")
     ollama_timeout_seconds: int = _field(120, group="ai", env="OLLAMA_TIMEOUT_SECONDS", description="Ollama request timeout in seconds.")
+    ollama_num_ctx: int = _field(8192, group="ai", env="OLLAMA_NUM_CTX", description="Context window Ollama loads the model with. The daemon default (32k) makes granite3.3:8b take about 10 GB; 8192 fits the demo prompts in far less memory.")
+    ollama_keep_alive: str = _field("5m", group="ai", env="OLLAMA_KEEP_ALIVE", description="How long Ollama keeps the model loaded after the last request, for example 5m or 1h. 0 unloads it right after each answer.")
     aws_access_key_id: str | None = _field(None, group="ai", env="AWS_ACCESS_KEY_ID", secret=True, description="AWS access key id (or use AWS_PROFILE).")
     aws_secret_access_key: str | None = _field(None, group="ai", env="AWS_SECRET_ACCESS_KEY", secret=True, description="AWS secret access key.")
     aws_profile: str | None = _field(None, group="ai", env="AWS_PROFILE", description="AWS profile name, for SSO.")
@@ -164,6 +188,7 @@ class Settings(BaseSettings):
 
     # Demo data
     banko_skip_autosetup: bool = _field(False, group="data", env="BANKO_SKIP_AUTOSETUP", description="Skip generating sample data on an empty database.")
+    sample_data_count: int = _field(5000, group="data", env="SAMPLE_DATA_COUNT", description="Sample expenses generated at boot when the database is empty. `banko-ai run --generate-data N` overrides it.")
     data_gen_batch_size: int = _field(50, group="data", env="DATA_GEN_BATCH_SIZE", description="Rows per insert batch in the data generator.")
     demo_user_ttl_days: int = _field(0, group="data", env="DEMO_USER_TTL_DAYS", description="Delete signed-up demo users older than this many days at boot. 0 keeps them.")
     monthly_budget_default: float = _field(10000.0, group="data", env="MONTHLY_BUDGET_DEFAULT", description="Monthly budget the budget agent assumes when a user has none.")
@@ -233,6 +258,12 @@ class Settings(BaseSettings):
         return tuple(sources)
 
     @property
+    def ollama_keep_alive_value(self) -> int | str:
+        """OLLAMA_KEEP_ALIVE as Ollama wants it: bare digits are seconds."""
+        value = self.ollama_keep_alive.strip()
+        return int(value) if value.lstrip("-").isdigit() else value
+
+    @property
     def watsonx_base_url(self) -> str:
         parts = urlsplit(self.watsonx_api_url)
         return f"{parts.scheme}://{parts.netloc}"
@@ -283,17 +314,17 @@ class Settings(BaseSettings):
         file_keys = _yaml_keys()
         rows = []
         for name, field in type(self).model_fields.items():
-            extra = field.json_schema_extra or {}
-            env = extra["env"]
-            if any(n.upper() in env_present for n in (env, *extra.get("aliases", []))):
+            meta = field_meta(field)
+            env = meta.env
+            if any(n.upper() in env_present for n in (env, *meta.aliases)):
                 source = "env"
             elif name in file_keys or env in file_keys:
                 source = "file"
             else:
                 source = "default"
             value = getattr(self, name)
-            shown = _masked(name, value) if extra.get("secret") else _shown(value)
-            rows.append(SettingInfo(env=env, group=extra["group"], value=shown,
+            shown = _masked(name, value) if meta.secret else _shown(value)
+            rows.append(SettingInfo(env=env, group=meta.group, value=shown,
                                     source=source, description=field.description or ""))
         return rows
 
@@ -342,19 +373,19 @@ def render_config_docs() -> str:
     """Markdown reference for the README, generated from the field definitions."""
     lines: list[str] = []
     for group, title in GROUPS.items():
-        fields = [f for f in Settings.model_fields.values() if (f.json_schema_extra or {}).get("group") == group]
+        fields = [f for f in Settings.model_fields.values() if field_meta(f).group == group]
         if not fields:
             continue
         lines += [f"### {title}", "", "| Variable | Default | What it does |", "|---|---|---|"]
         for field in fields:
-            extra = field.json_schema_extra or {}
+            meta = field_meta(field)
             default = "" if field.default in (None, "") else f"`{field.default}`"
             description = field.description or ""
-            aliases = extra.get("aliases") or []
+            aliases = meta.aliases
             if aliases:
                 names = ", ".join(f"`{a}`" for a in aliases)
                 description += f" The old name {names} still works." if len(aliases) == 1 else f" The old names {names} still work."
-            lines.append(f"| `{extra['env']}` | {default} | {description} |")
+            lines.append(f"| `{meta.env}` | {default} | {description} |")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 

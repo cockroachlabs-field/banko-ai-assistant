@@ -65,6 +65,7 @@ dependencies = [
     "langchain-aws>=1.0.0",
     "langchain-ibm>=1.0.0",
     "langchain-google-genai>=4.0.0",
+    "langchain-ollama>=1.0.0",  # native /api/chat so num_ctx and keep_alive apply on the agent path too
     "langchain-community>=0.4.0",
     
     # Document Processing (NEW)

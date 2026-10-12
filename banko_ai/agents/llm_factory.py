@@ -87,14 +87,16 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
             )
     
     elif config.ai_service == 'ollama':
-        from langchain_openai import ChatOpenAI
-        host = config.ollama_host.rstrip('/')
-        # Ollama serves an OpenAI-compatible endpoint at /v1; the key is a
-        # required-but-ignored placeholder.
-        return ChatOpenAI(
+        # The native API, not the OpenAI-compatible /v1: /v1 ignores
+        # num_ctx, so the daemon would load the model at its own default
+        # and reload it every time traffic switched between this path and
+        # the provider's /api/chat calls.
+        from langchain_ollama import ChatOllama
+        return ChatOllama(
             model=model_override or config.ollama_model,
-            api_key='ollama',
-            base_url=f"{host}/v1",
+            base_url=config.ollama_host.rstrip('/'),
+            num_ctx=config.ollama_num_ctx,
+            keep_alive=config.ollama_keep_alive_value,
             temperature=temperature,
         )
 

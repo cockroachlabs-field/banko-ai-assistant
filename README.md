@@ -192,6 +192,16 @@ non-Docker setup, `ollama serve` plus `AI_SERVICE=ollama banko-ai run`
 does the same thing. Any OpenAI-compatible endpoint also works via
 `OPENAI_BASE_URL` with `AI_SERVICE=openai`.
 
+Two settings keep Ollama from taking over a laptop. `OLLAMA_NUM_CTX`
+(default 8192) is the context window the model loads with; the daemon's
+own 32k default makes granite3.3:8b take about 10 GB. `OLLAMA_KEEP_ALIVE`
+(default `5m`) is how long the model stays loaded after the last
+request, and `0` unloads it right away. Banko sends both on every call,
+chat and agents alike, and the airgap compose file sets the same values
+on the Ollama container. On a Mac, Ollama inside Docker runs on the CPU
+because the Linux VM has no access to the Apple GPU, so native
+`ollama serve` is the faster choice there.
+
 ## Configuration
 
 The important knobs:
