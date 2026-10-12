@@ -31,7 +31,7 @@ def cli(ctx):
 @click.option('--host', default=None, help='Host to bind to')
 @click.option('--port', default=None, type=int, help='Port to bind to')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-@click.option('--generate-data', type=int, default=5000, help='Generate sample data before starting (default: 5000 records)')
+@click.option('--generate-data', type=int, default=None, help='Sample expenses to generate when the database is empty (default: SAMPLE_DATA_COUNT, 5000)')
 @click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
 @click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
 @click.option('--background', is_flag=True, help='Run in background mode (suppress Flask output)')
@@ -48,6 +48,10 @@ def run(host, port, debug, generate_data, no_data, clear_data, background):
         click.echo(f"🤖 AI Service: {config.ai_service}")
     click.echo("=" * 44)
 
+    if generate_data is not None:
+        # The warm-up's sample-data step reads this setting.
+        config = config.model_copy(update={"sample_data_count": generate_data})
+        set_config(config)
     if no_data:
         # The warm-up's sample-data step reads this setting.
         set_config(config.model_copy(update={"banko_skip_autosetup": True}))
@@ -66,12 +70,16 @@ def run(host, port, debug, generate_data, no_data, clear_data, background):
     def announce_when_warm():
         # The ready line means ready: it waits for every warm-up step.
         import time
-        while any(c["state"] in ("pending", "running") for c in readiness.snapshot().values()):
+        while not readiness.finished():
             time.sleep(0.5)
         click.echo("🎉 Banko AI is ready to help with your finances!")
-        failed = [name for name, c in readiness.snapshot().items() if c["state"] == "failed"]
+        snap = readiness.snapshot()
+        failed = [name for name, c in snap.items() if c["state"] == "failed"]
         if failed:
             click.echo(f"⚠️  Not ready: {', '.join(failed)} (details at /api/health)")
+        for name, c in snap.items():
+            if c["state"] == "degraded":
+                click.echo(f"⚠️  {name}: {c['detail']}")
 
     def announce(urls):
         import threading
@@ -258,7 +266,7 @@ def status():
 @cli.command()
 @click.option('--host', default=None, help='Host to bind to')
 @click.option('--port', default=None, type=int, help='Port to bind to')
-@click.option('--generate-data', type=int, default=5000, help='Generate sample data before starting (default: 5000 records)')
+@click.option('--generate-data', type=int, default=None, help='Sample expenses to generate when the database is empty (default: SAMPLE_DATA_COUNT, 5000)')
 @click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
 @click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
 @click.pass_context

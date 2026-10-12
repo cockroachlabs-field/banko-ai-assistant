@@ -17,10 +17,15 @@ log = logging.getLogger("banko.warmup")
 
 Step = tuple[str, Callable[[], "str | None"]]
 
+UNFINISHED = ("pending", "running")
+
 
 @dataclass
 class Component:
-    state: str = "pending"  # pending | running | ready | failed
+    # pending | running | ready | degraded | failed. degraded means the
+    # step is done and the app works without it (Kafka retrying while the
+    # webhook carries signals); it never holds the ready line.
+    state: str = "pending"
     detail: str = ""
     updated_at: float = field(default_factory=time.time)
 
@@ -44,6 +49,11 @@ class Readiness:
     def is_ready(self, name: str) -> bool:
         component = self.get(name)
         return component is not None and component.state == "ready"
+
+    def finished(self) -> bool:
+        """True once no step is pending or running."""
+        with self._changed:
+            return all(c.state not in UNFINISHED for c in self._components.values())
 
     def wait_for(self, name: str, timeout: float) -> bool:
         deadline = time.monotonic() + timeout

@@ -58,43 +58,6 @@ from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
 
 
-def check_database_connection(database_url: str):
-    """
-    Check if the database is accessible and has the required table.
-    Matches the original app.py implementation.
-    
-    Returns:
-        tuple: (success: bool, message: str, table_exists: bool, record_count: int)
-    """
-    try:
-        # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-        from ..db.engine import get_engine
-        engine = get_engine(database_url)
-
-        with engine.connect() as conn:
-            # Test basic connection
-            result = conn.execute(text('SELECT version()'))
-            version = result.fetchone()[0]
-            
-            # Check if expenses table exists
-            result = conn.execute(text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public' AND table_name = 'expenses'
-            """))
-            table_exists = result.fetchone() is not None
-            
-            record_count = 0
-            if table_exists:
-                result = conn.execute(text('SELECT COUNT(*) FROM expenses'))
-                record_count = result.fetchone()[0]
-            
-            return True, f"Connected to {version.split()[1]}", table_exists, record_count
-            
-    except Exception as e:
-        return False, f"Database connection failed: {str(e)}", False, 0
-
-
 def auto_setup_data_if_needed(database_url: str) -> str:
     """Generate demo data when the database has almost none. Runs in the
     warm-up thread, never before the server listens."""
@@ -111,9 +74,10 @@ def auto_setup_data_if_needed(database_url: str) -> str:
         return f"{total} expenses present"
     print("🔍 Checking database setup...", flush=True)
     print(f"Using database: {mask_url(database_url)}", flush=True)
-    print("Generating 5000 sample expense records...", flush=True)
+    count = get_config().sample_data_count
+    print(f"Generating {count} sample expense records...", flush=True)
     from ..vector_search.generator import EnhancedExpenseGenerator
-    generated = EnhancedExpenseGenerator(database_url).generate_and_save(5000, user_id=None, clear_existing=False)
+    generated = EnhancedExpenseGenerator(database_url).generate_and_save(count, user_id=None, clear_existing=False)
     print(f"✅ Successfully generated {generated} expense records", flush=True)
     return f"generated {generated} sample expenses"
 
@@ -209,21 +173,27 @@ def create_app() -> Flask:
     app.extensions["banko_warmup_stop"] = warmup_stop
     boot_log = _coach_log.getLogger("banko.boot")
 
-    def _schema_step() -> str:
+    def _with_backoff(step: str, fn):
+        """Retry a gate step until it works, so a database that is late or
+        blips once never leaves pages gated until a restart."""
         delay = 1.0
         while True:
             try:
-                result = ensure_schema(config.database_url)
+                return fn()
             except Exception as e:
-                readiness.set("schema", "running", f"waiting for the database ({e.__class__.__name__})")
-                boot_log.warning("database not reachable yet (%s); retrying in %.0fs", e, delay)
+                readiness.set(step, "running", f"waiting for the database ({e.__class__.__name__})")
+                boot_log.warning("%s: database not ready yet (%s); retrying in %.0fs", step, e, delay)
                 if warmup_stop.wait(delay):
                     raise RuntimeError("warm-up stopped") from e
                 delay = min(delay * 2, 30.0)
-                continue
-            if not result.changed:
-                return f"current ({result.fingerprint})"
-            return f"applied {result.statements} statements in {result.seconds:.1f}s"
+
+    def _schema_step() -> str:
+        result = _with_backoff("schema", lambda: ensure_schema(
+            config.database_url,
+            on_progress=lambda detail: readiness.set("schema", "running", detail)))
+        if not result.changed:
+            return f"current ({result.fingerprint})"
+        return f"applied {result.statements} statements in {result.seconds:.1f}s"
 
     def _provider_step(narrate: bool = True) -> str:
         # The startup lines the CLI printed before boot moved here.
@@ -245,7 +215,7 @@ def create_app() -> Flask:
         return f"{config.ai_service} reachable"
 
     def _personas_step() -> str:
-        UserManager(config.database_url).backfill_personas()
+        _with_backoff("personas", UserManager(config.database_url).backfill_personas)
         return "maya, sam, riley present"
 
     def _expiry_step() -> str:
@@ -260,12 +230,17 @@ def create_app() -> Flask:
     def _coach_step() -> str:
         # Both helpers are closures defined further down in create_app. The
         # warm-up thread only starts at the very end of create_app (see
-        # below), so they always exist by the time this runs.
+        # below), so they always exist by the time this runs. Kafka reports
+        # its own state as the "kafka" component. The replay can call the
+        # LLM for every stranded signal, minutes on a CPU Ollama, so it gets
+        # its own thread instead of holding up locality and sample data.
         _maybe_start_kafka_consumer()
-        _replay_stranded_on_boot()
-        return "kafka on" if config.coach_kafka_enabled else "webhook only"
+        threading.Thread(target=_replay_stranded_on_boot,
+                         name="coach-stranded-replay", daemon=True).start()
+        return "webhook active, kafka enabled" if config.coach_kafka_enabled else "webhook active"
 
-    _READINESS_EXEMPT = ("/api/health", "/static/", "/socket.io", "/favicon")
+    # /health covers /health/coach, which the pipeline polls during warm-up.
+    _READINESS_EXEMPT = ("/api/health", "/health", "/static/", "/socket.io", "/favicon")
     _WARMING_UP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="3"><title>Banko is getting ready</title>
 <style>body{font-family:Inter,system-ui,sans-serif;background:#F6F5F2;color:#1F1D1A;display:grid;place-items:center;height:100vh;margin:0}
@@ -849,9 +824,10 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             return jsonify({'success': True, 'models': models, 'current': shown.model, 'provider': shown.provider})
 
         except Exception as e:
+            print(f"model list failed: {e}")
             return jsonify({
                 'success': False,
-                'error': str(e)
+                'error': neutral_error(e)
             }), 500
     
     @app.route('/api/models', methods=['POST'])
@@ -1727,7 +1703,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             return {'error': f'Cache cleanup failed: {str(e)}'}, 500
 
     # Initialize SocketIO for real-time updates (needed before data generator routes)
-    # Use threading mode for Flask dev server, eventlet mode for Gunicorn production
     origins = [o.strip() for o in config.socketio_cors_origins.split(",") if o.strip()]
     socketio = SocketIO(app, cors_allowed_origins=origins or None, async_mode='threading')
     app.socketio = socketio
@@ -1787,6 +1762,9 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
         bootstrap = cfg.kafka_bootstrap_servers
         topic = cfg.coach_kafka_topic
+        # degraded, not running: kafka-python can take about 30 s to give
+        # up on a missing broker, and the ready line must not wait for it.
+        readiness.set("kafka", "degraded", f"connecting to {bootstrap}; webhook active")
 
         def _connect_and_run() -> None:
             # Kafka is an optional transport; an unreachable broker must
@@ -1806,12 +1784,17 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     break
                 except Exception as e:
                     attempt += 1
+                    readiness.set("kafka", "degraded",
+                                  f"retrying: brokers unreachable at {bootstrap}; webhook active")
                     if attempt == 1 or attempt % 10 == 0:
                         print(f"⚠️  Coach Kafka brokers unreachable at "
                               f"{bootstrap} ({e}); retrying every {delay}s. "
                               f"The webhook transport remains active.", flush=True)
-                    time.sleep(delay)
+                    if warmup_stop.wait(delay):
+                        readiness.set("kafka", "failed", "warm-up stopped")
+                        return
                     delay = min(delay * 2, 30)
+            readiness.set("kafka", "ready", f"connected (topic={topic})")
             print(f"📡 Coach Kafka consumer started (topic={topic}, "
                   f"brokers={bootstrap})", flush=True)
             consumer.run_forever()
@@ -2205,9 +2188,11 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     # Lane A needs no database. Lane B runs the gate (schema, personas)
     # first; locality conversions are online in CockroachDB, so they come
     # after the app is already usable.
+    # The embedding model goes first: it needs nothing but the local disk,
+    # while the provider check can wait on the network.
     start_warmup(readiness, [
-        ("ai_provider", _provider_step),
         ("embedding_model", _model_step),
+        ("ai_provider", _provider_step),
     ], stop=warmup_stop, name="banko-warmup-local")
     start_warmup(readiness, [
         ("schema", _schema_step),

@@ -98,6 +98,41 @@ def test_ready_waits_for_the_personas(monkeypatch, make_app):
     assert client.get("/login").status_code == 200
 
 
+def _wait_finished(readiness, seconds=120):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if readiness.finished():
+            return True
+        time.sleep(0.5)
+    return False
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_unreachable_kafka_is_degraded_and_does_not_hold_warmup(monkeypatch, make_app):
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:9")  # refused at once
+    monkeypatch.setenv("COACH_KAFKA_ENABLED", "true")
+    monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9")
+    app = make_app()
+    readiness = app.extensions["banko_readiness"]
+    # Warm-up finishes while kafka is still on its first attempt: a missing
+    # broker never holds the ready line.
+    assert _wait_finished(readiness)
+    snap = app.test_client().get("/api/health").get_json()["components"]
+    assert "kafka" in snap
+    assert snap["kafka"]["state"] == "degraded"
+    assert not readiness.is_ready("kafka")
+    # Once the first attempt fails, the detail says why.
+    deadline = time.time() + 90
+    while time.time() < deadline and "unreachable" not in readiness.get("kafka").detail:
+        time.sleep(0.5)
+    kafka = readiness.get("kafka")
+    assert kafka.state == "degraded"
+    assert "brokers unreachable at 127.0.0.1:9" in kafka.detail
+    assert snap["coach"]["state"] == "ready"
+    assert snap["coach"]["detail"] == "webhook active, kafka enabled"
+
+
 @pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
 def test_a_loading_model_answers_503_warming_up(monkeypatch, make_app):
     from banko_ai.utils import cache_manager, embeddings

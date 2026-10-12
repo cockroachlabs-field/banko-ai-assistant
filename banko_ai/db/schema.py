@@ -330,11 +330,16 @@ def _naive_timestamp_upgrade(conn: Connection, topo: Topology) -> list[str]:
     return statements
 
 
+def _create_ddl(conn: Connection, table: str) -> str:
+    row = conn.execute(text(f"SHOW CREATE TABLE {table}")).fetchone()
+    return "" if row is None else str(row[1])
+
+
 def _users_ttl_upgrade(conn: Connection, topo: Topology) -> list[str]:
     # Row-level TTL on users swept personas and orphaned their expenses; the
     # boot-time demo-user sweep replaced it.
     try:
-        ddl = str(conn.execute(text("SHOW CREATE TABLE users")).fetchone()[1])
+        ddl = _create_ddl(conn, "users")
         return ["ALTER TABLE users RESET (ttl)"] if "ttl_expire_after" in ddl else []
     except ProgrammingError:  # users table doesn't exist yet
         return []
@@ -348,7 +353,7 @@ def _ttl_drift_upgrade(conn: Connection, topo: Topology) -> list[str]:
     out = []
     for table, days in (("spending_signals", cfg.coach_signal_ttl_days), ("coach_nudges", cfg.coach_nudge_ttl_days)):
         try:
-            match = _TTL.search(str(conn.execute(text(f"SHOW CREATE TABLE {table}")).fetchone()[1]))
+            match = _TTL.search(_create_ddl(conn, table))
             if not match or int(match.group(1)) != days:
                 out.append(f"ALTER TABLE {table} SET (ttl_expire_after = '{days} days')")
         except ProgrammingError:  # table doesn't exist yet
@@ -559,11 +564,22 @@ def _apply(conn: Connection, topo: Topology, owner: str) -> int:
         upgrade_started = time.monotonic()
         for upgrade in UPGRADES:
             statements = upgrade(conn, topo)
-            for sql in statements:
-                log.info("schema: %s", sql.splitlines()[0])
-                conn.execute(text(sql))
-                count += 1
-                _refresh_lease(conn, owner)
+            # A trailing RESET undoes a session setting the upgrade needed;
+            # it runs even when one of the statements before it fails, so
+            # the pooled connection never goes back with the setting on.
+            cleanup = [sql for sql in statements if sql.startswith("RESET ")]
+            try:
+                for sql in statements:
+                    if sql in cleanup:
+                        continue
+                    log.info("schema: %s", sql.splitlines()[0])
+                    conn.execute(text(sql))
+                    count += 1
+                    _refresh_lease(conn, owner)
+            finally:
+                for sql in cleanup:
+                    conn.execute(text(sql))
+                    count += 1
         if count > len(missing_tables):
             log.info("schema: ran upgrades in %.1fs", time.monotonic() - upgrade_started)
 
@@ -577,9 +593,17 @@ def _write_fingerprint(conn: Connection, fp: str, topo: Topology) -> None:
 
 
 def ensure_schema(url: str | None = None, *, force: bool = False,
-                  primary_region: str | None = None) -> SchemaResult:
-    """Make the database match the registry. One SELECT when it already does."""
+                  primary_region: str | None = None,
+                  on_progress: Callable[[str], None] | None = None) -> SchemaResult:
+    """Make the database match the registry. One SELECT when it already does.
+    on_progress hears a short human sentence when there is real work to do,
+    so a one-time upgrade on a big database doesn't look like a hang."""
     started = time.monotonic()
+
+    def progress(detail: str) -> None:
+        if on_progress is not None:
+            on_progress(detail)
+
     with get_engine(url).connect() as conn:
         conn.execution_options(isolation_level="AUTOCOMMIT")
         stored = None if force else _stored(conn)
@@ -603,6 +627,7 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
         owner = uuid.uuid4().hex
         if not _acquire_lock(conn, owner):
             log.info("schema: another process is applying the schema, waiting for it")
+            progress("Waiting for another Banko process to finish the schema.")
             should_apply = _wait_for(conn, want, owner)
             if not should_apply:
                 return SchemaResult(changed=False, fingerprint=want, seconds=time.monotonic() - started)
@@ -619,6 +644,10 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
                 _refresh_lease(conn, owner)
 
             # Phase 2: Apply schema (tables, columns, indexes, upgrades)
+            if len(current_localities(conn)) > 1:  # more than banko_meta
+                progress("Upgrading the schema (one-time). On a populated database this can take a minute.")
+            else:
+                progress("Creating the schema.")
             apply_started = time.monotonic()
             count = _apply(conn, topo, owner)
             log.info("schema: apply phase %.1fs (%d statements)",
