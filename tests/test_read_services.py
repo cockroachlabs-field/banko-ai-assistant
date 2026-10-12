@@ -137,10 +137,78 @@ def test_budget_progress_and_update(seeded):
     out = B.budget_progress(seeded, today=TODAY)
     restaurant = next(i for i in out["items"] if i["category"] == "Restaurant")
     assert restaurant["budget"] == 600.0 and restaurant["status"] in ("ok", "watch", "over")
-    B.set_budget(seeded, "restaurant", "650")
-    assert next(i for i in B.budget_progress(seeded, today=TODAY)["items"]
-                if i["category"] == "Restaurant")["budget"] == 650.0
+    try:
+        B.set_budget(seeded, "restaurant", "650")
+        assert next(i for i in B.budget_progress(seeded, today=TODAY)["items"]
+                    if i["category"] == "Restaurant")["budget"] == 650.0
+    finally:
+        B.set_budget(seeded, "restaurant", "600")
     with pytest.raises(L.LedgerError):
         B.set_budget(seeded, "income", "100")
     with pytest.raises(L.LedgerError):
         B.set_budget(seeded, "not a category", "100")
+
+
+def test_zero_budget_deletes_it():
+    uid = make_user()
+    try:
+        B.set_budget(uid, "restaurant", "100")
+        assert [i["category"] for i in B.budget_progress(uid, today=TODAY)["items"]] == ["Restaurant"]
+        B.set_budget(uid, "restaurant", 0)
+        assert B.budget_progress(uid, today=TODAY)["items"] == []
+    finally:
+        drop_user(uid)
+
+
+def test_other_users_transaction_is_invisible(seeded):
+    purchase = T.list_transactions(seeded, limit=50, kind="purchase")["items"][0]
+    other = make_user()
+    try:
+        acct = L.open_account(other, kind="checking", name="C", institution="B", mask="1", opening_balance="0")
+        entry_id = str(uuid.uuid4())
+        L.post_history(other, [L.HistoryRow(entry_id=entry_id, account_id=acct,
+                                            posted_at=datetime(2026, 9, 3, tzinfo=timezone.utc),
+                                            amount=Decimal("9.00"), kind="income", description="Gift")])
+        assert T.transaction_detail(other, entry_id)["amount"] == 9.0
+        assert T.transaction_detail(seeded, entry_id) is None
+        assert T.transaction_detail(other, purchase["id"]) is None
+        assert T.transaction_detail(other, purchase["expense_id"]) is None
+    finally:
+        drop_user(other)
+
+
+def test_cursor_is_stable_when_timestamps_tie():
+    uid = make_user()
+    try:
+        acct = L.open_account(uid, kind="checking", name="C", institution="B", mask="1", opening_balance="0")
+        same = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+        rows = [L.HistoryRow(entry_id=str(uuid.uuid4()), account_id=acct, posted_at=same,
+                             amount=Decimal("1.00"), kind="income", description=f"Tie {n}") for n in range(5)]
+        L.post_history(uid, rows)
+        seen, cursor = [], None
+        for _ in range(5):
+            page = T.list_transactions(uid, limit=2, cursor=cursor, account_id=acct)
+            seen += [i["id"] for i in page["items"]]
+            cursor = page["next_cursor"]
+            if cursor is None:
+                break
+        assert cursor is None
+        assert sorted(seen) == sorted(r.entry_id for r in rows) and len(seen) == 5
+    finally:
+        drop_user(uid)
+
+
+def test_statement_csv_defuses_formulas():
+    uid = make_user()
+    try:
+        acct = L.open_account(uid, kind="checking", name="C", institution="B", mask="1", opening_balance="0")
+        L.post_history(uid, [L.HistoryRow(entry_id=str(uuid.uuid4()), account_id=acct,
+                                          posted_at=datetime(2026, 9, 10, tzinfo=timezone.utc),
+                                          amount=Decimal("-12.50"), kind="purchase",
+                                          description='=HYPERLINK("http://x","y")')])
+        L.rebalance(uid)
+        csv = A.statement_csv(A.statement(uid, acct, "2026-09"))
+        line = next(row for row in csv.splitlines() if "HYPERLINK" in row)
+        assert "'=HYPERLINK" in line and line.endswith(",purchase,-12.50")
+    finally:
+        drop_user(uid)

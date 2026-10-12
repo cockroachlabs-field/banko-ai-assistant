@@ -37,7 +37,7 @@ def list_accounts(user_id: str, *, url: str | None = None) -> dict:
         "cash_total": sum((a["balance"] for a in cash), Decimal("0")),
         "credit_total": -owed,
         "net_worth": sum((a["balance"] for a in accounts), Decimal("0")),
-        "utilization": (owed / limits) if limits else Decimal("0"),
+        "utilization": float(round(owed / limits, 4)) if limits else 0.0,
     })
 
 
@@ -71,6 +71,7 @@ def _labels(today: date, months: int) -> list[str]:
 def net_worth_history(user_id: str, *, months: int = 12, today: date | None = None,
                       url: str | None = None) -> list[dict]:
     today = today or datetime.now(timezone.utc).date()
+    months = max(1, int(months))
     with read_session(user_id, url=url, follower=True) as conn:
         opening = conn.execute(text("SELECT COALESCE(sum(opening_balance), 0) FROM accounts "
                                     "WHERE user_id = CAST(:u AS UUID)"), {"u": user_id}).scalar()
@@ -86,13 +87,20 @@ def net_worth_history(user_id: str, *, months: int = 12, today: date | None = No
     for label in labels:
         running += by_month.get(label, Decimal("0"))
         out.append({"month": label, "net_worth": running})
+    # The follower snapshot is a few seconds old. The current month's point
+    # comes from live balances so it matches the accounts page.
+    if labels[-1] == datetime.now(timezone.utc).strftime("%Y-%m"):
+        with read_session(user_id, url=url) as conn:
+            out[-1]["net_worth"] = conn.execute(text("SELECT COALESCE(sum(balance), 0) FROM accounts "
+                                                     "WHERE user_id = CAST(:u AS UUID)"),
+                                                {"u": user_id}).scalar()
     return jsonable(out)
 
 
 def statement_months(user_id: str, account_id: str, *, url: str | None = None) -> list[str]:
     if not valid_uuid(account_id):
         return []
-    with read_session(user_id, url=url, follower=True) as conn:
+    with read_session(user_id, url=url) as conn:
         rows = conn.execute(text("""
             SELECT DISTINCT to_char(posted_at AT TIME ZONE 'UTC', 'YYYY-MM') AS m
             FROM ledger_entries WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)
@@ -105,20 +113,26 @@ def statement(user_id: str, account_id: str, month: str, *, url: str | None = No
     start, end = _month_bounds(month)
     if not valid_uuid(account_id):
         return None
-    with read_session(user_id, url=url, follower=True) as conn:
+    # Ownership is checked on current data so a just-opened account never
+    # 404s. Only months that have already closed read from a follower.
+    with read_session(user_id, url=url) as conn:
         acct = conn.execute(text(f"SELECT {_ACCOUNT_COLS}, opening_balance FROM accounts "
                                  "WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)"),
                             {"a": account_id, "u": user_id}).fetchone()
-        if acct is None:
-            return None
+    if acct is None:
+        return None
+    this_month = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    params = {"a": account_id, "u": user_id, "s": start, "e": end}
+    with read_session(user_id, url=url, follower=end <= this_month) as conn:
         before = conn.execute(text("SELECT COALESCE(sum(amount), 0) FROM ledger_entries "
-                                   "WHERE account_id = CAST(:a AS UUID) AND posted_at < :s"),
-                              {"a": account_id, "s": start}).scalar()
+                                   "WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID) "
+                                   "AND posted_at < :s"), params).scalar()
         entries = conn.execute(text("""
             SELECT posted_at, description, kind, amount FROM ledger_entries
-            WHERE account_id = CAST(:a AS UUID) AND posted_at >= :s AND posted_at < :e
+            WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)
+              AND posted_at >= :s AND posted_at < :e
             ORDER BY posted_at, entry_id
-        """), {"a": account_id, "s": start, "e": end}).fetchall()
+        """), params).fetchall()
     opening = acct[9] + before
     charges = sum((r[3] for r in entries if r[3] < 0), Decimal("0"))
     credits = sum((r[3] for r in entries if r[3] > 0), Decimal("0"))
@@ -130,12 +144,19 @@ def statement(user_id: str, account_id: str, month: str, *, url: str | None = No
     })
 
 
+def _csv_text(value) -> str:
+    """Spreadsheets run a cell that starts with = + - or @ as a formula."""
+    cell = "" if value is None else str(value)
+    return "'" + cell if cell[:1] in ("=", "+", "-", "@") else cell
+
+
 def statement_csv(st: dict) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(["Date", "Description", "Kind", "Amount"])
     writer.writerow(["Opening balance", "", "", f"{st['opening']:.2f}"])
     for e in st["entries"]:
-        writer.writerow([e["posted_at"][:10], e["description"], e["kind"], f"{e['amount']:.2f}"])
+        writer.writerow([e["posted_at"][:10], _csv_text(e["description"]), _csv_text(e["kind"]),
+                         f"{e['amount']:.2f}"])
     writer.writerow(["Closing balance", "", "", f"{st['closing']:.2f}"])
     return buf.getvalue()

@@ -16,25 +16,37 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
 
 from ..config.settings import get_config
-from ..db.engine import get_engine
+from ..db.engine import _sqlstate, get_engine
 
 log = logging.getLogger("banko.services")
 _FOLLOWER = "SET TRANSACTION AS OF SYSTEM TIME follower_read_timestamp()"
-_follower_ok: bool | None = None  # None until probed once per process
+_follower_ok: dict[str, bool] = {}  # per database URL, definitive answers only
+# SQLSTATE classes that say nothing about follower read support: connection
+# trouble, transaction rollbacks, operator intervention.
+_TRANSIENT_CLASSES = ("08", "40", "57")
 
 
 def _follower_available(url: str | None) -> bool:
-    global _follower_ok
-    if _follower_ok is None:
-        try:
-            with get_engine(url).begin() as conn:
-                conn.execute(text(_FOLLOWER))
-                conn.execute(text("SELECT set_config('banko.user_id', '', true)"))
-            _follower_ok = True
-        except DBAPIError as exc:
-            log.info("follower reads unavailable, reports read current data: %s", exc.__class__.__name__)
-            _follower_ok = False
-    return _follower_ok
+    key = url or get_config().database_url
+    known = _follower_ok.get(key)
+    if known is not None:
+        return known
+    try:
+        with get_engine(url).begin() as conn:
+            conn.execute(text(_FOLLOWER))
+            conn.execute(text("SELECT set_config('banko.user_id', '', true)"))
+        _follower_ok[key] = True
+        return True
+    except DBAPIError as exc:
+        state = _sqlstate(exc)
+        definitive = bool(state) and not state.startswith(_TRANSIENT_CLASSES) and not exc.connection_invalidated
+        if definitive:
+            _follower_ok[key] = False
+            log.info("follower reads unavailable, reports read current data: %s", state)
+        else:
+            log.info("follower read probe failed, reading current data for now: %s",
+                     state or exc.__class__.__name__)
+        return False
 
 
 @contextmanager

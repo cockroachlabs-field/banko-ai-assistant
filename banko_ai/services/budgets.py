@@ -41,7 +41,7 @@ def budget_progress(user_id: str, *, today: date | None = None, url: str | None 
         projected = used / today.day * days
         status = "over" if used > amount else "watch" if projected > amount else "ok"
         items.append({"category": cat.label, "key": cat.key, "icon": cat.icon, "color": cat.color,
-                      "budget": amount, "spent": used, "pct": (used / amount) if amount else Decimal("0"),
+                      "budget": amount, "spent": used, "pct": float(round(used / amount, 4)) if amount else 0.0,
                       "projected": projected, "status": status, "_sort": cat.sort})
     items.sort(key=lambda i: i.pop("_sort"))
     return jsonable({"month": first.strftime("%Y-%m"), "day": today.day, "days_in_month": days,
