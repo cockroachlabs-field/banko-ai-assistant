@@ -52,6 +52,17 @@ from ..db.schema import ensure_schema, run_pending_conversions
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
 from ..utils.embeddings import ModelWarmingUp
+from ..utils.request_trace import (
+    current_trace,
+    get_stored_trace,
+    insert_step,
+    reset_trace,
+    serving_regions,
+    start_trace,
+    store_trace,
+    trace_elapsed_ms,
+    trace_step,
+)
 from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
@@ -510,15 +521,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         EXPLAIN ANALYZE output. This is what makes the badge move during a
         region outage: the user's home region is where their rows live,
         but leaseholders fail over, and the plan names the survivors."""
-        if not explain_text:
-            return None
-        found: list[str] = []
-        for m in re.finditer(r"regions: ([a-z0-9, -]+)", explain_text):
-            for r in m.group(1).split(","):
-                r = r.strip()
-                if r and r not in found:
-                    found.append(r)
-        return ", ".join(sorted(found)) if found else None
+        return serving_regions(explain_text)
 
     def _render_aggregation_markdown(agg) -> str:
         """Deterministic answer card for aggregation questions. Numbers come
@@ -1399,9 +1402,44 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 'error': NEUTRAL_FAILED
             }), 500
     
+    def _trace_identity() -> str:
+        """The model as the persona shows it, for LLM steps in the trace."""
+        shown = _shown()
+        return f"{shown.name} · {shown.model}"
+
+    def _finish_trace() -> str:
+        """Close this request's trace and park it server side. The chat
+        history lives in the signed session cookie, so the message keeps
+        only the short id."""
+        trace_step("total", "Total request time", ms=trace_elapsed_ms())
+        return store_trace(current_trace())
+
+    def _render_chat(ai_provider_display):
+        """Render the chat page with each message's stored trace attached
+        for the template; the session itself keeps only the ids."""
+        view = []
+        for message in session.get('chat', []):
+            meta = message.get('meta')
+            if meta and meta.get('trace_id'):
+                message = dict(message)
+                message['meta'] = dict(meta, trace=get_stored_trace(meta['trace_id']) or [])
+            view.append(message)
+        return render_template('index.html',
+                               chat=view,
+                               ai_provider=ai_provider_display,
+                               current_page='banko')
+
     @app.route('/banko', methods=['GET', 'POST'])
     def chat():
-        """Main chat interface - using original simple logic."""
+        """Main chat interface. Each request records its own trace, which
+        the DB Ops panel shows for the answer it produced."""
+        token = start_trace()
+        try:
+            return _chat_impl()
+        finally:
+            reset_trace(token)
+
+    def _chat_impl():
         # Clear chat history on GET request (fresh start)
         if request.method == 'GET':
             session['chat'] = []
@@ -1461,19 +1499,27 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 target_language = language_map.get(response_language, 'English')
 
                 from banko_ai.utils.intent_classifier import REDIRECT_MESSAGE, is_financial_query
+                t_route = time.perf_counter()
                 if not is_financial_query(user_message):
-                    session['chat'].append({'text': REDIRECT_MESSAGE, 'class': 'Assistant'})
-                    return render_template('index.html',
-                                         chat=session['chat'],
-                                         ai_provider=ai_provider_display,
-                                         current_page='banko')
+                    trace_step("route", "Intent routing",
+                               "Not a finance question: redirected, no database work",
+                               ms=(time.perf_counter() - t_route) * 1000)
+                    session['chat'].append({'text': REDIRECT_MESSAGE, 'class': 'Assistant',
+                                            'meta': {'trace_id': _finish_trace()}})
+                    return _render_chat(ai_provider_display)
 
                 # Agentic routing: aggregation questions go to SQL so the
                 # number is exact and identical on every provider. The LLM
                 # never does the arithmetic.
                 from banko_ai.utils.intent_classifier import classify_aggregation, extract_window
                 agg_intent = classify_aggregation(user_message)
+                route_ms = (time.perf_counter() - t_route) * 1000
                 if agg_intent is not None:
+                    trace_step("route", "Intent routing",
+                               f"Aggregation, answered by SQL: {agg_intent.operation} on "
+                               f"'{agg_intent.subject or 'all spending'}', "
+                               f"{agg_intent.window_start} to {agg_intent.window_end}",
+                               ms=route_ms)
                     # Same transient posture as the RAG branch below: a DB
                     # blip during a fault demo must read as reconnecting,
                     # never as a 500.
@@ -1486,6 +1532,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         user_region = resolve_user_region(current_demo_user(), config.database_url)
                         if user_region:
                             print(f"   Region-pruned to {user_region} (REGIONAL BY ROW)")
+                            trace_step("region", "Region pruning",
+                                       f"Scoped to {user_region} (REGIONAL BY ROW)")
                         t0 = time.perf_counter()
                         agg = run_aggregation(agg_intent, current_demo_user(),
                                               config.database_url, region=user_region)
@@ -1495,6 +1543,10 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                               f"(category: {agg.category or 'all'})")
                         print("   Figures computed by CockroachDB; the model "
                               "never does the arithmetic")
+                        trace_step("sql", "Aggregation SQL",
+                                   f"${agg.total:,.2f} across {agg.count} transactions "
+                                   f"(category: {agg.category or 'all'}), computed by CockroachDB",
+                                   ms=db_ms, status="success")
                         # The SQL always runs (exact, fast); only the model
                         # work is cached. Same user, same figures, same
                         # language: reuse the narrative instead of paying
@@ -1510,36 +1562,64 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                             est = int(len(cached_text.split()) * 1.3)
                             print(f"3. ✅ Narrative cache HIT "
                                   f"(est. {est} tokens saved)")
+                            trace_step("cache", "Narrative cache",
+                                       f"Hit: reused the narrative, est. {est} tokens saved",
+                                       status="hit")
                             agg_text = cached_text
                         else:
                             print("3. ❌ Narrative cache MISS, generating")
+                            trace_step("cache", "Narrative cache", "Miss: generating the narrative",
+                                       status="miss")
                             agg_text = _render_aggregation_markdown(agg)
                             if agg.count:
+                                t_llm = time.perf_counter()
                                 insights = _aggregation_insights(agg, user_message)
+                                llm_ms = (time.perf_counter() - t_llm) * 1000
                                 if insights:
                                     agg_text += "\n\n**Insights**\n\n" + insights
                                     print(f"   Insights narrated by {config.ai_service} "
                                           f"around the pinned figures")
+                                    trace_step("llm", "LLM insights",
+                                               f"{_trace_identity()}, around the pinned figures",
+                                               ms=llm_ms, status="success")
+                                else:
+                                    trace_step("llm", "LLM insights",
+                                               f"{_trace_identity()}, no insights returned",
+                                               ms=llm_ms, status="warning")
                             # SQL computed the figures; the model only
                             # renders them in the user's language. English
                             # answers on a Hindi session were this path
                             # skipping the language setting the RAG path
                             # always honored.
                             if target_language != 'English':
-                                agg_text = _translate_answer(agg_text, target_language) or agg_text
+                                t_llm = time.perf_counter()
+                                translated = _translate_answer(agg_text, target_language)
+                                llm_ms = (time.perf_counter() - t_llm) * 1000
+                                agg_text = translated or agg_text
                                 print(f"   Rendered in {target_language}, figures preserved")
+                                trace_step("llm", "LLM translation",
+                                           f"{_trace_identity()}, into {target_language}"
+                                           if translated else
+                                           f"{_trace_identity()}, translation skipped, kept English",
+                                           ms=llm_ms, status="success" if translated else "warning")
                             if len(_agg_narrative_cache) > 256:
                                 _agg_narrative_cache.clear()
                             _agg_narrative_cache[cache_key] = agg_text
+                        t_explain = time.perf_counter()
                         explain_text = explain_aggregation(agg_intent, current_demo_user(),
                                                            config.database_url, region=user_region)
+                        served = _serving_regions(explain_text) or user_region
+                        trace_step("explain", "EXPLAIN ANALYZE",
+                                   f"Plan captured{f', served by {served}' if served else ''}",
+                                   ms=(time.perf_counter() - t_explain) * 1000)
                         session['chat'].append({
                             'text': agg_text,
                             'class': 'Assistant',
                             'meta': {
-                                'region': _serving_regions(explain_text) or user_region,
+                                'region': served,
                                 'db_ms': db_ms,
-                                'explain': explain_text
+                                'explain': explain_text,
+                                'trace_id': _finish_trace(),
                             }
                         })
                         try:
@@ -1550,20 +1630,28 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                     except Exception as e:
                         if isinstance(e, TRANSIENT_ERRORS):
                             error_message = "Reconnecting to the database, try that again in a moment."
+                            trace_step("error", "Answer stopped",
+                                       "The database connection dropped; nothing was answered",
+                                       status="error")
                         else:
                             print(f"Aggregation error: {str(e)}")
                             error_message = NEUTRAL_FAILED
-                        session['chat'].append({'text': error_message, 'class': 'Assistant'})
-                    return render_template('index.html',
-                                           chat=session['chat'],
-                                           ai_provider=ai_provider_display,
-                                           current_page='banko')
+                            trace_step("error", "Answer stopped",
+                                       "The aggregation failed here; details are in the server log",
+                                       status="error")
+                        session['chat'].append({'text': error_message, 'class': 'Assistant',
+                                                'meta': {'trace_id': _finish_trace()}})
+                    return _render_chat(ai_provider_display)
 
                 try:
                     # Retrieval questions: vector RAG scoped to the session
                     # persona, with a date predicate when the question names
                     # a window. The cache layers live inside the engine.
                     window = extract_window(user_message)
+                    trace_step("route", "Intent routing",
+                               "Retrieval, answered by vector search (RAG)"
+                               + (f", {window[0]} to {window[1]}" if window else ""),
+                               ms=route_ms)
                     t0 = time.perf_counter()
                     search_result = search_engine.search_expenses(
                         query=prompt,
@@ -1603,6 +1691,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         search_results = search_results_dict
 
                     # Generate RAG response with language preference
+                    steps_before = len(current_trace())
+                    t_llm = time.perf_counter()
                     if hasattr(ai_provider, 'simple_rag_response'):
                         rag_response_text = ai_provider.simple_rag_response(
                             user_message, search_results, language=target_language
@@ -1613,7 +1703,27 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         )
                         rag_response_text = rag_response.response if hasattr(rag_response, 'response') else str(rag_response)
 
+                    llm_ms = (time.perf_counter() - t_llm) * 1000
                     print(f"Response from {config.ai_service}: {rag_response_text}")
+                    # A response cache hit inside the provider means no
+                    # model call happened, so there is no LLM step to show.
+                    inner = current_trace()[steps_before:]
+                    served_from_cache = any(
+                        s["label"] == "Response cache" and s["status"] == "hit" for s in inner)
+                    if not served_from_cache:
+                        # The provider's cache lookup and write are traced
+                        # on their own; the model time is what is left, and
+                        # it ran right after the cache miss.
+                        gen_ms = max(llm_ms - sum(s["ms"] or 0 for s in inner), 0.0)
+                        misses = [i for i, s in enumerate(inner) if s["label"] == "Response cache"]
+                        detail = (f"{_trace_identity()}, grounded on {len(search_results or [])} expenses"
+                                  + (f", in {target_language}" if target_language != 'English' else ""))
+                        if misses:
+                            at = misses[-1]
+                            insert_step(steps_before + at + 1, "llm", "LLM answer", detail,
+                                        ms=gen_ms, status="success", t=inner[at]["t"] + gen_ms)
+                        else:
+                            trace_step("llm", "LLM answer", detail, ms=llm_ms, status="success")
 
                     session['chat'].append({
                         'text': rag_response_text,
@@ -1622,7 +1732,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                             'region': _serving_regions(explain_text)
                                 or resolve_user_region(current_demo_user(), config.database_url),
                             'db_ms': db_ms,
-                            'explain': explain_text
+                            'explain': explain_text,
+                            'trace_id': _finish_trace(),
                         }
                     })
 
@@ -1636,17 +1747,19 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 except Exception as e:
                     if isinstance(e, ModelWarmingUp):
                         error_message = "I'm still warming up my embedding model. Try that again in a few seconds."
+                        trace_detail = "The embedding model is still loading"
                     elif isinstance(e, TRANSIENT_ERRORS):
                         error_message = "Reconnecting to the database, try that again in a moment."
+                        trace_detail = "The database connection dropped; nothing was answered"
                     else:
                         print(f"Error with {config.ai_service}: {str(e)}")
                         error_message = neutral_error(e)
-                    session['chat'].append({'text': error_message, 'class': 'Assistant'})
-                    
-        return render_template('index.html', 
-                             chat=session['chat'], 
-                             ai_provider=ai_provider_display, 
-                             current_page='banko')
+                        trace_detail = "The answer failed here; details are in the server log"
+                    trace_step("error", "Answer stopped", trace_detail, status="error")
+                    session['chat'].append({'text': error_message, 'class': 'Assistant',
+                                            'meta': {'trace_id': _finish_trace()}})
+
+        return _render_chat(ai_provider_display)
 
     @app.route('/home')
     def dashboard():

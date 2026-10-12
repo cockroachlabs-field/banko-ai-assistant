@@ -15,6 +15,7 @@ from banko_ai.utils.embeddings import load_embedding_model
 
 from ..ai_providers.base import SearchResult
 from ..utils.db_retry import db_retry, get_database_url
+from ..utils.request_trace import plan_indexes, serving_regions, trace_step
 
 
 class VectorSearchEngine:
@@ -111,6 +112,9 @@ class VectorSearchEngine:
             
             if cached_results:
                 print(f"2. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
+                trace_step("cache", "Vector search cache",
+                           f"Hit: {len(cached_results[:limit])} rows reused, no vector query ran",
+                           status="hit")
                 search_results = []
                 for result in cached_results[:limit]:
                     search_results.append(SearchResult(
@@ -132,6 +136,7 @@ class VectorSearchEngine:
                     return (search_results, "(cached results, no fresh EXPLAIN)")
                 return search_results
             print("2. ❌ Vector search cache MISS, querying database")
+            trace_step("cache", "Vector search cache", "Miss: querying CockroachDB", status="miss")
         else:
             start_time = time.time()
             query_embedding = self.embedding_model.encode([query])[0]
@@ -197,6 +202,11 @@ class VectorSearchEngine:
             ))
 
         print(f"3. Database query returned {len(results)} expense records in {query_duration:.1f}ms")
+        trace_step("vector", "Vector search",
+                   f"{len(results)} rows by cosine distance (<=>)"
+                   + (", filtered to this user" if user_id else "")
+                   + (f", scoped to {region}" if region else ""),
+                   ms=query_duration, status="success")
 
         # Cache the results for future use (convert back to dict format for caching)
         if self.cache_manager and results:
@@ -221,6 +231,7 @@ class VectorSearchEngine:
             print("4. ✅ Cached vector search results for future queries")
 
         if capture_explain:
+            explain_start = time.time()
             try:
                 # CockroachDB rejects placeholders in EXPLAIN under server-side
                 # binding, so bind client-side like explain_aggregation does.
@@ -233,8 +244,20 @@ class VectorSearchEngine:
                         cur.execute(f"EXPLAIN ANALYZE {_to_pyformat(sql)}", params)
                         explain_rows = cur.fetchall()
                 explain_text = "\n".join(str(row[0]) for row in explain_rows)
+                parts = []
+                indexes = plan_indexes(explain_text)
+                if indexes:
+                    parts.append("index " + ", ".join(indexes))
+                served = serving_regions(explain_text)
+                if served:
+                    parts.append(f"served by {served}")
+                trace_step("explain", "EXPLAIN ANALYZE",
+                           "Plan captured" + (": " + "; ".join(parts) if parts else ""),
+                           ms=(time.time() - explain_start) * 1000)
             except Exception as e:
                 explain_text = f"(explain unavailable: {str(e)})"
+                trace_step("explain", "EXPLAIN ANALYZE", "Plan unavailable for this query",
+                           ms=(time.time() - explain_start) * 1000, status="warning")
             return (results, explain_text)
 
         return results

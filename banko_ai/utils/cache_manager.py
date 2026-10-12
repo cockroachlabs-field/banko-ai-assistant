@@ -13,6 +13,7 @@ Uses CockroachDB for persistent caching with TTL support.
 import decimal
 import hashlib
 import json
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -24,6 +25,7 @@ from banko_ai.utils.embeddings import ModelWarmingUp, load_embedding_model
 from ..config.settings import get_config
 from .db_retry import db_retry
 from .request_scope import current_user_scope
+from .request_trace import trace_step
 
 
 def _engine():
@@ -164,6 +166,7 @@ class BankoCacheManager:
 
         # Try to get from cache first
         model_name = get_config().embedding_model
+        lookup_start = time.perf_counter()
         cache_query = text("""
             SELECT embedding, access_count
             FROM embedding_cache 
@@ -183,13 +186,19 @@ class BankoCacheManager:
                 conn.commit()
                 
                 self._log_cache_stat('embedding', 'hit', tokens_saved=10)
+                trace_step("cache", "Embedding cache", "Hit: reused the stored embedding",
+                           ms=(time.perf_counter() - lookup_start) * 1000, status="hit")
                 return np.array(json.loads(row.embedding))
         
         # Cache miss - generate embedding and store
         model = self._get_model()
         if model is None:
             return None
+        encode_start = time.perf_counter()
         embedding = model.encode(input_text)
+        trace_step("cache", "Embedding cache",
+                   f"Miss: embedded locally with {model_name} ({len(embedding)} dims)",
+                   ms=(time.perf_counter() - encode_start) * 1000, status="miss")
         embedding_json = json.dumps(embedding.tolist())
         
         try:
@@ -229,6 +238,7 @@ class BankoCacheManager:
         """
         scope = current_user_scope()
         query_embedding = self._get_embedding_with_cache(query)
+        lookup_start = time.perf_counter()
         # Use normalized expense data for consistent hashing
         expense_hash = self._generate_hash(self._normalize_expense_data_for_cache(expense_data))
         
@@ -366,6 +376,10 @@ class BankoCacheManager:
                         print(f"   Original: '{row.query_text[:50]}...'")
                         print(f"   Current:  '{query[:50]}...'")
                         print(f"   Mode: {'STRICT (exact data match)' if self.strict_mode else 'LENIENT (similarity only)'}")
+                        trace_step("cache", "Response cache",
+                                   f"Hit: similarity {similarity_score:.3f} ({confidence.lower()} confidence), "
+                                   f"est. {tokens_saved} tokens saved",
+                                   ms=(time.perf_counter() - lookup_start) * 1000, status="hit")
                         
                         return row.response_text
                 
@@ -373,6 +387,8 @@ class BankoCacheManager:
             print(f"⚠️ Error checking query cache: {e}")
         
         self._log_cache_stat('query', 'miss')
+        trace_step("cache", "Response cache", "Miss: no similar answer cached",
+                   ms=(time.perf_counter() - lookup_start) * 1000, status="miss")
         return None
     
     def cache_response(self, query: str, response: str, expense_data: list[dict],
@@ -396,6 +412,7 @@ class BankoCacheManager:
         # Use normalized expense data for consistent hashing
         expense_hash = self._generate_hash(self._normalize_expense_data_for_cache(expense_data))
         expires_at = datetime.utcnow() + timedelta(hours=self.cache_ttl_hours)
+        write_start = time.perf_counter()
         
         try:
             with _engine().connect() as conn:
@@ -435,6 +452,9 @@ class BankoCacheManager:
                 })
                 conn.commit()
                 print("   💾 Stored in query_cache:")
+                trace_step("cache", "Response cache write",
+                           f"Stored for {self.cache_ttl_hours}h",
+                           ms=(time.perf_counter() - write_start) * 1000, status="success")
                 print(f"      - query: '{query[:60]}...'")
                 print(f"      - ai_service: '{ai_service}'")
                 print(f"      - expense_hash: {expense_hash}")
@@ -470,6 +490,8 @@ class BankoCacheManager:
                 
         except Exception as e:
             print(f"⚠️ Error caching response: {e}")
+            trace_step("cache", "Response cache write", "Not stored this time",
+                       ms=(time.perf_counter() - write_start) * 1000, status="warning")
     
     @db_retry(max_attempts=3, initial_delay=0.5)
     def get_cached_vector_search(self, query_embedding: np.ndarray, limit: int = 5, scope: str | None = None) -> list[dict] | None:
