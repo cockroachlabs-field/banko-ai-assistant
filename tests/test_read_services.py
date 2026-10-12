@@ -212,3 +212,68 @@ def test_statement_csv_defuses_formulas():
         assert "'=HYPERLINK" in line and line.endswith(",purchase,-12.50")
     finally:
         drop_user(uid)
+
+
+def _blind_vector_index(monkeypatch):
+    """Make the hinted per-user vector query come back empty, the way
+    v26.3 sometimes does on a REGIONAL BY ROW expenses table."""
+    original = T.semantic_sql
+    monkeypatch.setattr(T, "semantic_sql",
+                        lambda filters="": original(filters).replace("WHERE e.user_id", "WHERE false AND e.user_id"))
+
+
+def _count_exact_scans(monkeypatch) -> list[str]:
+    calls: list[str] = []
+    original = getattr(T, "exact_semantic_sql", None)
+
+    def counting(filters=""):
+        calls.append(filters)
+        return original(filters)
+
+    monkeypatch.setattr(T, "exact_semantic_sql", counting, raising=False)
+    return calls
+
+
+def test_semantic_search_falls_back_when_the_vector_index_returns_nothing(seeded, monkeypatch):
+    from banko_ai.utils.request_trace import current_trace, reset_trace, start_trace
+    expected = T.semantic_search(seeded, "pizza dinner", limit=5)["items"]
+    assert expected
+    _blind_vector_index(monkeypatch)
+    calls = _count_exact_scans(monkeypatch)
+    token = start_trace()
+    try:
+        hits = T.semantic_search(seeded, "pizza dinner", limit=5)["items"]
+        steps = current_trace()
+    finally:
+        reset_trace(token)
+    assert calls, "the exact per-user scan never ran"
+    assert hits and all(h["distance"] is not None for h in hits)
+    # Exact search ranks at least as well as the approximate index.
+    assert hits[0]["distance"] <= expected[0]["distance"] + 1e-6
+    fallback = [s for s in steps if s["label"] == "Vector index fallback"]
+    assert len(fallback) == 1
+    assert fallback[0]["kind"] == "vector_search" and fallback[0]["status"] == "warning"
+    assert fallback[0]["detail"] == "vector index returned no rows; exact scan of this user's rows"
+    assert fallback[0]["ms"] is not None
+    # Outer filters still apply on the fallback path.
+    restaurant = T.semantic_search(seeded, "pizza dinner", limit=20, category="restaurant")["items"]
+    assert restaurant and all(h["category"] == "Restaurant" for h in restaurant)
+
+
+def test_transaction_detail_similar_uses_the_fallback(seeded, monkeypatch):
+    _blind_vector_index(monkeypatch)
+    calls = _count_exact_scans(monkeypatch)
+    item = T.list_transactions(seeded, limit=50, kind="purchase")["items"][0]
+    detail = T.transaction_detail(seeded, item["id"])
+    assert calls and detail["similar"]
+
+
+def test_no_embedded_rows_means_no_fallback(monkeypatch):
+    _blind_vector_index(monkeypatch)
+    calls = _count_exact_scans(monkeypatch)
+    uid = make_user()
+    try:
+        assert T.semantic_search(uid, "pizza dinner", limit=5)["items"] == []
+        assert calls == []
+    finally:
+        drop_user(uid)

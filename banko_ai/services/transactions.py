@@ -4,6 +4,8 @@ the per-user vector index, and one transaction's detail."""
 from __future__ import annotations
 
 import base64
+import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -13,7 +15,10 @@ from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.regions import regional_tables_ready
 from ..db.rls import request_url
+from ..utils.request_trace import trace_step
 from ._sql import jsonable, read_session, valid_uuid, vector_text
+
+log = logging.getLogger("banko.services")
 
 MAX_LIMIT = 200
 MAX_K = 500
@@ -145,9 +150,53 @@ def _qvec(text_query: str) -> str:
     return vector_text(load_embedding_model().encode([text_query])[0])
 
 
+def exact_semantic_sql(filters: str = "") -> str:
+    """The same statement as semantic_sql(), but the CTE reads this user's
+    rows through the date index and sorts them by exact distance, so the
+    vector index plays no part. Only used when the index came back empty."""
+    return f"""
+        WITH nn AS MATERIALIZED (
+            SELECT expense_id, embedding <=> :qvec AS distance
+            FROM expenses@idx_expenses_user_date
+            WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL
+            ORDER BY embedding <=> :qvec LIMIT :k
+        )
+        SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance
+        FROM nn JOIN expenses AS e ON e.expense_id = nn.expense_id
+        WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL {filters}
+        ORDER BY nn.distance LIMIT :limit
+    """
+
+
+_fallback_logged = False
+
+
 def _semantic_rows(conn, user_id: str, qvec: str, *, limit: int, k: int, filters: str = "", extra=None):
+    global _fallback_logged
     params = {"u": user_id, "qvec": qvec, "k": max(k, limit), "limit": min(limit, MAX_LIMIT), **(extra or {})}
-    return conn.execute(text(semantic_sql(filters)), params).fetchall()
+    rows = conn.execute(text(semantic_sql(filters)), params).fetchall()
+    if rows:
+        return rows
+    # On v26.3 a REGIONAL BY ROW expenses table with both a global and a
+    # per-user C-SPANN index can return nothing for some query vectors even
+    # though the user's rows are there (a larger beam does not help). When
+    # the user does have embedded rows, rank them exactly instead.
+    has_rows = conn.execute(text(
+        "SELECT EXISTS (SELECT 1 FROM expenses WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL)"
+    ), {"u": user_id}).scalar()
+    if not has_rows:
+        return rows
+    t0 = time.perf_counter()
+    rows = conn.execute(text(exact_semantic_sql(filters)), params).fetchall()
+    trace_step("vector_search", "Vector index fallback",
+               "vector index returned no rows; exact scan of this user's rows",
+               ms=(time.perf_counter() - t0) * 1000, status="warning")
+    if not _fallback_logged:
+        _fallback_logged = True
+        log.warning("The per-user C-SPANN index returned no rows for a user who has embedded expenses "
+                    "(seen on CockroachDB v26.3 REGIONAL BY ROW tables with two vector indexes); "
+                    "falling back to an exact scan of that user's rows. Logged once per process.")
+    return rows
 
 
 def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, category: str | None = None,
