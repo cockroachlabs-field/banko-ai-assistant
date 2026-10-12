@@ -125,6 +125,11 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 - Boot: slow work goes in the warm-up steps in `create_app`, reported through the app's `Readiness`; nothing slow runs before the server listens. Pages wait for the `schema` and `personas` components.
 - Persona: anything that shows provider identity reads it from `banko_ai/ai_providers/display.py`. Errors a user can see use `neutral_error()` or `NEUTRAL_FAILED`, never the exception text.
 - Tests: the plain suite runs against a throwaway single-node CockroachDB on port 26258. Always pass `DATABASE_URL` explicitly; the shell profile points at the chaos cluster on 26257, which only tests gated on `BANKO_TEST_MR_URL` may touch.
+- Money: every write goes through `banko_ai/services/ledger.py` (one short transaction per movement, idempotent where a user can repeat it). All money SQL lives in `banko_ai/services/`; read services use `read_session(user_id, follower=...)`, follower reads for reports only. Money is `Decimal` until `jsonable()` at the API edge. Inserts into REGIONAL BY ROW money tables pin `crdb_region` with `money_region` and `region_columns` (`has_region_column` guards `user_budgets` while it converts).
+- Content: categories, personas and seed profiles are YAML in `banko_ai/config/defaults/`, overridable with `CATEGORIES_FILE`, `PERSONAS_FILE`, `SEED_PROFILES_FILE`. Persona ids a1, a2, a3 are fixed (coach default user).
+- Seeding: deterministic per user and day, resumable via `banko_meta` key `seed:<user_id>` holding the window; reset and seeding take a per-user lease on `seed_lock:<user_id>`. The integrity worker must report 0 drift.
+- Vector search: semantic transaction search pins the per-user vector index with a hint (`FROM expenses@idx_expenses_user_embedding`) because freshly seeded users are not yet in table statistics.
+- RLS: policies on accounts, ledger_entries, transfers, goals, user_budgets only, for the `banko_app` role; request-path services resolve `url` with `rls.request_url()`. Never add RLS to a vector table.
 
 ### Git workflow
 

@@ -250,6 +250,10 @@ The important knobs:
 | `RECURRING_MIN_OCCURRENCES` | Charges needed before a merchant counts as a recurring bill | `3` |
 | `RECURRING_PRICE_CHANGE_PCT` | Price change, in percent, that flags a subscription as changed | `5` |
 
+### Make the demo yours
+
+The demo ships with sample spending data: categories and merchant rules in `YAML`, personas (spending styles) to log in as, and seeded transaction history. Point `CATEGORIES_FILE` to your own category tree, `PERSONAS_FILE` to your personas, or `SEED_PROFILES_FILE` to custom spending profiles. The app picks them up on boot, and seeding remains deterministic and resumable.
+
 Per-provider credentials are in "Start the app" above; `AWS_REGION`
 defaults to `us-east-1`. Override model lists with `WATSONX_MODELS`, `OPENAI_MODELS`, `AWS_MODELS`,
 `GEMINI_MODELS` (comma-separated). That is not every setting: `banko-ai
