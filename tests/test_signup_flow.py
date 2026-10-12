@@ -21,6 +21,7 @@ def client():
     app = create_app()
     app.config["TESTING"] = True
     yield app.test_client()
+    app.extensions["banko_warmup_stop"].set()
     # Cleanup: delete the test user and their rows. Retries because on a
     # shared cluster this commit can lose a RETRY_SERIALIZABLE race with
     # a running app and fail the whole gate from teardown.

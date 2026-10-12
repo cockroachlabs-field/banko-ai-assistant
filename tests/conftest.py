@@ -27,6 +27,8 @@ _guard_database_url()
 
 # The app no longer sniffs PYTEST_CURRENT_TEST; tests opt out of sample data explicitly.
 os.environ.setdefault("BANKO_SKIP_AUTOSETUP", "1")
+# No background integrity sweeps; tests call check_integrity directly.
+os.environ.setdefault("INTEGRITY_INTERVAL_SECONDS", "0")
 
 # Normalize the scheme once for every test module: postgresql:// works for
 # the app (it normalizes internally), so it should work for the suite too.

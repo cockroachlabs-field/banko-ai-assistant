@@ -50,7 +50,8 @@ def client(monkeypatch):
     reset_config()  # Settings are cached; reset after changing env
     app = create_app()
     app.config["TESTING"] = True
-    return app.test_client()
+    yield app.test_client()
+    app.extensions["banko_warmup_stop"].set()
 
 
 def _sign(body: bytes) -> str:

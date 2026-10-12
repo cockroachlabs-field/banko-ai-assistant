@@ -156,3 +156,40 @@ def test_background_components_never_hold_the_ready_line():
     r.mark_background("persona_data")
     r.set("persona_data", "running", "seeding 10/400")
     assert r.finished()
+
+
+def _wait_state(readiness, name, seconds=60):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        component = readiness.get(name)
+        if component is not None and component.state not in ("pending", "running"):
+            return component
+        time.sleep(0.2)
+    return readiness.get(name)
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_a_broken_personas_file_fails_personas_once_and_names_the_file(tmp_path, monkeypatch, make_app):
+    bad = tmp_path / "my-personas.yaml"
+    bad.write_text("personas:\n  - username: ghost\n", encoding="utf-8")
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setenv("PERSONAS_FILE", str(bad))
+    monkeypatch.setenv("WARMUP_WAIT_SECONDS", "1")
+    app = make_app()
+    readiness = app.extensions["banko_readiness"]
+    personas = _wait_state(readiness, "personas", 20)
+    assert personas is not None and personas.state == "failed"
+    body = app.test_client().get("/api/health").get_json()
+    assert body["components"]["personas"]["state"] == "failed"
+    assert "my-personas.yaml" in body["components"]["personas"]["detail"]
+    assert "waiting for the database" not in body["components"]["personas"]["detail"]
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_rls_off_by_choice_is_ready_not_degraded(monkeypatch, make_app):
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setenv("RLS_MODE", "off")
+    app = make_app()
+    rls = _wait_state(app.extensions["banko_readiness"], "rls", 60)
+    assert rls is not None and rls.state == "ready"
+    assert "off by choice" in rls.detail

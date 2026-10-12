@@ -256,7 +256,10 @@ def create_app() -> Flask:
         from ..db.rls import refresh_status
         try:
             status = refresh_status(config.database_url)
-            readiness.set("rls", "ready" if status.enabled else "degraded", status.reason)
+            if config.rls_mode == "off":
+                readiness.set("rls", "ready", "off by choice (RLS_MODE=off)")
+            else:
+                readiness.set("rls", "ready" if status.enabled else "degraded", status.reason)
         except Exception as e:  # the schema is fine; RLS just stays off
             # Class name only: the message could echo a URL with a password.
             boot_log.warning("rls: status check failed (%s); row-level security stays off",
@@ -285,7 +288,20 @@ def create_app() -> Flask:
                 print(f"✅ Active AI Service: {service}", flush=True)
         return f"{config.ai_service} reachable"
 
+    # The catalog is plain YAML: load it once, now, so a broken override
+    # file fails the personas step with a reason instead of being retried
+    # forever as if the database were late.
+    from ..config.catalog import CatalogError, get_catalog
+    catalog_error: str | None = None
+    try:
+        get_catalog()
+    except CatalogError as e:
+        catalog_error = str(e)
+        boot_log.error("catalog: %s; the personas will not load until the file is fixed", catalog_error)
+
     def _personas_step() -> str:
+        if catalog_error:
+            raise CatalogError(catalog_error)
         from ..services.seeding import ensure_personas
         names = _with_backoff("personas", lambda: ensure_personas(config.database_url))
         return f"{', '.join(names)} present"
@@ -405,9 +421,13 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
     def _persona_data_step() -> str:
         from ..services.integrity import IntegrityWorker
+        if config.banko_skip_autosetup:
+            # No seeding and no integrity sweeps: tests and --no-data runs.
+            readiness.set("integrity", "ready", "skipped (BANKO_SKIP_AUTOSETUP)")
+            return "skipped (BANKO_SKIP_AUTOSETUP)"
         try:
-            if config.banko_skip_autosetup:
-                return "skipped (BANKO_SKIP_AUTOSETUP)"
+            if catalog_error:
+                raise CatalogError(catalog_error)
             readiness.wait_for("personas", timeout=600)
             from ..services.seeding import seed_personas
             written = seed_personas(config.database_url, on_progress=_persona_progress)

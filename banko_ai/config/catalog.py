@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 from .settings import get_config
 
@@ -187,26 +187,78 @@ _lock = threading.Lock()
 _cache: dict[tuple[str, str, str], Catalog] = {}
 
 
-def _read(path_setting: str, default_name: str) -> Any:
-    if path_setting:
-        raw = Path(path_setting).read_text(encoding="utf-8")
-    else:
-        raw = resources.files("banko_ai.config.defaults").joinpath(default_name).read_text(encoding="utf-8")
-    return yaml.safe_load(raw)
+class CatalogError(ValueError):
+    """A catalog file is missing or invalid. The message names the file and
+    what is wrong with it; it never holds anything secret."""
+
+
+def _source(setting: str, path: str, default_name: str) -> str:
+    return f"{setting}={path}" if path else f"the packaged {default_name}"
+
+
+def _first_error(exc: ValidationError) -> str:
+    errors = exc.errors()
+    if not errors:
+        return str(exc)
+    first = errors[0]
+    loc = ".".join(str(part) for part in first.get("loc", ()))
+    msg = first.get("msg", "invalid")
+    more = f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""
+    return f"{loc}: {msg}{more}" if loc else f"{msg}{more}"
+
+
+def _read(setting: str, path: str, default_name: str, top: str) -> Any:
+    where = _source(setting, path, default_name)
+    try:
+        if path:
+            raw = Path(path).read_text(encoding="utf-8")
+        else:
+            raw = resources.files("banko_ai.config.defaults").joinpath(default_name).read_text(encoding="utf-8")
+        data = yaml.safe_load(raw)
+    except OSError as exc:
+        raise CatalogError(f"{where}: cannot read the file ({exc.strerror or exc.__class__.__name__})") from None
+    except yaml.YAMLError as exc:
+        raise CatalogError(f"{where}: not valid YAML ({str(exc).splitlines()[0]})") from None
+    if not isinstance(data, dict) or top not in data:
+        raise CatalogError(f"{where}: needs a top-level '{top}' key")
+    return data[top]
+
+
+def _load(cfg) -> Catalog:
+    sources = (("CATEGORIES_FILE", cfg.categories_file, "categories.yaml", "categories"),
+               ("PERSONAS_FILE", cfg.personas_file, "personas.yaml", "personas"),
+               ("SEED_PROFILES_FILE", cfg.seed_profiles_file, "seed_profiles.yaml", "profiles"))
+    raw = {top: _read(setting, path, name, top) for setting, path, name, top in sources}
+    if not isinstance(raw["profiles"], dict):
+        raise CatalogError(f"{_source('SEED_PROFILES_FILE', cfg.seed_profiles_file, 'seed_profiles.yaml')}: "
+                           "'profiles' must map each spending style to its profile")
+    raw["profiles"] = {style: {**(body or {}), "style": style} for style, body in raw["profiles"].items()}
+    # Each file on its own first, so an error names the file it is in.
+    shapes: dict[str, TypeAdapter[Any]] = {"categories": TypeAdapter(tuple[Category, ...]),
+                                           "personas": TypeAdapter(tuple[Persona, ...]),
+                                           "profiles": TypeAdapter(dict[str, SeedProfile])}
+    for setting, path, name, top in sources:
+        try:
+            shapes[top].validate_python(raw[top])
+        except ValidationError as exc:
+            raise CatalogError(f"{_source(setting, path, name)}: {_first_error(exc)}") from None
+    try:
+        return Catalog.model_validate(raw)
+    except ValidationError as exc:
+        overrides = [_source(setting, path, name) for setting, path, name, _ in sources if path]
+        where = ", ".join(overrides) if overrides else "the packaged catalog"
+        raise CatalogError(f"{where}: {_first_error(exc)}") from None
 
 
 def get_catalog() -> Catalog:
+    """The validated catalog. Raises CatalogError when a file is missing or
+    invalid; the message names the file."""
     cfg = get_config()
     key = (cfg.categories_file, cfg.personas_file, cfg.seed_profiles_file)
     with _lock:
         cached = _cache.get(key)
         if cached is None:
-            profiles = _read(cfg.seed_profiles_file, "seed_profiles.yaml")["profiles"]
-            cached = Catalog.model_validate({
-                "categories": _read(cfg.categories_file, "categories.yaml")["categories"],
-                "personas": _read(cfg.personas_file, "personas.yaml")["personas"],
-                "profiles": {style: {**body, "style": style} for style, body in profiles.items()},
-            })
+            cached = _load(cfg)
             _cache[key] = cached
         return cached
 

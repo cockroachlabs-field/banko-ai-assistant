@@ -12,7 +12,8 @@ def client(monkeypatch):
     monkeypatch.setenv("FLASK_SECRET_KEY", "test")
     app = create_app()
     app.config["TESTING"] = True
-    return app.test_client()
+    yield app.test_client()
+    app.extensions["banko_warmup_stop"].set()
 
 
 def test_health_coach_returns_200_with_status_keys(client):

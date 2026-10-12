@@ -243,7 +243,7 @@ The important knobs:
 | `SEED_BATCH_SIZE` | Ledger entries written per seeding transaction | `200` |
 | `SEED_PARALLELISM` | Users seeded at the same time | `3` |
 | `CHECKING_OVERDRAFT_LIMIT` | How far below zero checking may go; `0` means no overdraft | `0` |
-| `MAX_TRANSFER_AMOUNT` | Largest single purchase, deposit or transfer the API accepts | `1000000` |
+| `MAX_TRANSFER_AMOUNT` | Largest single purchase, deposit or transfer the API accepts, and the largest goal target | `1000000` |
 | `INTEGRITY_INTERVAL_SECONDS` | Seconds between checks that every balance matches its ledger; `0` turns the checker off | `300` |
 | `INTEGRITY_MAX_ACCOUNTS` | The integrity checker skips itself above this many accounts | `5000` |
 | `REPORTING_FOLLOWER_READS` | Read cash flow, net worth history and statements with follower reads, a few seconds stale | `true` |
@@ -252,7 +252,7 @@ The important knobs:
 
 ### Make the demo yours
 
-The demo ships with sample spending data: categories and merchant rules in `YAML`, personas (spending styles) to log in as, and seeded transaction history. Point `CATEGORIES_FILE` to your own category tree, `PERSONAS_FILE` to your personas, or `SEED_PROFILES_FILE` to custom spending profiles. The app picks them up on boot, and seeding remains deterministic and resumable.
+The demo ships with sample spending data: categories and merchant rules in `YAML`, personas (spending styles) to log in as, and seeded transaction history. Point `CATEGORIES_FILE` to your own category tree, `PERSONAS_FILE` to your personas, or `SEED_PROFILES_FILE` to custom spending profiles. The app reads them on boot and names the file if one is invalid. A persona's display name and color refresh on boot; a changed spending style shapes that persona's history from its next reset. Seeding stays deterministic and resumable.
 
 Per-provider credentials are in "Start the app" above; `AWS_REGION`
 defaults to `us-east-1`. Override model lists with `WATSONX_MODELS`, `OPENAI_MODELS`, `AWS_MODELS`,
