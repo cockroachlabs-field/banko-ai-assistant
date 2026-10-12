@@ -276,3 +276,62 @@ def test_fresh_multi_region_database_is_born_regional():
         assert elapsed < 120
     finally:
         _drop(MR_URL, "banko_schema_mr_test")
+
+
+MONEY = ("categories", "accounts", "transfers", "ledger_entries", "goals", "user_data_versions")
+
+
+def test_money_tables_are_registered_with_their_locality():
+    sql = _sql(REGIONAL)
+    assert "LOCALITY GLOBAL" in sql["categories"]
+    for name in ("accounts", "transfers", "ledger_entries", "goals", "user_data_versions", "user_budgets"):
+        assert sql[name].endswith("LOCALITY REGIONAL BY ROW"), name
+    plain = _sql(PLAIN)
+    assert all("LOCALITY" not in plain[name] for name in MONEY)
+
+
+def test_money_columns_follow_the_spec():
+    sql = _sql(PLAIN)
+    assert "balance DECIMAL(14,2) NOT NULL DEFAULT 0" in sql["accounts"]
+    assert "CHECK (kind IN ('checking', 'savings', 'credit'))" in sql["accounts"]
+    assert "UNIQUE (user_id, idempotency_key)" in sql["transfers"]
+    assert "CHECK (amount > 0)" in sql["transfers"]
+    assert ("INDEX ledger_user_idx (user_id, posted_at DESC) "
+            "STORING (account_id, amount, kind, description, expense_id)") in sql["ledger_entries"]
+    assert "INDEX ledger_expense_idx (expense_id)" in sql["ledger_entries"]
+    assert "display_name STRING" in sql["users"]
+    assert "avatar_color STRING" in sql["users"]
+
+
+def test_storing_renders_inline_and_standalone():
+    idx = S.Index("t_user_idx", "user_id", storing="a, b")
+    assert idx.inline() == "INDEX t_user_idx (user_id) STORING (a, b)"
+    assert idx.create("t") == "CREATE INDEX IF NOT EXISTS t_user_idx ON t (user_id) STORING (a, b)"
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_foundation_database_gains_money_tables_without_losing_data(scratch_url):
+    S.ensure_schema(scratch_url)
+    eng = get_engine(scratch_url)
+    with eng.begin() as c:
+        c.execute(text("INSERT INTO users (user_id, username, spending_style) "
+                       "VALUES ('00000000-0000-0000-0000-00000000f001', 'keeper', 'saver')"))
+        for name in MONEY:
+            c.execute(text(f"DROP TABLE {name}"))
+        c.execute(text("ALTER TABLE users DROP COLUMN display_name"))
+        c.execute(text("ALTER TABLE users DROP COLUMN avatar_color"))
+        c.execute(text("DELETE FROM banko_meta WHERE key = 'schema_fingerprint'"))
+    result = S.ensure_schema(scratch_url)
+    assert result.changed
+    assert set(MONEY) <= _tables(scratch_url)
+    with eng.connect() as c:
+        assert c.execute(text("SELECT username, display_name FROM users "
+                              "WHERE user_id = '00000000-0000-0000-0000-00000000f001'")).fetchone() == ("keeper", None)
+        from banko_ai.db.regions import has_region_column
+        assert has_region_column(c, "accounts") is False  # single node: no crdb_region
+
+
+def test_region_columns():
+    from banko_ai.db.regions import region_columns
+    assert region_columns(None) == ("", "")
+    assert region_columns("eu-de") == ("crdb_region, ", "CAST(:crdb_region AS crdb_internal_region), ")

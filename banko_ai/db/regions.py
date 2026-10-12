@@ -203,3 +203,45 @@ def clear_region_caches() -> None:
     _tables_ready_cache.clear()
     _gateway_region_cache.clear()
     resolve_user_region_cache_clear()
+
+
+_region_columns_seen: set[tuple[str, str]] = set()
+
+
+def money_region(conn, user_id: str, url: str | None = None) -> str | None:
+    """The user's home region when REGIONAL BY ROW tables are live, else None.
+
+    Inserts into REGIONAL BY ROW money tables pin crdb_region to this value,
+    so a user's accounts and ledger live where the user lives instead of
+    wherever the gateway node happened to be."""
+    from ..config.settings import get_config
+
+    if not regional_tables_ready(url or get_config().database_url):
+        return None
+    row = conn.execute(text("SELECT home_region FROM users WHERE user_id = CAST(:u AS UUID)"),
+                       {"u": str(user_id)}).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+def region_columns(region: str | None) -> tuple[str, str]:
+    """The column-list prefix and value prefix that pin crdb_region on an
+    INSERT, or two empty strings when nothing should be pinned. The value
+    prefix reads the :crdb_region bind parameter."""
+    if not region:
+        return "", ""
+    return "crdb_region, ", "CAST(:crdb_region AS crdb_internal_region), "
+
+
+def has_region_column(conn, table: str) -> bool:
+    """Whether the table has crdb_region yet. user_budgets converts to
+    REGIONAL BY ROW in the background on existing databases, so writers
+    check before pinning. Positive answers are cached per database."""
+    key = (str(conn.engine.url), table)
+    if key in _region_columns_seen:
+        return True
+    row = conn.execute(text("SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = :t AND column_name = 'crdb_region' LIMIT 1"),
+                       {"t": table}).fetchone()
+    if row is not None:
+        _region_columns_seen.add(key)
+    return row is not None

@@ -33,7 +33,7 @@ from .engine import get_engine
 log = logging.getLogger("banko.schema")
 narration = logging.getLogger("banko.migration")  # the lines the demo console shows
 
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 FINGERPRINT_KEY = "schema_fingerprint"
 LOCK_KEY = "schema_lock"
 LOCK_TTL_SECONDS = 300
@@ -59,14 +59,19 @@ class Index:
     name: str
     columns: str
     vector: bool = False
+    storing: str = ""
+
+    def _body(self) -> str:
+        body = f"({self.columns})"
+        return f"{body} STORING ({self.storing})" if self.storing else body
 
     def inline(self) -> str:
         kind = "VECTOR INDEX" if self.vector else "INDEX"
-        return f"{kind} {self.name} ({self.columns})"
+        return f"{kind} {self.name} {self._body()}"
 
     def create(self, table: str) -> str:
         kind = "VECTOR INDEX" if self.vector else "INDEX"
-        return f"CREATE {kind} IF NOT EXISTS {self.name} ON {table} ({self.columns})"
+        return f"CREATE {kind} IF NOT EXISTS {self.name} ON {table} {self._body()}"
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,16 @@ def tables() -> tuple[Table, ...]:
             ("value", "STRING NOT NULL"),
             ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
         ), primary_key="key", locality="GLOBAL"),
+        Table("categories", _c(
+            ("key", "STRING NOT NULL"),
+            ("label", "STRING NOT NULL"),
+            ("icon", "STRING NOT NULL"),
+            ("color", "STRING NOT NULL"),
+            ("grp", "STRING NOT NULL"),
+            ("sort", "INT8 NOT NULL DEFAULT 0"),
+        ), primary_key="key", constraints=(
+            "CHECK (grp IN ('needs', 'wants', 'savings', 'income', 'transfer'))",
+        ), locality="GLOBAL"),
         Table("expenses", _c(
             ("expense_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
             ("user_id", "UUID NOT NULL"),
@@ -259,6 +274,8 @@ def tables() -> tuple[Table, ...]:
             ("home_region", "STRING"),
             ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
             ("demo_user", "BOOL NOT NULL DEFAULT true"),
+            ("display_name", "STRING"),
+            ("avatar_color", "STRING"),
         ), primary_key="user_id", locality="GLOBAL"),
         Table("spending_signals", _c(
             ("signal_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
@@ -291,7 +308,80 @@ def tables() -> tuple[Table, ...]:
             ("category", "STRING NOT NULL"),
             ("amount", "DECIMAL NOT NULL"),
             ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
-        ), primary_key="user_id, category"),
+        ), primary_key="user_id, category", locality="REGIONAL BY ROW"),
+        Table("accounts", _c(
+            ("account_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
+            ("user_id", "UUID NOT NULL"),
+            ("kind", "STRING NOT NULL"),
+            ("name", "STRING NOT NULL"),
+            ("institution", "STRING NOT NULL"),
+            ("mask", "STRING NOT NULL"),
+            ("payment_method", "STRING"),
+            ("opening_balance", "DECIMAL(14,2) NOT NULL DEFAULT 0"),
+            ("balance", "DECIMAL(14,2) NOT NULL DEFAULT 0"),
+            ("credit_limit", "DECIMAL(14,2)"),
+            ("apr", "DECIMAL(5,2)"),
+            ("opened_at", "DATE NOT NULL"),
+            ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ), primary_key="account_id", constraints=(
+            "CHECK (kind IN ('checking', 'savings', 'credit'))",
+        ), indexes=(
+            Index("accounts_user_idx", "user_id", storing="kind, name, institution, mask, balance, credit_limit"),
+        ), locality="REGIONAL BY ROW"),
+        Table("transfers", _c(
+            ("transfer_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
+            ("user_id", "UUID NOT NULL"),
+            ("kind", "STRING NOT NULL"),
+            ("from_account", "UUID NOT NULL"),
+            ("to_account", "UUID NOT NULL"),
+            ("amount", "DECIMAL(14,2) NOT NULL"),
+            ("goal_id", "UUID"),
+            ("idempotency_key", "STRING NOT NULL"),
+            ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ), primary_key="transfer_id", constraints=(
+            "CHECK (kind IN ('transfer', 'card_payment', 'goal_contribution'))",
+            "CHECK (amount > 0)",
+            "UNIQUE (user_id, idempotency_key)",
+        ), locality="REGIONAL BY ROW"),
+        Table("ledger_entries", _c(
+            ("entry_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
+            ("user_id", "UUID NOT NULL"),
+            ("account_id", "UUID NOT NULL"),
+            ("posted_at", "TIMESTAMPTZ NOT NULL"),
+            ("amount", "DECIMAL(14,2) NOT NULL"),
+            ("kind", "STRING NOT NULL"),
+            ("description", "STRING NOT NULL"),
+            ("expense_id", "UUID"),
+            ("transfer_id", "UUID"),
+            ("goal_id", "UUID"),
+        ), primary_key="entry_id", constraints=(
+            "CHECK (kind IN ('purchase', 'income', 'transfer_in', 'transfer_out', "
+            "'card_payment', 'interest', 'refund', 'adjustment'))",
+        ), indexes=(
+            Index("ledger_account_idx", "account_id, posted_at DESC", storing="amount, kind"),
+            Index("ledger_user_idx", "user_id, posted_at DESC",
+                  storing="account_id, amount, kind, description, expense_id"),
+            Index("ledger_expense_idx", "expense_id"),
+        ), locality="REGIONAL BY ROW"),
+        Table("goals", _c(
+            ("goal_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
+            ("user_id", "UUID NOT NULL"),
+            ("name", "STRING NOT NULL"),
+            ("icon", "STRING NOT NULL"),
+            ("target_amount", "DECIMAL(14,2) NOT NULL"),
+            ("target_date", "DATE"),
+            ("account_id", "UUID NOT NULL"),
+            ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ), primary_key="goal_id", constraints=(
+            "CHECK (target_amount > 0)",
+        ), indexes=(
+            Index("goals_user_idx", "user_id"),
+        ), locality="REGIONAL BY ROW"),
+        Table("user_data_versions", _c(
+            ("user_id", "UUID NOT NULL"),
+            ("version", "INT8 NOT NULL DEFAULT 0"),
+            ("updated_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
+        ), primary_key="user_id", locality="REGIONAL BY ROW"),
     )
 
 
