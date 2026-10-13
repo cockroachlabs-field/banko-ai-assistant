@@ -376,6 +376,22 @@ def duplicate_candidates(user_id: str, *, amount, day: date, embedding: str | No
     return jsonable([_expense_json(r, None if d is None else float(d)) for r, d in out])
 
 
+def duplicate_check(user_id: str, expense_id: str, *, window_days: int, max_distance: float,
+                    url: str | None = None) -> dict:
+    """Find possible duplicates of one expense: same amount, nearby date, similar description."""
+    url = request_url(url)
+    with read_session(user_id, url=url) as conn:
+        row = conn.execute(text("SELECT expense_amount, expense_date, embedding::STRING FROM expenses "
+                                "WHERE expense_id = CAST(:x AS UUID) AND user_id = CAST(:u AS UUID)"),
+                           {"x": expense_id, "u": user_id}).fetchone()
+    if row is None:
+        return {"candidates": []}
+    found = duplicate_candidates(user_id, amount=row[0], day=row[1], embedding=row[2],
+                                 exclude=expense_id, window_days=window_days,
+                                 max_distance=max_distance, url=url)
+    return {"candidates": found}
+
+
 def merchant_history(user_id: str, merchant: str, *, url: str | None = None) -> dict | None:
     from ..utils.aggregations import resolve_merchant
     admin_url = url or get_config().database_url
@@ -385,7 +401,8 @@ def merchant_history(user_id: str, merchant: str, *, url: str | None = None) -> 
     url = request_url(url)
     with read_session(user_id, url=url) as conn:
         agg = conn.execute(text("""
-            SELECT count(*), COALESCE(sum(expense_amount), 0), min(expense_date), max(expense_date)
+            SELECT count(*), COALESCE(sum(expense_amount), 0), COALESCE(avg(expense_amount), 0),
+                   min(expense_date), max(expense_date)
             FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant = :m
         """), {"u": user_id, "m": name}).fetchone()
         recent = conn.execute(text("""
@@ -395,7 +412,7 @@ def merchant_history(user_id: str, merchant: str, *, url: str | None = None) -> 
         """), {"u": user_id, "m": name}).fetchall()
     visits = int(agg[0])
     return jsonable({"merchant": name, "visits": visits, "total": agg[1],
-                     "average": (agg[1] / visits) if visits else 0, "first": agg[2], "last": agg[3],
+                     "average": agg[2], "first": agg[3], "last": agg[4],
                      "recent": [_expense_json(r) for r in recent]})
 
 

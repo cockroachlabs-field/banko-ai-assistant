@@ -134,3 +134,34 @@ def test_explain_semantic_shows_the_vector_index(member):
     from banko_ai.services.transactions import explain_semantic
     plan = explain_semantic(member, "pizza")
     assert "idx_expenses_user_embedding" in plan
+
+
+def test_duplicate_check_skips_purchases_beyond_the_window(ctx, member):
+    acct = next(a for a in list_accounts(member)["accounts"] if a["kind"] == "credit")
+    vec = [0.02] * 384
+    old = ledger.post_purchase(member, acct["account_id"], amount="19.50", merchant="Old Cafe",
+                               category="Coffee", embedding=vec,
+                               expense_date=date.today() - timedelta(days=30))
+    recent = ledger.post_purchase(member, acct["account_id"], amount="19.50", merchant="Old Cafe",
+                                  category="Coffee", embedding=vec)
+    out = T.run_tool("duplicate_check", {"expense_id": recent}, ctx)["result"]
+    assert old not in [d["expense_id"] for d in out["candidates"]]
+
+
+def test_unresolved_merchant_raises_tool_error(ctx):
+    out = T.run_tool("spend_summary", {"merchant": "NoSuchMerchant"}, ctx)
+    assert not out["ok"] and "No merchant called 'NoSuchMerchant'" in out["error"]
+
+
+def test_unresolved_category_raises_tool_error(ctx):
+    out = T.run_tool("spend_summary", {"category": "NoSuchCategory"}, ctx)
+    assert not out["ok"] and "No category called 'NoSuchCategory'" in out["error"]
+
+
+def test_library_value_error_becomes_failed(ctx, monkeypatch):
+    def broken(*args, **kwargs):
+        raise ValueError("secret library detail")
+    monkeypatch.setattr("banko_ai.services.memories.recall", broken)
+    out = T.run_tool("recall", {"query": "anything"}, ctx)
+    assert not out["ok"] and out["error"] == "failed"
+    assert "secret" not in str(out)

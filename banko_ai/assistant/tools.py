@@ -14,17 +14,20 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine
 from ..services import accounts, actions, budgets, caches, goals, ledger, memories, receipts, recurring, reports
 from ..services import transactions as txns
 from ..services._sql import jsonable
 from ..utils.request_trace import trace_step
 
 log = logging.getLogger("banko.assistant")
+
+
+class ToolError(Exception):
+    """User-facing error message from a tool."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -120,12 +123,17 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
     url = ctx.url or get_config().database_url
     end = (a.date_to or date.today()) + timedelta(days=1)
     start = a.date_from or (end - timedelta(days=31))
-    merchant = resolve_merchant(a.merchant, ctx.user_id, url) if a.merchant else None
+    if a.merchant:
+        merchant = resolve_merchant(a.merchant, ctx.user_id, url)
+        if merchant is None:
+            raise ToolError(f"No merchant called '{a.merchant}' in your history")
+    else:
+        merchant = None
+    if a.category and not merchant:
+        if resolve_category(a.category, url) is None:
+            raise ToolError(f"No category called '{a.category}'")
     intent = AggregationIntent("sum", a.category if not merchant else None, start, end)
     agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant)
-    if a.category and not merchant and resolve_category(a.category, url) is None:
-        trace_step("tool", "Category not found", f"'{a.category}' matched no category; summed everything",
-                   status="warning")
     return {"total": agg.total, "count": agg.count, "average": agg.average, "category": agg.category,
             "merchant": agg.merchant, "from": str(start), "to": str(end - timedelta(days=1)),
             "rows": agg.rows[:10]}
@@ -140,20 +148,9 @@ def _receipt(ctx: ToolContext, a: ReceiptArgs) -> dict | None:
 
 
 def _duplicates(ctx: ToolContext, a: ExpenseArgs) -> dict:
-    detail = txns.transaction_detail(ctx.user_id, a.expense_id, url=ctx.url)
-    if not detail:
-        return {"candidates": []}
-    with get_engine(ctx.url).connect() as conn:
-        row = conn.execute(text("SELECT expense_amount, expense_date, embedding::STRING FROM expenses "
-                                "WHERE expense_id = CAST(:x AS UUID) AND user_id = CAST(:u AS UUID)"),
-                           {"x": a.expense_id, "u": ctx.user_id}).fetchone()
-    if row is None:
-        return {"candidates": []}
     cfg = get_config()
-    found = txns.duplicate_candidates(ctx.user_id, amount=row[0], day=row[1], embedding=row[2],
-                                      exclude=a.expense_id, window_days=cfg.fraud_duplicate_window_days,
-                                      max_distance=cfg.receipt_duplicate_max_distance, url=ctx.url)
-    return {"candidates": found}
+    return txns.duplicate_check(ctx.user_id, a.expense_id, window_days=cfg.duplicate_window_days,
+                                max_distance=cfg.receipt_duplicate_max_distance, url=ctx.url)
 
 
 def _propose_recategorize(ctx: ToolContext, a: RecategorizeArgs) -> dict:
@@ -163,7 +160,7 @@ def _propose_recategorize(ctx: ToolContext, a: RecategorizeArgs) -> dict:
     labels = {c.label.lower(): c.label for c in get_catalog().categories}
     label = labels.get(a.category.strip().lower())
     if label is None:
-        raise ValueError("Pick one of the catalog categories")
+        raise ToolError("Pick one of the catalog categories")
     summary = f"Move {detail.get('merchant') or 'this purchase'} on {str(detail.get('posted_at'))[:10]} to {label}"
     return actions.propose(ctx.user_id, "recategorize", {"expense_id": a.expense_id, "category": label},
                            summary, thread_id=ctx.thread_id, url=ctx.url)
@@ -235,7 +232,7 @@ def run_tool(name: str, args: dict | None, ctx: ToolContext) -> dict:
         return done(ok=False, error="bad arguments")
     try:
         result = jsonable(tool.fn(ctx, parsed))
-    except (ledger.NotFound, ValueError) as exc:
+    except (ledger.NotFound, ToolError) as exc:
         trace_step("tool", name, str(exc), status="warning")
         return done(ok=False, error=str(exc))
     except Exception:

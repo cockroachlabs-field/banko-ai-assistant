@@ -260,6 +260,8 @@ class Settings(BaseSettings):
         description="Credit limit of the card opened for a user who uploads a receipt before having any account.")
     receipt_duplicate_max_distance: float = _field(0.2, group="assistant", env="RECEIPT_DUPLICATE_MAX_DISTANCE",
         description="Largest description distance at which a receipt with the same amount and a nearby date counts as a duplicate.")
+    duplicate_window_days: int = _field(3, group="assistant", env="DUPLICATE_WINDOW_DAYS",
+        description="Days before and after a purchase in which a same-amount, similar purchase counts as a possible duplicate.")
 
     @field_validator("ai_service", "ai_display_provider", mode="before")
     @classmethod
