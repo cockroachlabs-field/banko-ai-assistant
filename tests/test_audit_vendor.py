@@ -3,6 +3,7 @@ manifest and reports each advisory it gets back."""
 
 import importlib.util
 import json
+import urllib.error
 from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "audit_vendor.py"
@@ -29,3 +30,15 @@ def test_each_advisory_names_the_package_and_version():
 def test_every_vendored_npm_package_is_audited():
     names = {q["package"]["name"] for q in audit.queries(json.loads(audit.MANIFEST.read_text()))}
     assert names == {"alpinejs", "chart.js", "socket.io-client", "marked", "dompurify", "lucide-static"}
+
+
+def test_network_failures_exit_cleanly(monkeypatch, capsys):
+    def failing_post(body):
+        raise urllib.error.URLError("Network unreachable")
+
+    monkeypatch.setattr(audit, "_post", failing_post)
+    assert audit.main() == 1
+    captured = capsys.readouterr()
+    assert "Could not reach the OSV database" in captured.err
+    assert "vendored-library audit needs the network" in captured.err
+    assert "Traceback" not in captured.err

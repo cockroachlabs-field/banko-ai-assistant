@@ -50,7 +50,13 @@ def findings(entries: list[dict], post=None) -> list[str]:
 
 def main() -> int:
     entries = json.loads(MANIFEST.read_text())
-    found = findings(entries)
+    try:
+        found = findings(entries)
+    except (urllib.request.URLError, TimeoutError, OSError) as e:
+        reason = str(e.reason) if isinstance(e, urllib.request.URLError) and hasattr(e, "reason") else str(e)
+        print(f"Could not reach the OSV database ({reason}); the vendored-library audit needs the network.",
+              file=sys.stderr)
+        return 1
     for line in found:
         print(line)
     print(f"{len(found)} known vulnerabilities in {len(queries(entries))} vendored npm packages")
