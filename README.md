@@ -34,6 +34,14 @@ CockroachDB cluster.
 - **Three-layer semantic cache** — query / embedding / vector-search caches
   with tunable similarity thresholds.
 
+## The interface
+
+The UI has no build step: templates plus Alpine.js bind data from the JSON API.
+
+Pages: dashboard (net worth, spending, budgets, coach insight, upcoming bills), accounts (with statements and transaction drill-down), transactions (table and semantic search), cash flow (income vs spending), budget (set and track spending limits), recurring bills, goals, the assistant (full conversational AI with explanations of how each answer was built), the coach inbox (simulated spending signals with agent decisions and rationale), the agents feed (real receipt uploads, nudges, and decisions as they finish), and settings (language, theme, model, demo data with live progress, memories, and system health).
+
+A click on any header icon toggles between Daylight and Midnight (controlled by `UI_THEME`). The identity pill in the top right shows the active persona and provider; drop a receipt anywhere and the assistant panel slides up. Switching models happens from Settings and takes effect immediately. Switching providers requires a restart with the new `AI_SERVICE` value.
+
 ## How it works
 
 ![Banko AI Architecture](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/banko-ai-architecture.png)
@@ -232,6 +240,10 @@ The important knobs:
 | `RLS_MODE` | `auto` puts row-level security on the money tables and serves requests as the `banko_app` role when it can log in. `off` stops routing through that role but leaves the policies in place, which is harmless because the admin role bypasses them. `/api/health` says which one is active and why | `auto` |
 | `DATABASE_APP_URL` | Connection string for the `banko_app` role. Empty derives it from `DATABASE_URL` on an insecure cluster; a secure cluster needs it set, or row-level security stays off | empty |
 | `AI_SERVICE` | `watsonx`, `openai`, `aws`, `gemini`, or `ollama` | `watsonx` |
+| `BRAND_NAME` | The assistant's name in prompts and answers | `Banko` |
+| `BRAND_ACCENT` | Accent color for the UI, as #RRGGBB. Both themes derive their accent shades from it | `#6933FF` |
+| `UI_THEME` | Default theme: `light`, `dark` or `system`. People can still switch it from the header | `system` |
+| `UI_LANGUAGES` | Comma-separated languages offered in the assistant's picker | `en-US,es-ES,fr-FR,de-DE,it-IT,pt-PT,ja-JP,ko-KR,zh-CN,hi-IN` |
 | `SECRET_KEY` | Flask session key. Auto-generated per boot in dev, which signs everyone out on restart; set it for stable demo sessions | random |
 | `CDC_WEBHOOK_HMAC_SECRET` | Signs Coach webhook posts; unset disables `/api/cdc/signals` and the welcome nudge | unset |
 | `SAMPLE_DATA_COUNT` | Sample expenses generated when the database is empty; `--generate-data N` overrides it | `5000` |

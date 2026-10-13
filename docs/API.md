@@ -12,7 +12,7 @@
 | `/api/ai-providers` | GET | List available AI providers |
 | `/api/models` | GET | List available models for current provider |
 | `/api/models` | POST | Switch to a different model |
-| `/api/agents/status` | GET | Agent dashboard data |
+| `/api/agents/status` | GET | Agent dashboard data (deprecated; use `/api/v1/agents/stats`) |
 | `/cache-stats` | GET | Cache performance metrics |
 
 ### Search & RAG
@@ -36,6 +36,7 @@
 | `/api/cdc/signals` | POST | CDC webhook receiver. Body is a CockroachDB changefeed wrapped envelope; requires an `X-Banko-Signature` header (hex HMAC-SHA256 of the raw body with `CDC_WEBHOOK_HMAC_SECRET`). Returns 202 with queued and replayed signal ids |
 | `/api/coach/nudges` | GET | Recent nudges for the current persona (`?limit=N`) |
 | `/api/coach/nudges/<nudge_id>` | GET | One nudge with its tool trace (the evidence panel) |
+| `/api/coach/simulate` | POST | Create a synthetic spending signal, `{"user_id": "maya", "signal_type": "large_purchase"}`, for demo purposes | 200 | 400 |
 | `/api/coach/chat` | POST | Conversational coach; JSON body `{"message": ..., "thread_id": ...}`, state checkpointed in CockroachDB |
 | `/health/coach` | GET | Coach subsystem health: DB reachability, webhook secret, Kafka flag, last nudge time |
 
@@ -109,8 +110,11 @@ the personas are ready.
 | GET | `/api/v1/accounts` | Accounts grouped into cash and credit, with totals, net worth and card utilization | 200 | |
 | GET | `/api/v1/accounts/<id>` | One account | 200 | 404 |
 | GET | `/api/v1/accounts/<id>/statements` | No `month`: the months that have a statement. `?month=YYYY-MM`: opening, credits, charges, closing and entries. Add `&format=csv` for a download | 200 | 400, 404 |
+| GET | `/api/v1/accounts/history` | Net worth history for all personas on the accounts page: `months` array and `series` keyed by persona | 200 | |
+| GET | `/api/v1/categories` | Full category tree with labels, icons, and colors | 200 | |
 | GET | `/api/v1/transactions` | Newest first, keyset paged: `limit` (1 to 200, default 50), `cursor` (from `next_cursor`), `category`, `account`, `kind`, `from`, `to` (years 1900 to 2999), `min`, `max`. With `q`, a semantic search instead, ranked by vector distance (`limit` default 20, plus `category`, `from`, `to`) | 200 | 400 |
-| GET | `/api/v1/transactions/<id>` | One transaction, by ledger entry id or expense id | 200 | 404 |
+| GET | `/api/v1/transactions/<id>` | One transaction, by ledger entry id or expense id; includes `receipt` (the document that sourced it, if any) and `checks` (fraud and budget agent decisions) | 200 | 404 |
+| PATCH | `/api/v1/transactions/<id>` | Update a transaction; `{"category": "groceries"}` recategorizes it, `{"notes": "..."}` sets or clears the notes field | 200 | 400, 404 |
 | GET | `/api/v1/cashflow` | Income, spending, net and savings rate per month, plus totals by category and merchant; `?months=` 1 to 24 (default 6) | 200 | 400 |
 | GET | `/api/v1/budgets` | This month's budgets with spending against each | 200 | |
 | PUT | `/api/v1/budgets` | Set one budget, `{"category": "groceries", "amount": "425"}`; `0` removes it | 200 | 400 |
@@ -118,6 +122,8 @@ the personas are ready.
 | GET | `/api/v1/goals` | Savings goals with progress and projected finish | 200 | |
 | POST | `/api/v1/goals/<id>/contribute` | Move money into a goal, `{"from_account", "amount", "idempotency_key"}` | 201, 200 replay | 400, 404, 409 |
 | POST | `/api/v1/transfers` | Move money between two of your accounts, `{"from_account", "to_account", "amount", "idempotency_key"}`; `"kind": "card_payment"` pays a card | 201, 200 replay | 400, 404, 409 |
+| GET | `/api/v1/agents/activity` | Recent agent decisions and actions (receipts, nudges) de-duplicated and sorted by time, for the agents feed | 200 | |
+| GET | `/api/v1/agents/stats` | Agent execution counts and the 5 most recent of each kind | 200 | |
 | POST | `/api/v1/admin/reset` | Delete and reseed one persona, `{"persona": "maya"}`, or all of them, `{"all": true, "confirm": "all users"}` | 202 | 400, 404 |
 | POST | `/api/v1/admin/seed` | Create and seed generated demo users, `{"users": 1-200, "months": 1-24}` | 202 | 400 |
 
@@ -125,6 +131,17 @@ A reset holds the same per-user lease as seeding. If a seed of that persona
 is still running, the reset waits up to 30 seconds for it and tries again.
 If the lease is still taken, it skips that persona without deleting anything,
 and the server log says so. One persona failing doesn't stop the others.
+
+#### Session and real-time updates
+
+Every `/api/v1` response includes an `X-Banko-User` header with the persona
+id that answered it (the signed-in user, or the default persona when there's
+no session). The UI checks this on every response and redirects to `/login`
+when it differs from the signed-in persona, which is how expired sessions are
+detected.
+
+Socket.IO events:
+- `seeding`: `{"user_id": "maya", "state": "running", "done": 2000, "total": 5000}`. Sent while a persona is being seeded. `state` is `running` or `done`. The dashboard shows a progress bar during seeding.
 
 #### Assistant (threads, memories, actions, receipts)
 
@@ -143,6 +160,7 @@ Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts
 | GET | `/api/v1/memories` | List your memories | 200 | |
 | DELETE | `/api/v1/memories/<memory_id>` | Delete a memory | 204 | 404 |
 | POST | `/api/v1/receipts` | Upload a receipt, multipart `receipt` file plus optional `thread_id` form field; streams SSE | SSE | 404, 400 |
+| GET | `/api/v1/receipts/<id>/thumbnail` | Receipt image thumbnail, 200×200 PNG | 200 | 404 |
 
 **SSE events from POST `/api/v1/assistant/threads/<thread_id>/messages`:**
 
@@ -150,8 +168,8 @@ Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts
 - `token`: `{"text": "partial answer text"}`. Tokens arrive while the answer is written. The `answer` event carries the final text, so replace what you streamed with it.
 - `citation`: `{"expense_id": "...", "merchant": "Blue Bottle", "amount": 13.58, "date": "2026-10-11"}`, one per purchase the answer cites. Amounts are positive.
 - `proposal`: `{"action_id": "<uuid>", "kind": "budget", "summary": "Set your Groceries budget to $450.00 a month", "status": "pending"}`. `kind` is `budget` or `recategorize`. Nothing changes until `POST /api/v1/actions/<action_id>/confirm`, and the answer of a proposal turn ends with "Waiting for your confirmation: <summary>."
-- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": false, "route": "aggregate", "meta": {"region": "us-east-1", "db_ms": 23}}`. `route` is `aggregate`, `receipt`, `remember`, `forget`, `offtopic` or `plan`. The only markers left in `answer` are `[txn:<expense_id>]` for the purchases in `citations`. On aggregation and planner answers, `meta` holds the region that served the query (null on a single-region cluster) and the database time in ms; receipt, memory and off-topic answers, and answers from the answer cache, send `{}`.
-- `error`: `{"message": "..."}`, a neutral message (still warming up, reconnecting, or a general failure), never the exception text.
+- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": false, "route": "aggregate", "meta": {"region": "us-east-1", "db_ms": 23, "trace": [...], "explain": "..."}}`. `route` is `aggregate`, `receipt`, `remember`, `forget`, `offtopic` or `plan`. The only markers left in `answer` are `[txn:<expense_id>]` for the purchases in `citations`. On aggregation and planner answers, `meta` holds the region that served the query (null on a single-region cluster) and the database time in ms; `meta.trace` is the full step-by-step breakdown of how the answer was built (caches, SQL, model, tools), and `meta.explain` is the EXPLAIN ANALYZE output when aggregation SQL ran. Receipt, memory and off-topic answers, and answers from the answer cache, send `{}`.
+- `error`: `{"message": "...", "trace": [...]}`, a neutral message (still warming up, reconnecting, or a general failure), never the exception text. `trace` holds the steps that ran before the error, in the same format as `meta.trace` on the answer event.
 - `done`: `{}`, always the last event.
 
 **SSE events from POST `/api/v1/receipts`:**
