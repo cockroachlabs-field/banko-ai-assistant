@@ -61,16 +61,17 @@ def test_unsupported_upload_types_are_refused(client):
 
 @needs_db
 def test_receipt_temp_files_are_removed(client, monkeypatch):
-    import banko_ai.agents.receipt_agent as receipt_agent
+    from banko_ai.services import receipts
 
-    def explode(self, *args, **kwargs):
+    def explode(*args, **kwargs):
         raise RuntimeError("agent down")
 
-    monkeypatch.setattr(receipt_agent.ReceiptAgent, "process_document", explode)
+    monkeypatch.setattr(receipts, "default_hooks", explode)
     before = set(Path(tempfile.gettempdir()).glob("banko_receipt_*"))
     data = {"receipt": (io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"0" * 64), "r.png")}
-    client.post("/api/upload-receipt", data=data, content_type="multipart/form-data")
+    response = client.post("/api/upload-receipt", data=data, content_type="multipart/form-data")
     after = set(Path(tempfile.gettempdir()).glob("banko_receipt_*"))
+    assert response.status_code == 500 and "agent down" not in response.get_data(as_text=True)
     assert after <= before
 
 

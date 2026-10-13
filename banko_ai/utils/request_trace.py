@@ -9,9 +9,10 @@ same calls are no-ops for the coach, the warm-up and the sample data job.
 Steps are short strings written by our own code. Never pass exception text,
 connection URLs or the real provider name under a persona into a step.
 
-Finished traces live in a small in-process LRU keyed by a short id. The chat
-history sits in Flask's signed cookie (4 KB), which already carries an
-EXPLAIN plan per answer, so the cookie keeps only the id.
+Finished traces, with the EXPLAIN plan of the answer each one produced, live
+in a small in-process LRU keyed by a short id. The chat history sits in
+Flask's signed cookie (4 KB) and one semantic search plan runs to 20 KB, so
+the cookie keeps only the id.
 """
 
 from __future__ import annotations
@@ -97,16 +98,28 @@ def trace_elapsed_ms() -> float | None:
 
 
 _store: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+_plans: dict[str, str] = {}
 _store_lock = threading.Lock()
 
 
-def store_trace(steps: list[dict[str, Any]]) -> str:
+def store_trace(steps: list[dict[str, Any]], plan: str | None = None) -> str:
     trace_id = secrets.token_urlsafe(8)
     with _store_lock:
         _store[trace_id] = list(steps)
+        if plan:
+            _plans[trace_id] = plan
         while len(_store) > MAX_STORED_TRACES:
-            _store.popitem(last=False)
+            evicted, _ = _store.popitem(last=False)
+            _plans.pop(evicted, None)
     return trace_id
+
+
+def get_stored_plan(trace_id: str | None) -> str | None:
+    """The EXPLAIN plan stored with a trace, while the trace is kept."""
+    if not trace_id:
+        return None
+    with _store_lock:
+        return _plans.get(trace_id)
 
 
 def get_stored_trace(trace_id: str | None) -> list[dict[str, Any]] | None:

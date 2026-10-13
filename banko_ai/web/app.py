@@ -19,7 +19,6 @@ from datetime import datetime
 import requests
 from flask import (
     Flask,
-    after_this_request,
     flash,
     g,
     jsonify,
@@ -54,10 +53,9 @@ from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
 from ..utils.embeddings import ModelWarmingUp
 from ..utils.request_trace import (
     current_trace,
+    get_stored_plan,
     get_stored_trace,
-    insert_step,
     reset_trace,
-    serving_regions,
     start_trace,
     store_trace,
     trace_elapsed_ms,
@@ -88,6 +86,39 @@ def bounded_connection_test(provider, seconds: float = PROVIDER_CHECK_SECONDS) -
     worker.start()
     worker.join(seconds)
     return bool(result and result[0])
+
+
+class _TimedChat:
+    """A chat page turn's model, counted and timed, so its trace names the
+    model only when the turn really called it."""
+
+    def __init__(self, chat):
+        self.chat = chat
+        self.calls = 0
+        self.failed = 0
+        self.ms = 0.0
+
+    def _ran(self, t0: float, ok: bool) -> None:
+        self.calls += 1
+        self.failed += 0 if ok else 1
+        self.ms += (time.perf_counter() - t0) * 1000
+
+    def complete(self, messages, *, temperature: float = 0.3) -> str:
+        t0, ok = time.perf_counter(), False
+        try:
+            text_out = self.chat.complete(messages, temperature=temperature)
+            ok = True
+            return text_out
+        finally:
+            self._ran(t0, ok)
+
+    def stream(self, messages, *, temperature: float = 0.3):
+        t0, ok = time.perf_counter(), False
+        try:
+            yield from self.chat.stream(messages, temperature=temperature)
+            ok = True
+        finally:
+            self._ran(t0, ok)
 
 
 def auto_setup_data_if_needed(database_url: str) -> str:
@@ -641,94 +672,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             return None
         return redirect(url_for('login'))
 
-    def _serving_regions(explain_text: str | None) -> str | None:
-        """The region(s) that actually served a query, parsed from its
-        EXPLAIN ANALYZE output. This is what makes the badge move during a
-        region outage: the user's home region is where their rows live,
-        but leaseholders fail over, and the plan names the survivors."""
-        return serving_regions(explain_text)
-
-    def _render_aggregation_markdown(agg) -> str:
-        """Deterministic answer card for aggregation questions. Numbers come
-        straight from SQL; nothing here passes through a model."""
-        window = f"{agg.window_start} to {agg.window_end}"
-        scope = agg.category or "all categories"
-        if agg.operation == "count":
-            headline = (f"You made **{agg.count} transactions** on {scope} "
-                        f"between {window}.")
-        elif agg.operation == "average":
-            headline = (f"Your average {scope} transaction was "
-                        f"**${agg.average:,.2f}** between {window} "
-                        f"({agg.count} transactions, ${agg.total:,.2f} total).")
-        else:
-            headline = (f"You spent **${agg.total:,.2f}** on {scope} "
-                        f"between {window} ({agg.count} transactions).")
-        if not agg.count:
-            return (f"No matching transactions on {scope} between {window}. "
-                    f"Try a wider window or a different category.")
-        lines = [headline, "", "| Date | Merchant | Amount |", "|---|---|---|"]
-        for row in agg.rows:
-            lines.append(f"| {row['date']} | {row['merchant']} "
-                         f"| ${row['amount']:,.2f} |")
-        return "\n".join(lines)
-
-    def _aggregation_insights(agg, question: str) -> str | None:
-        """One short LLM pass over the SQL result. The figures arrive
-        pre-computed and the prompt forbids new arithmetic, so the model
-        adds judgment, not math. Any failure just means no insights block."""
-        try:
-            from banko_ai.agents.llm_factory import get_llm_for_agent
-            merchants = {}
-            for row in agg.rows:
-                merchants[row["merchant"]] = (
-                    merchants.get(row["merchant"], 0) + row["amount"])
-            top = sorted(merchants.items(), key=lambda kv: -kv[1])[:3]
-            top_text = ", ".join(f"{m} (${v:,.2f})" for m, v in top)
-            prompt = (
-                "You are a personal finance coach. Exact figures, already "
-                f"computed from the user's expense database: total "
-                f"${agg.total:,.2f} across {agg.count} transactions on "
-                f"{agg.category or 'all categories'} between "
-                f"{agg.window_start} and {agg.window_end}. "
-                f"Top merchants: {top_text}. "
-                f"The user asked: \"{question}\". Write two or three short, "
-                "specific observations or suggestions as markdown bullets. "
-                "Use only the figures given; do not compute new totals or "
-                "restate the question. No headings, bullets only.")
-            llm = get_llm_for_agent(temperature=0.4)
-            raw = llm.invoke(prompt)
-            text = raw.content if hasattr(raw, "content") else str(raw)
-            text = text.strip()
-            return text or None
-        except Exception as e:
-            print(f"aggregation insights skipped: {e}")
-            return None
-
-    # Narrative cache for the aggregation branch: SQL reruns every time
-    # (exact figures), only the LLM prose is reused. Keyed on user,
-    # provider, language, and the figures themselves, so any change in
-    # the data invalidates naturally.
-    _agg_narrative_cache: dict = {}
-
-    def _translate_answer(markdown_text: str, target_language: str) -> str | None:
-        """Render a deterministic answer in the user's language. The
-        figures were computed by SQL and must survive verbatim, so the
-        model translates prose only; any failure keeps the English text."""
-        try:
-            from banko_ai.agents.llm_factory import get_llm_for_agent
-            llm = get_llm_for_agent(temperature=0.1)
-            raw = llm.invoke(
-                f"Translate the following financial summary into "
-                f"{target_language}. Keep every number, currency amount, "
-                f"percentage, date, and merchant name exactly as written. "
-                f"Keep the markdown formatting. Output only the "
-                f"translation.\n\n{markdown_text}")
-            text = raw.content if hasattr(raw, "content") else str(raw)
-            return text.strip() or None
-        except Exception as e:
-            print(f"answer translation skipped: {e}")
-            return None
-    
     @app.route('/logout')
     def logout():
         """Back to the persona picker."""
@@ -802,73 +745,32 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     
     @app.route('/api/rag', methods=['POST'])
     def api_rag():
-        """API endpoint for RAG responses."""
+        """Ask the assistant without the page (curl demos): the same graph as
+        the chat page, on this session's thread."""
         try:
-            if not ai_provider:
-                return jsonify({
-                    'success': False,
-                    'error': 'AI provider not available'
-                }), 500
-            
-            data = request.get_json()
-            query = data.get('query', '')
+            data = request.get_json(silent=True) or {}
+            query = str(data.get('query', '')).strip()
+            if not query:
+                return jsonify({'success': False, 'error': 'query is required'}), 400
             language = data.get('language', 'en')
-
-            from banko_ai.utils.intent_classifier import REDIRECT_MESSAGE, is_financial_query
-            if not is_financial_query(query):
-                return jsonify({
-                    'success': True,
-                    'response': REDIRECT_MESSAGE,
-                    'sources': [],
-                    'metadata': {'cached': False, 'intent': 'off-topic'}
-                })
-
-            # Use original simple logic - no user filtering
-            search_results = search_engine.search_expenses(
-                query=query,
-                user_id=current_demo_user(),
-                limit=5,
-                threshold=0.7
-            )
-            
-            # Generate RAG response - use original simple logic
-            rag_response = ai_provider.generate_rag_response(
-                query=query,
-                context=search_results,
-                user_id=current_demo_user(),
-                language=language
-            )
-
-            metadata = dict(rag_response.metadata) if rag_response.metadata else {}
-            if config.ai_display_provider:
-                shown = _shown()
-                metadata['provider'] = shown.provider
-                metadata['model'] = shown.model
-
-            return jsonify({
-                'success': True,
-                'response': rag_response.response,
-                'sources': [
-                    {
-                        'expense_id': result.expense_id,
-                        'description': result.description,
-                        'merchant': result.merchant,
-                        'amount': result.amount,
-                        'similarity_score': result.similarity_score
-                    }
-                    for result in rag_response.sources
-                ],
-                'metadata': metadata
-            })
-
+            code = language if language in ('en-US', 'es-ES', 'fr-FR', 'de-DE', 'it-IT', 'pt-PT', 'ja-JP',
+                                            'ko-KR', 'zh-CN', 'hi-IN') else None
+            from ..assistant import answers
+            from ..assistant.graph import run_turn
+            from .assistant_api import _chat
+            out = run_turn(current_demo_user(), _session_thread(), query, language_code=code, chat=_chat())
+            # The identity the persona shows, as this endpoint always reported it.
+            shown = _shown()
+            return jsonify({'success': True, 'response': answers.strip_citations(out['answer']),
+                            'sources': out['citations'],
+                            'metadata': {'route': (out.get('route') or {}).get('kind'), 'cached': out['cached'],
+                                         'region': (out.get('meta') or {}).get('region'),
+                                         'provider': shown.provider, 'model': shown.model}})
         except ModelWarmingUp:
             raise
         except Exception as e:
             print(f"RAG error: {e}")
-            return jsonify({
-                'success': False,
-                'error': neutral_error(e)
-            }), 500
+            return jsonify({'success': False, 'error': neutral_error(e)}), 500
     
     # OLD ROUTE REMOVED - replaced by /api/generate-data with SocketIO support below
     
@@ -1058,478 +960,101 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
     @app.route('/api/upload-receipt', methods=['POST'])
     def upload_receipt():
-        """Handle receipt upload and process with Agent system"""
+        """The chat page's receipt upload: the assistant's receipt pipeline,
+        answered in the shape the page reads. The receipt becomes the active
+        receipt of the session's thread, so the next question can ask about it."""
         from pathlib import Path
-        
+
+        from ..assistant.graph import set_active_receipt
+        from ..db.regions import agent_home_region
+        from ..services import receipts as receipt_service
+        file = request.files.get('receipt')
+        if file is None or file.filename == '':
+            return jsonify({'success': False, 'error': 'No receipt file provided'}), 400
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in receipt_service.ALLOWED_TYPES:
+            return jsonify({'success': False, 'error': 'Upload a receipt image or PDF'}), 400
+        handle = tempfile.NamedTemporaryFile(prefix="banko_receipt_", suffix=suffix, delete=False)
+        handle.close()
         try:
-            # Check if file was uploaded
-            if 'receipt' not in request.files:
-                return jsonify({
-                    'success': False,
-                    'error': 'No receipt file provided'
-                }), 400
-            
-            file = request.files['receipt']
-            
-            if file.filename == '':
-                return jsonify({
-                    'success': False,
-                    'error': 'No file selected'
-                }), 400
-
-            # Save file temporarily
-            file_ext = Path(file.filename).suffix.lower()
-            if file_ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".pdf"}:
-                return jsonify({'success': False, 'error': 'Upload a receipt image or PDF'}), 400
-            handle = tempfile.NamedTemporaryFile(prefix="banko_receipt_", suffix=file_ext, delete=False)
-            temp_path = handle.name
-            handle.close()
-
-            @after_this_request
-            def _remove_temp_file(response):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-                return response
-
-            file.save(temp_path)
-
-            print(f"📄 Receipt uploaded: {file.filename} → {temp_path}")
-            
-            # One real region label for every agent in this pipeline: the
-            # cluster's gateway region when multi-region, 'local' otherwise.
-            # Hardcoded AWS names here used to reach the dashboard no
-            # matter what cluster was underneath.
-            from banko_ai.db.regions import agent_home_region
+            file.save(handle.name)
+            hooks = receipt_service.default_hooks(getattr(ai_provider, 'current_model', None))
+            # The dashboard shows "agent (region)", like every other agent_activity event.
             agent_region = agent_home_region(config.database_url)
-
-            # Initialize Receipt Agent
+            checks: dict[str, str] = {}
+            final: dict = {}
+            for event in receipt_service.process_receipt(current_demo_user(), handle.name, file.filename,
+                                                         hooks=hooks):
+                if event['type'] == 'step' and event['status'] != 'start':
+                    checks[event['step']] = event['detail']
+                    try:
+                        socketio.emit('agent_activity', {
+                            'agent_type': {'fraud': 'fraud', 'budget': 'budget'}.get(event['step'], 'receipt'),
+                            'region': agent_region,
+                            'status': 'completed' if event['status'] == 'done' else event['status'],
+                            'message': f"{event['step']}: {event['detail']}",
+                            'timestamp': datetime.now().isoformat()})
+                    except Exception:
+                        pass
+                elif event['type'] in ('receipt', 'error'):
+                    final = event
+            if final.get('type') != 'receipt':
+                message = final.get('message') or NEUTRAL_FAILED
+                status = 422 if message in (receipt_service.TEMPLATE_ECHO, receipt_service.INVALID) else 500
+                return jsonify({'success': False, 'error': message}), status
             try:
-                from pydantic import ValidationError
-
-                from banko_ai.agents.llm_factory import get_embedding_model, get_llm_for_agent
-                from banko_ai.agents.receipt_agent import ReceiptAgent
-                from banko_ai.agents.receipt_extraction_schema import (
-                    ReceiptExtraction,
-                    is_placeholder_payload,
-                )
-                
-                # Use centralized LLM factory with the currently selected model
-                current_model = getattr(ai_provider, 'current_model', None)
-                llm = get_llm_for_agent(temperature=0.7, model_override=current_model)
-                embedding_model = get_embedding_model()
-                
-                receipt_agent = ReceiptAgent(
-                    region=agent_region,
-                    llm=llm,
-                    database_url=config.database_url,
-                    embedding_model=embedding_model
-                )
-                
-                print(f"🤖 Receipt Agent created: {receipt_agent.agent_id[:8]}...")
-                
-                # Process document
-                result = receipt_agent.process_document(
-                    file_path=temp_path,
-                    user_id=session.get('user_id', 'demo_user'),
-                    document_type='receipt'
-                )
-                
-                print(f"✅ Processing result: {result.get('success', False)}")
-                
-                # Check if processing actually succeeded
-                if not result.get('success', False):
-                    # Processing failed - return error with details
-                    errors = result.get('errors', ['Unknown processing error'])
-                    print(f"❌ Receipt processing failed: {errors}")
-                    return jsonify({
-                        'success': False,
-                        'error': f"Receipt processing failed: {', '.join(errors)}",
-                        'details': result
-                    }), 500
-                
-                # Extract data for response (Receipt Agent returns 'extracted_fields')
-                extracted = result.get('extracted_fields', {})
-
-                print(f"📊 Extracted fields: {extracted}")
-
-                # Some models (notably code-tuned ones like ibm/granite-8b-code-instruct)
-                # echo the prompt scaffold instead of extracting values, which would land
-                # in the DB as opaque driver errors.
-                if is_placeholder_payload(extracted):
-                    print(f"❌ Extraction returned prompt-template placeholders: {extracted}")
-                    return jsonify({
-                        'success': False,
-                        'error': (
-                            "The selected model returned the prompt template instead of "
-                            "real receipt values. Switch to a chat/instruct model (not a "
-                            "code model) and re-upload."
-                        ),
-                        'extracted_fields': extracted,
-                    }), 422
-
-                try:
-                    validated = ReceiptExtraction(**extracted)
-                except ValidationError as ve:
-                    print(f"❌ Extraction failed schema validation: {ve}")
-                    return jsonify({
-                        'success': False,
-                        'error': 'Extracted receipt fields failed validation.',
-                        'validation_errors': ve.errors(),
-                        'extracted_fields': extracted,
-                    }), 422
-
-                # Downstream code reads from `extracted`; replace with the validated
-                # payload so the INSERT sees clean types and non-empty strings.
-                extracted = validated.model_dump()
-
-                # Emit real-time update: Receipt Agent completed
-                try:
-                    socketio.emit('agent_activity', {
-                        'agent_type': 'receipt',
-                        'region': agent_region,
-                        'status': 'processing',
-                        'message': f"Processing receipt from {extracted.get('merchant', 'Unknown')}",
-                        'timestamp': datetime.now().isoformat()
-                    })
-                except Exception:
-                    pass
-                
-                # Step 1: Add expense to expenses table
-                expense_id = None
-                try:
-                    # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-                    from ..db.engine import get_engine
-                    engine = get_engine(config.database_url)
-
-                    expense_id = str(uuid.uuid4())
-                    
-                    # Get or create proper UUID for user
-                    session_user_id = session.get('user_id', 'demo_user')
-                    if isinstance(session_user_id, str) and not session_user_id.count('-') == 4:
-                        # Not a UUID, create a deterministic one for demo_user
-                        import hashlib
-                        user_uuid = uuid.UUID(hashlib.md5(session_user_id.encode()).hexdigest())
-                        user_id = str(user_uuid)
-                    else:
-                        user_id = session_user_id
-                    
-                    # Handle None values from extraction
-                    amount = extracted.get('amount')
-                    if amount is None or amount == 'None':
-                        amount = 0.0
-                    else:
-                        amount = float(amount)
-                    
-                    # Handle missing date - use today as default
-                    expense_date = extracted.get('date')
-                    if expense_date is None or expense_date == 'None' or expense_date == '':
-                        expense_date = datetime.now().strftime('%Y-%m-%d')
-                    
-                    # Handle missing merchant
-                    merchant = extracted.get('merchant', 'Unknown')
-                    if not merchant or merchant == 'None':
-                        merchant = 'Unknown'
-                    
-                    # Generate embedding for expense using natural language
-                    # This helps match conversational queries like "when did I go to X?"
-                    merchant = extracted.get('merchant') or 'Unknown'
-                    category = extracted.get('category') or 'Other'
-                    expense_text = f"Spent ${amount} at {merchant} for {category} on {expense_date.strftime('%Y-%m-%d') if hasattr(expense_date, 'strftime') else expense_date}"
-                    
-                    from banko_ai.utils.embeddings import load_embedding_model
-                    embedding_model = load_embedding_model()
-                    embedding = embedding_model.encode(expense_text).tolist()
-                    
-                    # Get category and items for tags and description
-                    category = extracted.get('category') or 'Other'
-                    items = extracted.get('items', [])
-                    
-                    # Generate tags from merchant and category
-                    tags = []
-                    if merchant and merchant != 'Unknown':
-                        # Add first word of merchant name (lowercase)
-                        tags.append(merchant.lower().split()[0])
-                    if category and category != 'general':
-                        tags.append(category.lower())
-                    
-                    # Format better description
-                    if items and len(items) > 0:
-                        item_list = ', '.join(items)
-                        description = f"Spent ${amount:.2f} at {merchant} for {item_list}."
-                    else:
-                        description = f"Spent ${amount:.2f} on {category} at {merchant}"
-                    
-                    with engine.connect() as conn:
-                        # Format embedding as array literal for CockroachDB
-                        embedding_str = '[' + ','.join(str(x) for x in embedding) + ']'
-
-                        # Format tags array for CockroachDB
-                        tags_str = '{' + ','.join(f'"{tag}"' for tag in tags) + '}' if tags else None
-
-                        # Pin the row to the uploader's home region like every
-                        # other expenses writer, or the region-pruned reads
-                        # silently exclude uploaded receipts.
-                        from banko_ai.db.regions import regional_tables_ready
-
-                        from .auth import resolve_user_region as _resolve_region
-                        receipt_region = (_resolve_region(user_id, config.database_url)
-                                          if regional_tables_ready(config.database_url) else None)
-                        cols = """expense_id, user_id, expense_amount, shopping_type,
-                                merchant, expense_date, description, payment_method,
-                                tags, embedding"""
-                        vals = """:expense_id, :user_id, :amount, :category,
-                                :merchant, :date, :description, :payment_method,
-                                :tags, CAST(:embedding AS VECTOR(384))"""
-                        insert_params = {
-                            'expense_id': expense_id,
-                            'user_id': user_id,
-                            'amount': amount,
-                            'category': category,
-                            'merchant': merchant,
-                            'date': expense_date,
-                            'description': description,
-                            'payment_method': extracted.get('payment_method', 'unknown') if extracted.get('payment_method') else 'unknown',
-                            'tags': tags_str,
-                            'embedding': embedding_str
-                        }
-                        if receipt_region:
-                            cols += ", crdb_region"
-                            vals += ", :crdb_region"
-                            insert_params['crdb_region'] = receipt_region
-                        conn.execute(text(f"""
-                            INSERT INTO expenses ({cols}) VALUES ({vals})
-                        """), insert_params)
-                        conn.commit()
-                    
-                    print(f"💰 Expense added to expenses table: {expense_id}")
-                    print(f"   📝 Description: {description}")
-                    print(f"   🏷️  Tags: {tags}")
-                    
-                    # Also index into langchain-cockroachdb vectorstore
-                    try:
-                        from banko_ai.vector_search.crdb_vectorstore import index_expense_document
-                        index_expense_document(
-                            expense_id=expense_id,
-                            description=description,
-                            metadata={
-                                "user_id": user_id,
-                                "merchant": merchant,
-                                "shopping_type": category,
-                                "expense_amount": amount,
-                                "expense_date": str(expense_date),
-                                "payment_method": extracted.get('payment_method', 'unknown'),
-                            },
-                        )
-                        print("   🔍 Indexed in CockroachDB vectorstore")
-                    except Exception as vs_err:
-                        print(f"   ⚠️  Vectorstore indexing skipped: {vs_err}")
-                    
-                    # Emit update: Expense added
-                    try:
-                        socketio.emit('agent_activity', {
-                            'agent_type': 'receipt',
-                            'region': agent_region,
-                            'status': 'completed',
-                            'message': f"Added expense: {extracted.get('merchant', 'Unknown')} - ${amount}",
-                            'timestamp': datetime.now().isoformat()
-                        })
-                    except Exception:
-                        pass
-                    
-                except Exception as e:
-                    print(f"⚠️  Failed to add expense to table: {e}")
-                    import traceback
-                    traceback.print_exc()
-                
-                # Step 2: Trigger Fraud Agent
-                fraud_result = "✅ No issues detected"
-                try:
-                    from banko_ai.agents.fraud_agent import FraudAgent
-                    from banko_ai.agents.llm_factory import get_embedding_model, get_llm_for_agent
-                    
-                    # Use centralized LLM factory based on configured provider
-                    fraud_llm = get_llm_for_agent(temperature=0.7)
-                    fraud_embedding_model = get_embedding_model()
-                    
-                    fraud_agent = FraudAgent(
-                        region=agent_region,
-                        llm=fraud_llm,
-                        database_url=config.database_url,
-                        embedding_model=fraud_embedding_model,
-                        fraud_threshold=0.7,
-                        duplicate_window_days=config.fraud_duplicate_window_days
-                    )
-                    
-                    print("🕵️  Running fraud check...")
-                    
-                    # Emit update: Fraud Agent started
-                    try:
-                        socketio.emit('agent_activity', {
-                            'agent_type': 'fraud',
-                            'region': agent_region,
-                            'status': 'processing',
-                            'message': 'Scanning for suspicious patterns...',
-                            'timestamp': datetime.now().isoformat()
-                        })
-                    except Exception:
-                        pass
-                    
-                    # Analyze the newly created expense for fraud
-                    fraud_check = fraud_agent.analyze_expense(expense_id)
-                    
-                    if fraud_check.get('fraud_detected', False):
-                        confidence = fraud_check.get('confidence', 0)
-                        signals = fraud_check.get('signals', [])
-                        dup_signals = [s for s in signals if s.get('type') == 'duplicate']
-                        if dup_signals:
-                            fraud_result = f"⚠️  Duplicate detected: {dup_signals[0]['details']}"
-                        else:
-                            fraud_result = f"⚠️  Suspicious transaction detected (confidence: {confidence:.0%})"
-                    else:
-                        fraud_result = "✅ No issues detected"
-                    
-                    print(f"   {fraud_result}")
-                    
-                    # Emit update: Fraud Agent completed
-                    try:
-                        socketio.emit('agent_activity', {
-                            'agent_type': 'fraud',
-                            'region': agent_region,
-                            'status': 'completed',
-                            'message': fraud_result,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                    except Exception:
-                        pass
-                    
-                except Exception as e:
-                    print(f"⚠️  Fraud check failed: {e}")
-                    fraud_result = "⚠️  Check failed"
-                
-                # Step 3: Trigger Budget Agent
-                budget_result = "Budget updated"
-                try:
-                    from banko_ai.agents.budget_agent import BudgetAgent
-                    from banko_ai.agents.llm_factory import get_llm_for_agent
-                    
-                    # Use centralized LLM factory based on configured provider
-                    budget_llm = get_llm_for_agent(temperature=0.7)
-                    
-                    budget_agent = BudgetAgent(
-                        region=agent_region,
-                        llm=budget_llm,
-                        database_url=config.database_url,
-                        alert_threshold=0.8
-                    )
-                    
-                    print("📊 Running budget check...")
-                    
-                    # Emit update: Budget Agent started
-                    try:
-                        socketio.emit('agent_activity', {
-                            'agent_type': 'budget',
-                            'region': agent_region,
-                            'status': 'processing',
-                            'message': 'Analyzing budget impact...',
-                            'timestamp': datetime.now().isoformat()
-                        })
-                    except Exception:
-                        pass
-                    
-                    # Get budget from config (can be set via MONTHLY_BUDGET_DEFAULT env var)
-                    from ..config.settings import get_config
-                    app_config = get_config()
-                    
-                    budget_check = budget_agent.check_budget_status(
-                        user_id=user_id,
-                        monthly_budget=app_config.monthly_budget_default
-                    )
-                    
-                    status = budget_check.get('status', 'unknown')
-                    if status == 'over_budget':
-                        budget_result = "⚠️  Over budget!"
-                    elif status == 'on_pace_to_exceed':
-                        budget_result = "⚠️  On pace to exceed"
-                    else:
-                        budget_result = "✅ Within budget"
-                    
-                    print(f"   {budget_result}")
-                    
-                    # Emit update: Budget Agent completed
-                    try:
-                        socketio.emit('agent_activity', {
-                            'agent_type': 'budget',
-                            'region': agent_region,
-                            'status': 'completed',
-                            'message': budget_result,
-                            'timestamp': datetime.now().isoformat()
-                        })
-                    except Exception:
-                        pass
-                    
-                except Exception as e:
-                    print(f"⚠️  Budget check failed: {e}")
-                    budget_result = "⚠️  Check failed"
-                
-                return jsonify({
-                    'success': True,
-                    'merchant': extracted.get('merchant', 'Unknown'),
-                    'amount': str(extracted.get('amount', '0.00')),
-                    'category': extracted.get('category', 'Unknown'),
-                    'date': extracted.get('date', 'Unknown'),
-                    'items': extracted.get('items', []),
-                    'expense_id': expense_id,
-                    'fraud_status': fraud_result,
-                    'budget_impact': budget_result,
-                    'document_id': result.get('document_id'),
-                    'message': 'Receipt processed by Receipt, Fraud, and Budget agents'
-                })
-                
-            except Exception as agent_error:
-                print(f"⚠️  Agent processing error: {agent_error}")
-                import traceback
-                traceback.print_exc()
-
-                # Return error (not fake success)
-                return jsonify({
-                    'success': False,
-                    'error': neutral_error(agent_error),
-                    'message': 'Receipt uploaded but processing failed. Check server logs.'
-                }), 500
-        
+                set_active_receipt(_session_thread(), {k: final.get(k) for k in (
+                    'document_id', 'merchant', 'amount', 'date', 'category', 'items', 'expense_id')})
+            except Exception as e:
+                # The purchase has posted by now: report it, just without a follow-up thread.
+                print(f"⚠️  Receipt {final.get('document_id')} posted but not attached to the chat: {e}")
+            duplicate = final.get('status') == 'duplicate'
+            return jsonify({
+                'success': True, 'merchant': final.get('merchant'), 'amount': f"{float(final.get('amount') or 0):.2f}",
+                'category': final.get('category'), 'date': final.get('date'), 'items': final.get('items') or [],
+                'expense_id': final.get('expense_id'), 'document_id': final.get('document_id'),
+                # A duplicate posts nothing, so its checks never run; the card says why instead.
+                'fraud_status': checks.get('fraud') or (f"Duplicate: {checks.get('duplicate')}" if duplicate
+                                                        else 'Not checked'),
+                'budget_impact': checks.get('budget') or (checks.get('post') if duplicate else 'Not checked'),
+                'duplicate': duplicate,
+                'message': ('Duplicate receipt, nothing posted' if duplicate
+                            else 'Receipt processed by Receipt, Fraud, and Budget agents')})
         except Exception as e:
             from werkzeug.exceptions import HTTPException
             if isinstance(e, HTTPException):
                 raise
             print(f"❌ Receipt upload error: {e}")
-            return jsonify({
-                'success': False,
-                'error': NEUTRAL_FAILED
-            }), 500
+            return jsonify({'success': False, 'error': NEUTRAL_FAILED}), 500
+        finally:
+            try:
+                os.remove(handle.name)
+            except OSError:
+                pass
     
     def _trace_identity() -> str:
         """The model as the persona shows it, for LLM steps in the trace."""
         shown = _shown()
         return f"{shown.name} · {shown.model}"
 
-    def _finish_trace() -> str:
-        """Close this request's trace and park it server side. The chat
-        history lives in the signed session cookie, so the message keeps
-        only the short id."""
+    def _finish_trace(plan: str | None = None) -> str:
+        """Close this request's trace and park it server side, with the
+        answer's EXPLAIN plan. The chat history lives in the signed session
+        cookie (4 KB, and a plan can be 20 KB), so the message keeps only
+        the short id."""
         trace_step("total", "Total request time", ms=trace_elapsed_ms())
-        return store_trace(current_trace())
+        return store_trace(current_trace(), plan)
 
     def _render_chat(ai_provider_display):
-        """Render the chat page with each message's stored trace attached
-        for the template; the session itself keeps only the ids."""
+        """Render the chat page with each message's stored trace and plan
+        attached for the template; the session itself keeps only the ids."""
         view = []
         for message in session.get('chat', []):
             meta = message.get('meta')
             if meta and meta.get('trace_id'):
                 message = dict(message)
-                message['meta'] = dict(meta, trace=get_stored_trace(meta['trace_id']) or [])
+                message['meta'] = dict(meta, trace=get_stored_trace(meta['trace_id']) or [],
+                                       explain=get_stored_plan(meta['trace_id']))
             view.append(message)
         return render_template('index.html',
                                chat=view,
@@ -1546,326 +1071,62 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         finally:
             reset_trace(token)
 
+    def _session_thread() -> str:
+        """The chat page's thread: one per browser session and user."""
+        from ..services import threads as thread_service
+        user_id = current_demo_user()
+        tid = session.get('thread_id')
+        if not tid or thread_service.get_thread(user_id, tid) is None:
+            tid = thread_service.create_thread(user_id)['thread_id']
+            session['thread_id'] = tid
+        return tid
+
     def _chat_impl():
-        # Clear chat history on GET request (fresh start)
         if request.method == 'GET':
             session['chat'] = []
+            session.pop('thread_id', None)
         elif 'chat' not in session:
             session['chat'] = []
-
-        # Get AI provider info for display
         ai_provider_display = _provider_ui()
-        
-        if request.method == 'POST':
-            # One import for every branch below: a local import inside a
-            # single branch makes the name function-local everywhere and
-            # the other branches crash on it. Gated on the deployment being
-            # regional so a failed RBR migration (tables without
-            # crdb_region) can never poison the read path.
-            from ..db.regions import regional_tables_ready
-            from .auth import resolve_user_region as _resolve_region_raw
-
-            def resolve_user_region(user_id, database_url):
-                if not regional_tables_ready(database_url):
-                    return None
-                return _resolve_region_raw(user_id, database_url)
-
-            # Handle both 'message' and 'user_input' field names for compatibility
-            user_message = request.form.get('user_input') or request.form.get('message')
-            response_language = request.form.get('response_language', 'en-US')
-            
-            if user_message:
-                session['chat'].append({'text': user_message, 'class': 'User'})
-                prompt = user_message
-                
-                # Persist user message in CockroachDB chat history
-                try:
-                    from langchain_core.messages import HumanMessage
-
-                    from banko_ai.utils.crdb_chat_history import get_chat_history
-                    chat_session_id = session.get('session_id', session.sid if hasattr(session, 'sid') else 'default')
-                    crdb_history = get_chat_history(chat_session_id, database_url=config.database_url)
-                    crdb_history.add_message(HumanMessage(content=user_message))
-                except Exception:
-                    pass
-                
-                # Map language codes to language names for AI prompt
-                language_map = {
-                    'en-US': 'English',
-                    'es-ES': 'Spanish', 
-                    'fr-FR': 'French',
-                    'de-DE': 'German',
-                    'it-IT': 'Italian',
-                    'pt-PT': 'Portuguese',
-                    'ja-JP': 'Japanese',
-                    'ko-KR': 'Korean',
-                    'zh-CN': 'Chinese',
-                    'hi-IN': 'Hindi'
-                }
-                
-                target_language = language_map.get(response_language, 'English')
-
-                from banko_ai.utils.intent_classifier import REDIRECT_MESSAGE, is_financial_query
-                t_route = time.perf_counter()
-                if not is_financial_query(user_message):
-                    trace_step("route", "Intent routing",
-                               "Not a finance question: redirected, no database work",
-                               ms=(time.perf_counter() - t_route) * 1000)
-                    session['chat'].append({'text': REDIRECT_MESSAGE, 'class': 'Assistant',
-                                            'meta': {'trace_id': _finish_trace()}})
-                    return _render_chat(ai_provider_display)
-
-                # Agentic routing: aggregation questions go to SQL so the
-                # number is exact and identical on every provider. The LLM
-                # never does the arithmetic.
-                from banko_ai.utils.intent_classifier import classify_aggregation, extract_window
-                agg_intent = classify_aggregation(user_message)
-                route_ms = (time.perf_counter() - t_route) * 1000
-                if agg_intent is not None:
-                    trace_step("route", "Intent routing",
-                               f"Aggregation, answered by SQL: {agg_intent.operation} on "
-                               f"'{agg_intent.subject or 'all spending'}', "
-                               f"{agg_intent.window_start} to {agg_intent.window_end}",
-                               ms=route_ms)
-                    # Same transient posture as the RAG branch below: a DB
-                    # blip during a fault demo must read as reconnecting,
-                    # never as a 500.
-                    try:
-                        from banko_ai.utils.aggregations import explain_aggregation, run_aggregation
-                        print("\n🧮 AGGREGATION (agentic routing):")
-                        print(f"1. Intent: {agg_intent.operation} on "
-                              f"'{agg_intent.subject or 'all spending'}' | window "
-                              f"{agg_intent.window_start} to {agg_intent.window_end}")
-                        user_region = resolve_user_region(current_demo_user(), config.database_url)
-                        if user_region:
-                            print(f"   Region-pruned to {user_region} (REGIONAL BY ROW)")
-                            trace_step("region", "Region pruning",
-                                       f"Scoped to {user_region} (REGIONAL BY ROW)")
-                        t0 = time.perf_counter()
-                        agg = run_aggregation(agg_intent, current_demo_user(),
-                                              config.database_url, region=user_region)
-                        db_ms = int((time.perf_counter() - t0) * 1000)
-                        print(f"2. SQL answered in {db_ms}ms: ${agg.total:,.2f} "
-                              f"across {agg.count} transactions "
-                              f"(category: {agg.category or 'all'})")
-                        print("   Figures computed by CockroachDB; the model "
-                              "never does the arithmetic")
-                        trace_step("sql", "Aggregation SQL",
-                                   f"${agg.total:,.2f} across {agg.count} transactions "
-                                   f"(category: {agg.category or 'all'}), computed by CockroachDB",
-                                   ms=db_ms, status="success")
-                        # The SQL always runs (exact, fast); only the model
-                        # work is cached. Same user, same figures, same
-                        # language: reuse the narrative instead of paying
-                        # for insights plus translation again, which on a
-                        # local model turns a repeat question from seconds
-                        # into milliseconds.
-                        cache_key = (current_demo_user(), config.ai_service,
-                                     target_language, agg.operation,
-                                     agg.category, str(agg.window_start),
-                                     str(agg.window_end), agg.total, agg.count)
-                        cached_text = _agg_narrative_cache.get(cache_key)
-                        if cached_text:
-                            est = int(len(cached_text.split()) * 1.3)
-                            print(f"3. ✅ Narrative cache HIT "
-                                  f"(est. {est} tokens saved)")
-                            trace_step("cache", "Narrative cache",
-                                       f"Hit: reused the narrative, est. {est} tokens saved",
-                                       status="hit")
-                            agg_text = cached_text
-                        else:
-                            print("3. ❌ Narrative cache MISS, generating")
-                            trace_step("cache", "Narrative cache", "Miss: generating the narrative",
-                                       status="miss")
-                            agg_text = _render_aggregation_markdown(agg)
-                            if agg.count:
-                                t_llm = time.perf_counter()
-                                insights = _aggregation_insights(agg, user_message)
-                                llm_ms = (time.perf_counter() - t_llm) * 1000
-                                if insights:
-                                    agg_text += "\n\n**Insights**\n\n" + insights
-                                    print(f"   Insights narrated by {config.ai_service} "
-                                          f"around the pinned figures")
-                                    trace_step("llm", "LLM insights",
-                                               f"{_trace_identity()}, around the pinned figures",
-                                               ms=llm_ms, status="success")
-                                else:
-                                    trace_step("llm", "LLM insights",
-                                               f"{_trace_identity()}, no insights returned",
-                                               ms=llm_ms, status="warning")
-                            # SQL computed the figures; the model only
-                            # renders them in the user's language. English
-                            # answers on a Hindi session were this path
-                            # skipping the language setting the RAG path
-                            # always honored.
-                            if target_language != 'English':
-                                t_llm = time.perf_counter()
-                                translated = _translate_answer(agg_text, target_language)
-                                llm_ms = (time.perf_counter() - t_llm) * 1000
-                                agg_text = translated or agg_text
-                                print(f"   Rendered in {target_language}, figures preserved")
-                                trace_step("llm", "LLM translation",
-                                           f"{_trace_identity()}, into {target_language}"
-                                           if translated else
-                                           f"{_trace_identity()}, translation skipped, kept English",
-                                           ms=llm_ms, status="success" if translated else "warning")
-                            if len(_agg_narrative_cache) > 256:
-                                _agg_narrative_cache.clear()
-                            _agg_narrative_cache[cache_key] = agg_text
-                        t_explain = time.perf_counter()
-                        explain_text = explain_aggregation(agg_intent, current_demo_user(),
-                                                           config.database_url, region=user_region)
-                        served = _serving_regions(explain_text) or user_region
-                        trace_step("explain", "EXPLAIN ANALYZE",
-                                   f"Plan captured{f', served by {served}' if served else ''}",
-                                   ms=(time.perf_counter() - t_explain) * 1000)
-                        session['chat'].append({
-                            'text': agg_text,
-                            'class': 'Assistant',
-                            'meta': {
-                                'region': served,
-                                'db_ms': db_ms,
-                                'explain': explain_text,
-                                'trace_id': _finish_trace(),
-                            }
-                        })
-                        try:
-                            from langchain_core.messages import AIMessage
-                            crdb_history.add_message(AIMessage(content=agg_text))
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        if isinstance(e, TRANSIENT_ERRORS):
-                            error_message = "Reconnecting to the database, try that again in a moment."
-                            trace_step("error", "Answer stopped",
-                                       "The database connection dropped; nothing was answered",
-                                       status="error")
-                        else:
-                            print(f"Aggregation error: {str(e)}")
-                            error_message = NEUTRAL_FAILED
-                            trace_step("error", "Answer stopped",
-                                       "The aggregation failed here; details are in the server log",
-                                       status="error")
-                        session['chat'].append({'text': error_message, 'class': 'Assistant',
-                                                'meta': {'trace_id': _finish_trace()}})
-                    return _render_chat(ai_provider_display)
-
-                try:
-                    # Retrieval questions: vector RAG scoped to the session
-                    # persona, with a date predicate when the question names
-                    # a window. The cache layers live inside the engine.
-                    window = extract_window(user_message)
-                    trace_step("route", "Intent routing",
-                               "Retrieval, answered by vector search (RAG)"
-                               + (f", {window[0]} to {window[1]}" if window else ""),
-                               ms=route_ms)
-                    t0 = time.perf_counter()
-                    search_result = search_engine.search_expenses(
-                        query=prompt,
-                        user_id=current_demo_user(),
-                        limit=10,
-                        date_start=window[0] if window else None,
-                        date_end=window[1] if window else None,
-                        region=resolve_user_region(current_demo_user(), config.database_url),
-                        capture_explain=True,
-                    )
-                    db_ms = int((time.perf_counter() - t0) * 1000)
-
-                    if isinstance(search_result, tuple):
-                        search_results, explain_text = search_result
-                    else:
-                        search_results = search_result
-                        explain_text = ""
-
-                    print(f"Using {config.ai_service} for response generation in {target_language}")
-
-                    # Convert SearchResult objects to dictionaries if needed
-                    if search_results and hasattr(search_results[0], 'description'):
-                        # Convert SearchResult objects to dict format - MUST include ALL fields!
-                        search_results_dict = []
-                        for result in search_results:
-                            search_results_dict.append({
-                                'expense_id': result.expense_id,
-                                'user_id': result.user_id,
-                                'description': result.description,
-                                'merchant': result.merchant,
-                                'expense_amount': result.amount,
-                                'expense_date': result.date,  # ← WAS MISSING!
-                                'shopping_type': result.metadata.get('shopping_type', 'Unknown'),
-                                'payment_method': result.metadata.get('payment_method', 'Unknown'),  # ← WAS MISSING!
-                                'similarity_score': result.similarity_score
-                            })
-                        search_results = search_results_dict
-
-                    # Generate RAG response with language preference
-                    steps_before = len(current_trace())
-                    t_llm = time.perf_counter()
-                    if hasattr(ai_provider, 'simple_rag_response'):
-                        rag_response_text = ai_provider.simple_rag_response(
-                            user_message, search_results, language=target_language
-                        )
-                    else:
-                        rag_response = ai_provider.generate_rag_response(
-                            user_message, search_results, None, response_language
-                        )
-                        rag_response_text = rag_response.response if hasattr(rag_response, 'response') else str(rag_response)
-
-                    llm_ms = (time.perf_counter() - t_llm) * 1000
-                    print(f"Response from {config.ai_service}: {rag_response_text}")
-                    # A response cache hit inside the provider means no
-                    # model call happened, so there is no LLM step to show.
-                    inner = current_trace()[steps_before:]
-                    served_from_cache = any(
-                        s["label"] == "Response cache" and s["status"] == "hit" for s in inner)
-                    if not served_from_cache:
-                        # The provider's cache lookup and write are traced
-                        # on their own; the model time is what is left, and
-                        # it ran right after the cache miss.
-                        gen_ms = max(llm_ms - sum(s["ms"] or 0 for s in inner), 0.0)
-                        misses = [i for i, s in enumerate(inner) if s["label"] == "Response cache"]
-                        detail = (f"{_trace_identity()}, grounded on {len(search_results or [])} expenses"
-                                  + (f", in {target_language}" if target_language != 'English' else ""))
-                        if misses:
-                            at = misses[-1]
-                            insert_step(steps_before + at + 1, "llm", "LLM answer", detail,
-                                        ms=gen_ms, status="success", t=inner[at]["t"] + gen_ms)
-                        else:
-                            trace_step("llm", "LLM answer", detail, ms=llm_ms, status="success")
-
-                    session['chat'].append({
-                        'text': rag_response_text,
-                        'class': 'Assistant',
-                        'meta': {
-                            'region': _serving_regions(explain_text)
-                                or resolve_user_region(current_demo_user(), config.database_url),
-                            'db_ms': db_ms,
-                            'explain': explain_text,
-                            'trace_id': _finish_trace(),
-                        }
-                    })
-
-                    # Persist assistant response in CockroachDB chat history
-                    try:
-                        from langchain_core.messages import AIMessage
-                        crdb_history.add_message(AIMessage(content=rag_response_text))
-                    except Exception:
-                        pass
-                    
-                except Exception as e:
-                    if isinstance(e, ModelWarmingUp):
-                        error_message = "I'm still warming up my embedding model. Try that again in a few seconds."
-                        trace_detail = "The embedding model is still loading"
-                    elif isinstance(e, TRANSIENT_ERRORS):
-                        error_message = "Reconnecting to the database, try that again in a moment."
-                        trace_detail = "The database connection dropped; nothing was answered"
-                    else:
-                        print(f"Error with {config.ai_service}: {str(e)}")
-                        error_message = neutral_error(e)
-                        trace_detail = "The answer failed here; details are in the server log"
-                    trace_step("error", "Answer stopped", trace_detail, status="error")
-                    session['chat'].append({'text': error_message, 'class': 'Assistant',
-                                            'meta': {'trace_id': _finish_trace()}})
-
+        if request.method != 'POST':
+            return _render_chat(ai_provider_display)
+        user_message = (request.form.get('user_input') or request.form.get('message') or '').strip()
+        if not user_message:
+            return _render_chat(ai_provider_display)
+        session['chat'].append({'text': user_message, 'class': 'User'})
+        language = request.form.get('response_language', 'en-US')
+        try:
+            from ..assistant import answers
+            from ..assistant.graph import run_turn
+            from .assistant_api import _chat
+            timed = _TimedChat(_chat())
+            out = run_turn(current_demo_user(), _session_thread(), user_message,
+                           language_code=language, chat=timed)
+            if timed.calls:
+                # Cache hits, memory commands and English redirects never
+                # reach the model, so their trace does not name one.
+                detail = f"{_trace_identity()}, {timed.calls} call{'s' if timed.calls > 1 else ''}"
+                trace_step("llm", "Model", detail + (f", {timed.failed} failed" if timed.failed else ""),
+                           ms=timed.ms, status="warning" if timed.failed else "success")
+            meta = out.get('meta') or {}
+            # Only what the turn measured: the template prints any db_ms it is given.
+            measured = {k: meta[k] for k in ('region', 'db_ms') if meta.get(k) is not None}
+            session['chat'].append({'text': answers.strip_citations(out['answer']), 'class': 'Assistant',
+                                    'meta': {**measured, 'trace_id': _finish_trace(meta.get('explain'))}})
+        except Exception as e:
+            if isinstance(e, ModelWarmingUp):
+                error_message = "I'm still warming up my embedding model. Try that again in a few seconds."
+                trace_detail = "The embedding model is still loading"
+            elif isinstance(e, TRANSIENT_ERRORS):
+                error_message = "Reconnecting to the database, try that again in a moment."
+                trace_detail = "The database connection dropped; nothing was answered"
+            else:
+                print(f"Error with {config.ai_service}: {str(e)}")
+                error_message = neutral_error(e)
+                trace_detail = "The answer failed here; details are in the server log"
+            trace_step("error", "Answer stopped", trace_detail, status="error")
+            session['chat'].append({'text': error_message, 'class': 'Assistant',
+                                    'meta': {'trace_id': _finish_trace()}})
         return _render_chat(ai_provider_display)
 
     @app.route('/home')
