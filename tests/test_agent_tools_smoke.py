@@ -71,3 +71,30 @@ def test_document_tools_can_import():
     tools = create_document_tools(DATABASE_URL, None)
     assert isinstance(tools, list), "Should return a list of tools"
     # May be empty if OCR deps not available, but import should work
+
+
+def test_the_receipt_prompt_offers_the_catalog_labels():
+    from banko_ai.agents.tools import document_tools
+
+    class Stub:
+        prompt = ""
+
+        def invoke(self, prompt):
+            Stub.prompt = prompt
+
+            class Message:
+                content = '{"merchant": "Blue Bottle", "amount": 13.58, "category": "Coffee"}'
+            return Message()
+
+    out = document_tools.parse_receipt_fields("BLUE BOTTLE COFFEE 13.58", Stub())
+    assert out["success"] and out["fields"]["category"] == "Coffee"
+    assert "one of: Housing, Groceries" in Stub.prompt and "food or transportation" not in Stub.prompt
+    custom = document_tools.parse_receipt_fields("X 1.00", Stub(), categories=["Snacks", "Rent"])
+    assert custom["success"] and "one of: Snacks, Rent" in Stub.prompt
+
+
+def test_create_document_tools_has_no_second_receipt_parser():
+    import inspect
+
+    from banko_ai.agents.tools import document_tools
+    assert "def parse_receipt_fields" not in inspect.getsource(document_tools.create_document_tools)

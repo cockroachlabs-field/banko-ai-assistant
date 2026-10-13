@@ -8,6 +8,7 @@ Provides:
 """
 
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -28,18 +29,25 @@ except ImportError:
     print("⚠️  OCR libraries not available. Install: pip install pytesseract pdf2image Pillow pypdf")
 
 
-def parse_receipt_fields(text: str, llm: Any) -> dict:
+def parse_receipt_fields(text: str, llm: Any, categories: Sequence[str] | None = None) -> dict:
     """
     Parse receipt text using LLM to extract structured fields.
 
     Args:
         text: Raw text from OCR
         llm: LangChain LLM instance
+        categories: the labels the category must come from; the catalog's
+            spending categories by default, so a grocery receipt can say
+            Groceries instead of a generic "food" that maps to Restaurant
 
     Returns:
         dict with 'success' (bool), 'fields' (dict if success), 'error' (str if failed)
     """
     try:
+        if categories is None:
+            from ...config.catalog import get_catalog
+            categories = get_catalog().spending_labels()
+        labels = ", ".join(categories)
         prompt = f"""You are a JSON extraction bot. Your ONLY job is to output valid JSON, nothing else.
 
 Extract these fields from the receipt text below and return ONLY the JSON object:
@@ -52,13 +60,14 @@ Required JSON format (do not include any text before or after the JSON):
   "merchant": "store name",
   "amount": 0.00,
   "date": "YYYY-MM-DD",
-  "category": "food or transportation or entertainment or shopping or services or other",
+  "category": "one of: {labels}",
   "items": ["item1", "item2"],
   "payment_method": "credit card or debit card or cash or other"
 }}
 
 IMPORTANT:
 - Return ONLY the JSON object, no explanation, no text before or after
+- category must be exactly one of these labels: {labels}
 - If a field is not found, use null
 - Amount must be a number, not a string
 - Date must be in YYYY-MM-DD format
@@ -265,70 +274,6 @@ def create_document_tools(database_url: str, embedding_model) -> list[Tool]:
             return json.dumps({
                 'success': False,
                 'error': error_msg
-            })
-    
-    def parse_receipt_fields(text: str, llm: Any) -> str:
-        """
-        Parse receipt text to extract structured fields using LLM.
-        
-        Args:
-            text: Raw text from receipt
-            llm: LangChain LLM instance
-        
-        Returns:
-            JSON string with extracted fields
-        """
-        try:
-            prompt = f"""Extract the following fields from this receipt text:
-            
-Receipt Text:
-{text}
-
-Extract these fields (return as JSON):
-- merchant: Name of the merchant/store
-- amount: Total amount (number only, no currency symbol)
-- date: Date of transaction (YYYY-MM-DD format if possible)
-- category: Expense category (food, transportation, entertainment, shopping, services, other)
-- items: List of purchased items (if visible)
-- payment_method: How it was paid (credit card, debit card, cash, etc.)
-
-Return ONLY valid JSON, no explanation. If a field is not found, use null.
-
-Example:
-{{
-  "merchant": "Starbucks",
-  "amount": 5.50,
-  "date": "2024-11-04",
-  "category": "food",
-  "items": ["Coffee", "Muffin"],
-  "payment_method": "credit card"
-}}"""
-
-            # Get LLM response
-            response = llm.invoke(prompt)
-            response_text = response.content if hasattr(response, 'content') else str(response)
-            
-            # Try to parse as JSON
-            # Clean up response (remove markdown code blocks if present)
-            cleaned = response_text.strip()
-            if cleaned.startswith('```json'):
-                cleaned = cleaned.replace('```json', '').replace('```', '').strip()
-            elif cleaned.startswith('```'):
-                cleaned = cleaned.replace('```', '').strip()
-            
-            parsed = json.loads(cleaned)
-            
-            return json.dumps({
-                'success': True,
-                'fields': parsed,
-                'raw_response': response_text
-            }, indent=2)
-        
-        except Exception as e:
-            return json.dumps({
-                'success': False,
-                'error': str(e),
-                'raw_response': response_text if 'response_text' in locals() else None
             })
     
     def store_document(
@@ -547,6 +492,6 @@ Example:
         )
     ]
     
-    # Note: parse_receipt_fields requires LLM, will be added by agent
-    
+    # Field extraction needs a model, so it is parse_receipt_fields at module level, not a tool here.
+
     return tools

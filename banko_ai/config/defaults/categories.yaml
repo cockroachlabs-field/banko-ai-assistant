@@ -8,7 +8,7 @@ categories:
   - {key: fuel, label: Fuel, icon: "⛽", color: "#64748B", grp: needs, sort: 50, aliases: [gas]}
   - {key: health, label: Health, icon: "💊", color: "#EF4444", grp: needs, sort: 60, aliases: [pharmacy, medical]}
   - {key: home_improvement, label: Home Improvement, icon: "🔨", color: "#78716C", grp: needs, sort: 70, aliases: [hardware]}
-  - {key: restaurant, label: Restaurant, icon: "🍽️", color: "#F97316", grp: wants, sort: 80, aliases: [food, dining, restaurants]}
+  - {key: restaurant, label: Restaurant, icon: "🍽️", color: "#F97316", grp: wants, sort: 80, aliases: [food, dining, restaurants, dining out, eating out, takeout]}
   - {key: coffee, label: Coffee, icon: "☕", color: "#A16207", grp: wants, sort: 90, aliases: [cafe]}
   - {key: subscription, label: Subscription, icon: "🔁", color: "#EC4899", grp: wants, sort: 100, aliases: [subscriptions, streaming]}
   - {key: shopping, label: Shopping, icon: "🛍️", color: "#6366F1", grp: wants, sort: 110, aliases: [retail, clothing]}

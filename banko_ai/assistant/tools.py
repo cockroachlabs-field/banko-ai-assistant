@@ -182,10 +182,21 @@ def _propose_recategorize(ctx: ToolContext, a: RecategorizeArgs) -> dict:
                            summary, thread_id=ctx.thread_id, url=ctx.url)
 
 
+def _spending_category(name: str) -> str:
+    """The canonical label of a spending category, found the way set_budget
+    finds it (key, label or alias), so a proposal can always be confirmed."""
+    catalog = get_catalog()
+    found = catalog.find(name)
+    if found is None or found.grp not in ("needs", "wants"):
+        raise ToolError(f"Pick one of the spending categories: {', '.join(catalog.spending_labels())}")
+    return found.label
+
+
 def _propose_budget(ctx: ToolContext, a: BudgetArgs) -> dict:
+    label = _spending_category(a.category)
     amount = a.amount.quantize(Decimal("0.01"))
-    return actions.propose(ctx.user_id, "budget", {"category": a.category, "amount": str(amount)},
-                           f"Set your {a.category} budget to ${amount:,.2f} a month",
+    return actions.propose(ctx.user_id, "budget", {"category": label, "amount": str(amount)},
+                           f"Set your {label} budget to ${amount:,.2f} a month",
                            thread_id=ctx.thread_id, url=ctx.url)
 
 

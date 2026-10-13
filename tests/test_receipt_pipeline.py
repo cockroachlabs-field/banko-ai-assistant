@@ -16,7 +16,8 @@ from tests._money import drop_user, invariant_violations, make_user
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
 
-FIELDS = {"merchant": "Trader Joe's", "amount": 23.47, "date": str(date.today()), "category": "groceries",
+# Shaped like what the extraction prompt asks for: the category is one of the catalog's labels.
+FIELDS = {"merchant": "Trader Joe's", "amount": 23.47, "date": str(date.today()), "category": "Groceries",
           "items": ["Pinot Noir wine", "Sourdough bread"], "payment_method": "credit card"}
 
 
@@ -122,6 +123,48 @@ def test_vector_floats_is_the_inverse_of_vector_text():
     assert vector_floats(vector_text([0.5, 0.25])) == [0.5, 0.25]
 
 
+class _StubLLM:
+    """A LangChain-style model that records its prompt and answers with JSON."""
+
+    def __init__(self, reply: str):
+        self.reply, self.prompts = reply, []
+
+    def invoke(self, prompt):
+        self.prompts.append(prompt)
+
+        class Message:
+            content = self.reply
+        return Message()
+
+
+def test_a_grocery_receipt_posts_as_groceries(member, image, monkeypatch):
+    """The smoke's Trader Joe's receipt posted as Restaurant: the prompt only
+    offered "food", which the catalog maps to Restaurant. The prompt now
+    offers the catalog's own labels."""
+    from banko_ai.agents import llm_factory
+    stub = _StubLLM('{"merchant": "Grocery Outlet", "amount": 25.94, "date": "' + str(date.today()) + '", '
+                    '"category": "Groceries", "items": ["Organic bananas", "Sourdough bread"], '
+                    '"payment_method": "VISA"}')
+    monkeypatch.setattr(llm_factory, "get_llm_for_agent", lambda temp, model_override=None: stub)
+    real = receipts.default_hooks()
+    hooks = receipts.ReceiptHooks(ocr=lambda path: "GROCERY OUTLET TOTAL 25.94", extract=real.extract,
+                                  fraud=lambda u, e: "No issues detected", budget=lambda u: "Within budget")
+    final = _run(member, image, hooks)[-1]
+    assert final["status"] == "posted" and final["category"] == "Groceries"
+    prompt = stub.prompts[-1]
+    assert "Groceries" in prompt and "Restaurant" in prompt and "Coffee" in prompt
+    assert "food or transportation" not in prompt and "Income" not in prompt
+
+
+def test_a_receipt_without_a_date_or_payment_method_posts(member, image):
+    """Many receipts print no payment method, and some no readable date."""
+    fields = {"merchant": "Corner Bakery", "amount": 6.40, "category": "Restaurant", "items": ["Rye loaf"],
+              "date": None}
+    final = _run(member, image, _hooks(fields))[-1]
+    assert final["type"] == "receipt" and final["status"] == "posted"
+    assert final["date"] == str(date.today()) and final["payment_method"] is None
+
+
 def test_default_hooks_extract_reaches_the_llm():
     """Issue #1: default_hooks().extract must work with a real LLM (monkeypatched here)."""
     from unittest.mock import MagicMock
@@ -134,7 +177,7 @@ def test_default_hooks_extract_reaches_the_llm():
 
     stub_llm = MagicMock()
     stub_llm.invoke.return_value = StubMessage('{"merchant": "Test Cafe", "amount": 12.50, "date": "2026-10-13", '
-                                                '"category": "food", "items": ["coffee"], "payment_method": "cash"}')
+                                                '"category": "Coffee", "items": ["coffee"], "payment_method": "cash"}')
 
     original_get_llm = llm_factory.get_llm_for_agent
     try:

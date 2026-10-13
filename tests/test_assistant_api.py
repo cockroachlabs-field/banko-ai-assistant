@@ -158,7 +158,7 @@ def test_memories_list_and_delete(client, member):
 
 
 def test_receipt_then_follow_up(client, chat, monkeypatch):
-    fields = {"merchant": "Corner Market", "amount": 19.95, "date": str(date.today()), "category": "groceries",
+    fields = {"merchant": "Corner Market", "amount": 19.95, "date": str(date.today()), "category": "Groceries",
               "items": ["Olive oil"], "payment_method": "debit card"}
     monkeypatch.setattr(receipts, "default_hooks", lambda model=None, url=None: receipts.ReceiptHooks(
         ocr=lambda p: "CORNER MARKET 19.95", extract=lambda t: dict(fields),
@@ -217,7 +217,7 @@ def test_turns_and_receipt_steps_show_in_the_agent_feed(client, chat, monkeypatc
     events(client.post(f"/api/v1/assistant/threads/{tid}/messages", json={"message": "where could I cut back on dining?"}))
     assert [(a["agent_type"], a["status"]) for a in lines()] == [("assistant", "processing"), ("assistant", "failed")]
 
-    fields = {"merchant": "Feed Street Bakery", "amount": 7.35, "date": str(date.today()), "category": "groceries",
+    fields = {"merchant": "Feed Street Bakery", "amount": 7.35, "date": str(date.today()), "category": "Groceries",
               "items": ["Rye loaf"], "payment_method": "debit card"}
     monkeypatch.setattr(receipts, "default_hooks", lambda model=None, url=None: receipts.ReceiptHooks(
         ocr=lambda p: "FEED STREET BAKERY 7.35", extract=lambda t: dict(fields),
@@ -244,7 +244,7 @@ def test_the_answer_carries_the_proposals_it_streamed(client, chat):
 
 
 def test_a_posted_receipt_still_reports_when_its_thread_cannot_open(client, monkeypatch):
-    fields = {"merchant": "Lone Pine Hardware", "amount": 12.40, "date": str(date.today()), "category": "shopping",
+    fields = {"merchant": "Lone Pine Hardware", "amount": 12.40, "date": str(date.today()), "category": "Shopping",
               "items": ["Hinges"], "payment_method": "debit card"}
     monkeypatch.setattr(receipts, "default_hooks", lambda model=None, url=None: receipts.ReceiptHooks(
         ocr=lambda p: "LONE PINE HARDWARE 12.40", extract=lambda t: dict(fields),

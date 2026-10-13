@@ -59,6 +59,35 @@ def test_aggregation_answers_from_sql_and_streams(g, member, thread):
     assert any(e["type"] == "step" and e["label"] == "Aggregation SQL" for e in events)
 
 
+def test_the_readme_question_sums_one_category(g, member, thread):
+    out, _ = _turn(g, member, thread, "what did I spend on dining last month?", ScriptedChat("- steady"))
+    assert out["route"]["kind"] == "aggregate"
+    assert "on Restaurant" in out["answer"] and "all categories" not in out["answer"]
+
+
+def test_an_unknown_subject_is_said_not_summed(g, member, thread):
+    quiet = ScriptedChat("unused")
+    out, events = _turn(g, member, thread, "how much did I spend on zorbing last month?", quiet)
+    assert out["route"]["kind"] == "aggregate"
+    assert out["answer"] == "I couldn't find a category or merchant called 'zorbing'."
+    assert quiet.calls == [] and "Aggregation SQL" not in [e.get("label") for e in events]
+    es = ScriptedChat("No encontré ninguna categoría ni comercio llamado 'zorbing'.")
+    out, _ = _turn(g, member, thread, "how much did I spend on zorbing last month?", es, language_code="es-ES")
+    assert out["answer"].startswith("No encontré")
+    assert "I couldn't find a category or merchant called 'zorbing'." in es.prompts()[-1]
+
+
+def test_the_smoke_plan_now_finds_dining_out(g, member, thread):
+    """granite's real plan for "where could I cut back on dining out?"."""
+    plan = ('{"steps": [{"tool": "search_transactions", "args": {"category": "dining out"}}, '
+            '{"tool": "spend_summary", "args": {"category": "dining out"}}]}')
+    chat = ScriptedChat(plan, '{"steps": []}', "You spent the most at the bistro.")
+    out, events = _turn(g, member, thread, "where could I cut back on dining out lately?", chat)
+    tools = [(e["label"], e["status"]) for e in events if e["type"] == "step" and e["label"].startswith("Tool ")]
+    assert tools == [("Tool search_transactions", "warning"), ("Tool spend_summary", "success")]
+    assert '"category": "Restaurant"' in chat.prompts()[-1]
+
+
 def test_receipt_follow_up_uses_the_active_receipt(g, member, thread):
     doc = str(uuid.uuid4())
     with get_engine().begin() as c:

@@ -123,6 +123,9 @@ def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     return {"route": r.as_dict()}
 
 
+NOT_FOUND = "I couldn't find a category or merchant called '{subject}'."
+
+
 def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     from ..utils.aggregations import explain_aggregation, resolve_category, resolve_merchant, run_aggregation
     from ..utils.intent_classifier import AggregationIntent
@@ -133,7 +136,14 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                date.fromisoformat(i["window_end"]))
     merchant = None
     if intent.subject and resolve_category(intent.subject, url) is None:
+        t0 = time.perf_counter()
         merchant = resolve_merchant(intent.subject, user_id, url)
+        if merchant is None:
+            # A total across every category would answer a question nobody asked.
+            _step("Category lookup", f"no category or merchant called '{intent.subject}'",
+                  ms=(time.perf_counter() - t0) * 1000, status="warning")
+            return {"answer": answers.translate(NOT_FOUND.format(subject=intent.subject),
+                                                state.get("language") or "English", deps.chat)}
     with get_engine(url).connect() as conn:
         region = money_region(conn, user_id, url)
     narration.aggregation(intent, region)

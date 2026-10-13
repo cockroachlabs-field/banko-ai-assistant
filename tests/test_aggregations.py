@@ -46,6 +46,17 @@ def test_resolve_category_fuzzy():
     assert resolve_category("zzzunknownzzz", DB) is None
 
 
+def test_resolve_category_goes_through_the_catalog_first():
+    """The README asks "what did I spend on dining last month?"; every alias
+    in the catalog names its category, and an unknown word names none."""
+    for phrase, label in (("dining", "Restaurant"), ("food", "Restaurant"), ("dining out", "Restaurant"),
+                          ("eating out", "Restaurant"), ("takeout", "Restaurant"), ("gas", "Fuel"),
+                          ("cafe", "Coffee"), ("rideshare", "Transport"), ("streaming", "Subscription"),
+                          ("my groceries", "Groceries"), ("Restaurant", "Restaurant")):
+        assert resolve_category(phrase, DB) == label, phrase
+    assert resolve_category("zorbing", DB) is None
+
+
 def test_sum_respects_window_and_user():
     end = date.today() + timedelta(days=1)
     intent = AggregationIntent("sum", "restaurants",

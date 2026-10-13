@@ -52,12 +52,22 @@ def _distinct_categories(database_url: str) -> tuple[str, ...]:
     return tuple(r[0] for r in rows if r[0])
 
 
+_DETERMINER = re.compile(r"^(?:my|the|our)\s+")
+
+
 def resolve_category(subject: str | None, database_url: str) -> str | None:
-    """Fuzzy map a question phrase ("restaurants") to a real shopping_type
-    ("Restaurant"). None means no confident match; the caller aggregates
-    across all categories and says so."""
+    """Map a question phrase to a real shopping_type: the catalog first, by
+    key, label or alias ("dining" and "dining out" are Restaurant, "gas" is
+    Fuel), then a fuzzy match against the labels in the data ("restaurants").
+    None means neither found one."""
     if not subject:
         return None
+    from ..config.catalog import get_catalog
+    catalog = get_catalog()
+    for name in (subject, _DETERMINER.sub("", subject.strip().lower())):
+        found = catalog.find(name)
+        if found is not None:
+            return found.label
     cats = _distinct_categories(database_url)
     if not cats:
         return None

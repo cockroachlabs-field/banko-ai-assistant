@@ -85,7 +85,7 @@ def test_a_plan_turn_with_a_search_narrates(member, graph, capsys):
 
 
 def test_a_receipt_run_narrates(member, tmp_path, capsys):
-    fields = {"merchant": "Maple Hardware", "amount": 23.10, "date": str(date.today()), "category": "shopping",
+    fields = {"merchant": "Maple Hardware", "amount": 23.10, "date": str(date.today()), "category": "Shopping",
               "items": ["Hinges"], "payment_method": "debit card"}
     hooks = receipts.ReceiptHooks(ocr=lambda p: "MAPLE HARDWARE 23.10", extract=lambda t: dict(fields),
                                   fraud=lambda u, e: "No issues detected", budget=lambda u: "Within budget")

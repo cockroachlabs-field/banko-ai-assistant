@@ -122,6 +122,24 @@ def test_proposals_are_pending_until_confirmed(ctx):
     assert "Groceries" in out["result"]["summary"]
 
 
+def test_a_budget_proposal_names_a_real_spending_category(ctx, member):
+    """"set my dining out budget to 300" used to store a proposal no Confirm could run."""
+    from banko_ai.services import actions, budgets
+    out = T.run_tool("propose_budget", {"category": "dining out", "amount": "300"}, ctx)
+    assert out["ok"] and out["result"]["summary"] == "Set your Restaurant budget to $300.00 a month"
+    assert actions.confirm(member, out["result"]["action_id"])["status"] == "done"
+    assert any(b["category"] == "Restaurant" and b["budget"] == 300
+               for b in budgets.budget_progress(member)["items"])
+    for bad in ("yachts", "Income"):
+        refused = T.run_tool("propose_budget", {"category": bad, "amount": "50"}, ctx)
+        assert not refused["ok"] and "Groceries" in refused["error"] and "Restaurant" in refused["error"]
+
+
+def test_spend_summary_understands_catalog_aliases(ctx):
+    out = T.run_tool("spend_summary", {"category": "dining"}, ctx)
+    assert out["ok"] and out["result"]["category"] == "Restaurant"
+
+
 def test_remember_then_recall(ctx):
     T.run_tool("remember", {"content": "I'm saving for a new bike"}, ctx)
     got = T.run_tool("recall", {"query": "what am I saving for"}, ctx)["result"]

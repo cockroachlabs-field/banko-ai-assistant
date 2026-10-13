@@ -97,7 +97,7 @@ def test_the_chat_page_never_shows_a_raw_citation_marker(client, chat):
 
 
 def test_upload_then_ask_on_the_chat_page(client, chat, monkeypatch):
-    fields = {"merchant": "Lantern Books", "amount": 42.00, "date": str(date.today()), "category": "shopping",
+    fields = {"merchant": "Lantern Books", "amount": 42.00, "date": str(date.today()), "category": "Shopping",
               "items": ["Atlas"], "payment_method": "credit card"}
     monkeypatch.setattr(receipts, "default_hooks", lambda model=None, url=None: receipts.ReceiptHooks(
         ocr=lambda p: "LANTERN BOOKS 42.00", extract=lambda t: dict(fields),
@@ -166,7 +166,7 @@ def test_upload_steps_reach_the_agent_feed_with_their_region(client, monkeypatch
     app = client.application
     feed = app.extensions["socketio"].test_client(app)
     _hooks(monkeypatch, {"merchant": "Feed Street Bakery", "amount": 7.35, "date": str(date.today()),
-                         "category": "groceries", "items": ["Rye loaf"], "payment_method": "debit card"})
+                         "category": "Groceries", "items": ["Rye loaf"], "payment_method": "debit card"})
     assert _upload(client).status_code == 200
     got = [e["args"][0] for e in feed.get_received() if e["name"] == "agent_activity"]
     assert [a["agent_type"] for a in got] == ["receipt"] * 5 + ["fraud", "budget"]
@@ -177,7 +177,7 @@ def test_a_posted_receipt_reports_even_when_the_thread_cannot_open(client, monke
     from banko_ai.services import threads
 
     _hooks(monkeypatch, {"merchant": "Lone Pine Hardware", "amount": 12.40, "date": str(date.today()),
-                         "category": "shopping", "items": ["Hinges"], "payment_method": "debit card"})
+                         "category": "Shopping", "items": ["Hinges"], "payment_method": "debit card"})
 
     def thread_store_down(*args, **kwargs):
         raise RuntimeError("thread store down")
@@ -243,7 +243,7 @@ def test_a_cookie_less_upload_and_follow_up_share_the_api_thread(member, monkeyp
     bare = _cookieless(monkeypatch, member)
     before = _thread_count(member)
     _hooks(monkeypatch, {"merchant": "Curl Street Cafe", "amount": 8.75, "date": str(date.today()),
-                         "category": "shopping", "items": ["Flat white"], "payment_method": "debit card"})
+                         "category": "Shopping", "items": ["Flat white"], "payment_method": "debit card"})
     assert _upload(bare).status_code == 200
     chat["chat"] = ScriptedChat(lambda msgs: "That receipt from Curl Street Cafe came to $8.75.")
     body = bare.post("/api/rag", json={"query": "how much was this receipt?"}).get_json()
@@ -253,7 +253,7 @@ def test_a_cookie_less_upload_and_follow_up_share_the_api_thread(member, monkeyp
 
 def test_a_duplicate_upload_says_so(client, monkeypatch):
     _hooks(monkeypatch, {"merchant": "Twice Told Tales", "amount": 17.25, "date": str(date.today()),
-                         "category": "shopping", "items": ["Paperback"], "payment_method": "credit card"})
+                         "category": "Shopping", "items": ["Paperback"], "payment_method": "credit card"})
     first = _upload(client).get_json()
     again = _upload(client)
     body = again.get_json()
