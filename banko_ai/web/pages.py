@@ -4,6 +4,7 @@ app's before_request hook."""
 
 from flask import Blueprint, abort, render_template, session
 
+from ..config.catalog import get_catalog
 from ..services import accounts as accounts_service
 from ..services import threads as threads_service
 
@@ -72,3 +73,10 @@ def coach():
 @pages.get("/agents")
 def agents():
     return render_template("pages/agents.html")
+
+
+@pages.get("/settings")
+def settings():
+    personas = [{"user_id": p.user_id, "username": p.username, "display_name": p.display_name}
+                for p in get_catalog().personas]
+    return render_template("pages/settings.html", personas=personas)

@@ -301,11 +301,12 @@ def admin_reset():
         if not targets:
             return jsonify({"error": "not_found"}), 404
     url = get_config().database_url
+    emit = current_app.extensions["banko_emit_seeding"]
 
     def run():
         for uid in targets:
             try:
-                seeding.reset_user(uid, url=url)
+                seeding.reset_user(uid, url=url, on_progress=emit)
             except Exception:
                 log.exception("reset of %s failed; moving on to the next persona", uid)
 
@@ -323,6 +324,7 @@ def admin_seed():
     if not 1 <= users <= 200 or not 1 <= months <= 24:
         raise _BadRequest("users must be 1 to 200 and months 1 to 24")
     url = get_config().database_url
-    threading.Thread(target=lambda: seeding.seed_generated_users(users, months=months, url=url),
+    emit = current_app.extensions["banko_emit_seeding"]
+    threading.Thread(target=lambda: seeding.seed_generated_users(users, months=months, url=url, on_progress=emit),
                      daemon=True, name="banko-seed-users").start()
     return jsonify({"status": "started", "users": users}), 202

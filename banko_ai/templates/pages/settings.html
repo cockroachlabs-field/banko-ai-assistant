@@ -1,0 +1,85 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<script id="settings-personas" type="application/json">{{ personas|tojson }}</script>
+<section x-data="settingsPage" x-init="load()">
+  <div class="b-page-h"><h1>Settings</h1></div>
+  <div class="b-grid" style="margin-top:14px">
+    <div class="b-card">
+      <div class="b-lbl">Profile</div>
+      <template x-if="me"><div style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
+        <div class="b-row"><span>Name</span><b x-text="me.display_name"></b></div>
+        <div class="b-row"><span>Username</span><span class="b-muted" x-text="me.username"></span></div>
+        <div class="b-row"><span>Spending style</span><span class="b-muted" x-text="me.spending_style"></span></div>
+        <div class="b-row" x-show="me.home_region"><span>Home region</span><span class="b-muted" x-text="me.home_region"></span></div>
+        <div class="b-muted" x-show="me.home_region">Your rows live in your home region of the cluster.</div>
+      </div></template>
+    </div>
+
+    <div class="b-card">
+      <div class="b-lbl">Language and read aloud</div>
+      <label class="b-field" style="margin-top:8px">Answer language
+        <select class="b-select" x-model="language" @change="localStorage.setItem('banko.language', language)">
+          <template x-for="l in languages" :key="l.code"><option :value="l.code" x-text="l.name"></option></template>
+        </select></label>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" x-model="autoRead" @change="localStorage.setItem('banko.autoread', autoRead ? '1' : '0')">Read answers aloud</label>
+    </div>
+
+    <div class="b-card">
+      <div class="b-lbl">Theme</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <template x-for="t in themes" :key="t[0]">
+          <label style="display:flex;gap:8px;align-items:center"><input type="radio" name="theme" :value="t[0]" x-model="theme" @change="Banko.emit('banko:set-theme', { theme })"><span x-text="t[1]"></span></label>
+        </template>
+      </div>
+    </div>
+
+    <div class="b-card b-s2">
+      <div class="b-lbl">AI model</div>
+      <template x-if="ai"><div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <span class="b-pill"><img :src="'/static/' + ai.icon" alt="" width="16" height="16"><span x-text="ai.name"></span></span>
+        <select class="b-select" style="width:auto" x-model="model" aria-label="Model">
+          <template x-for="m in ai.models" :key="m"><option :value="m" x-text="m"></option></template>
+        </select>
+        <button class="b-btn sm" type="button" :disabled="model === ai.model" @click="switchModel()">Use this model</button>
+      </div></template>
+      <div class="b-tag" style="margin-top:8px" :class="aiError ? 'bad' : 'ok'" x-show="aiText" x-text="aiText"></div>
+    </div>
+
+    <div class="b-card" id="data">
+      <div class="b-lbl">Demo data</div>
+      <form style="display:flex;gap:8px;align-items:flex-end;margin-top:8px" @submit.prevent="generate()">
+        <label class="b-field">Users<input class="b-input" type="number" min="1" max="200" x-model.number="genUsers" style="width:90px"></label>
+        <label class="b-field">Months<input class="b-input" type="number" min="1" max="24" x-model.number="genMonths" style="width:90px"></label>
+        <button class="b-btn" type="submit" :disabled="genBusy">Create users</button>
+      </form>
+      <div class="b-muted" x-show="genTotal" x-text="genDone + ' of ' + genTotal + ' new users seeded'"></div>
+      <div class="b-lbl" style="margin-top:14px">Reset a persona</div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+        <template x-for="p in personas" :key="p.username"><button class="b-btn sm" type="button" @click="reset(p)" x-text="'Reset ' + p.display_name"></button></template>
+      </div>
+      <div class="b-tag" style="margin-top:8px" :class="dataError ? 'bad' : 'ok'" x-show="dataText" x-text="dataText"></div>
+    </div>
+
+    <div class="b-card b-s2">
+      <div class="b-lbl">Memories</div>
+      <template x-for="m in memories" :key="m.memory_id">
+        <div class="b-row" style="padding:6px 0;border-top:1px solid var(--bd2)"><span><span class="b-tag" x-text="m.kind"></span> <span x-text="m.content"></span></span>
+          <button class="b-iconbtn" type="button" @click="forget(m)" aria-label="Forget">{{ icon('trash-2') }}</button></div>
+      </template>
+      <div class="b-muted" x-show="!memories.length" style="margin-top:8px">Nothing saved yet. Tell the assistant "remember that ..." and it shows up here.</div>
+    </div>
+
+    <div class="b-card">
+      <div class="b-lbl">System</div>
+      <template x-for="c in components()" :key="c.name">
+        <div class="b-row" style="padding:4px 0;border-top:1px solid var(--bd2)"><span x-text="c.name"></span><span class="b-tag" :class="c.state === 'ready' ? 'ok' : c.state === 'failed' ? 'bad' : 'warn'" x-text="c.state"></span></div>
+      </template>
+      <div class="b-muted" style="margin-top:8px" x-show="schemaText()" x-text="schemaText()"></div>
+      <div class="b-muted" x-show="cache" x-text="cache ? 'Cache hit rate ' + Banko.fmt.pct(cache.overall_hit_rate) + ', ' + cache.total_hits + ' of ' + cache.total_requests + ' lookups' : ''"></div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/settings.js') }}"></script>{% endblock %}

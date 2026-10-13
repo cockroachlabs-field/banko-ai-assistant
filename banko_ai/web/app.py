@@ -418,6 +418,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     def _emit_seeding(user_id: str, done: int, total: int, state: str) -> None:
         socketio.emit("seeding", {"user_id": user_id, "done": done, "total": total, "state": state})
 
+    app.extensions["banko_emit_seeding"] = _emit_seeding
+
     # Personas seed in parallel; health shows their combined progress.
     persona_counts: dict[str, tuple[int, int]] = {}
     persona_counts_lock = threading.Lock()
@@ -1153,13 +1155,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     @app.route('/benefits')
     def benefits():
         return render_template('dashboard.html', current_page='benefits')
-
-    @app.route('/settings')
-    def settings():
-        ai_provider_display = _provider_ui()
-        return render_template('dashboard.html',
-                             current_page='settings',
-                             ai_provider=ai_provider_display)
 
     @app.route('/cache-stats')
     def cache_stats():

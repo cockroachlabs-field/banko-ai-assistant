@@ -157,3 +157,7 @@ def test_coach_page(monkeypatch, member):
 
 def test_agents_page(monkeypatch, member):
     assert_page(signed_in(monkeypatch, member).get("/agents"), "agents")
+
+
+def test_settings_page(monkeypatch, member):
+    assert_page(signed_in(monkeypatch, member).get("/settings"), "settings")

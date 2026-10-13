@@ -34,6 +34,11 @@ document.addEventListener("alpine:init", () => {
       window.addEventListener("dragover", (e) => { if (this.hasFiles(e)) e.preventDefault(); });
       window.addEventListener("drop", (e) => this.dropFile(e));
       window.addEventListener("paste", (e) => this.pasteFile(e));
+      window.addEventListener("banko:set-theme", (e) => {
+        this.theme = e.detail.theme;
+        localStorage.setItem("banko.theme", this.theme);
+        this.applyTheme();
+      });
     },
 
     applyTheme() {
