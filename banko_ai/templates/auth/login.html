@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en" style="--ac: {{ brand.accent }}">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · {{ brand.name }}</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='roach-logo.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+<script>(function(){var t=localStorage.getItem("banko.theme")||{{ theme|tojson }};var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=d?"dark":"light";})();</script>
+</head>
+<body>
+<main style="max-width:880px;margin:6vh auto;padding:0 16px;display:flex;flex-direction:column;gap:18px">
+  <div class="b-logo" style="font-size:22px;margin:0"><span class="b-mark"></span>{{ brand.name }}</div>
+  <div>
+    <h1 style="margin:0;font-size:24px">Pick a persona</h1>
+    <p class="b-muted" style="margin:6px 0 0">Each one is a real user in CockroachDB with months of history.</p>
+  </div>
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="b-tag {{ 'bad' if category == 'error' else 'ok' }}">{{ message }}</div>{% endfor %}{% endwith %}
+  <div class="b-grid">
+    {% for p in personas %}
+    <form method="post" action="{{ url_for('login') }}" class="b-card" style="display:flex;flex-direction:column;gap:10px">
+      <input type="hidden" name="username" value="{{ p.username }}">
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="b-ava" style="background: {{ p.avatar_color }};cursor:default">{{ p.display_name[0] }}</span>
+        <div><div class="b-name">{{ p.display_name }}</div><div class="b-muted">{{ p.spending_style }}{% if p.home_region %} · {{ p.home_region }}{% endif %}</div></div>
+      </div>
+      <button class="b-btn primary" type="submit">Continue as {{ p.display_name.split(' ')[0] }}</button>
+    </form>
+    {% endfor %}
+  </div>
+
+  <form id="name-form" method="post" action="{{ url_for('signup') if show_signup else url_for('login') }}" class="b-card" style="display:flex;flex-direction:column;gap:12px">
+    <h2 style="margin:0;font-size:17px">Create your own</h2>
+    <p class="b-muted" style="margin:0">{{ 'Pick how this user spends and where their rows live.' if show_signup else 'Type a new username to create a user with months of history, or an existing one to sign in.' }}</p>
+    <label class="b-field">Username<input class="b-input" name="username" value="{{ username or '' }}" maxlength="32" autocomplete="username"></label>
+    <div id="signup-section"{% if not show_signup %} hidden{% endif %}>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="b-field">Spending style
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            {% for s in styles %}<label style="display:flex;gap:6px;align-items:center;font-weight:500;color:var(--tx)"><input type="radio" name="spending_style" value="{{ s }}"{% if loop.first %} checked{% endif %}>{{ s }}</label>{% endfor %}
+          </div>
+        </div>
+        {% if regions %}
+        <div class="b-field">Home region
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            {% for r in regions %}<label style="display:flex;gap:6px;align-items:center;font-weight:500;color:var(--tx)"><input type="radio" name="home_region" value="{{ r }}"{% if loop.first %} checked{% endif %}>{{ r }}</label>{% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+    <button class="b-btn" type="submit">{{ 'Create and sign in' if show_signup else 'Continue' }}</button>
+  </form>
+</main>
+</body>
+</html>

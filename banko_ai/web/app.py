@@ -24,7 +24,6 @@ from flask import (
     jsonify,
     redirect,
     render_template,
-    render_template_string,
     request,
     session,
     url_for,
@@ -45,10 +44,12 @@ from ..ai_providers.factory import AIProviderFactory
 from ..ai_providers.streaming import TimedChat
 from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
+from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine, mask_url
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
+from ..services.profile import get_profiles
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
 from ..utils.embeddings import ModelWarmingUp
@@ -106,7 +107,7 @@ def auto_setup_data_if_needed(database_url: str) -> str:
         return "skipped (BANKO_SKIP_AUTOSETUP)"
     # Persona history does not count: it can land first, and must never stop
     # the sample rows the search demo needs from being generated.
-    from ..config.catalog import CatalogError, get_catalog
+    from ..config.catalog import CatalogError
     try:
         personas = [p.user_id for p in get_catalog().personas]
     except CatalogError:
@@ -311,7 +312,7 @@ def create_app() -> Flask:
     # The catalog is plain YAML: load it once, now, so a broken override
     # file fails the personas step with a reason instead of being retried
     # forever as if the database were late.
-    from ..config.catalog import CatalogError, get_catalog
+    from ..config.catalog import CatalogError
     catalog_error: str | None = None
     try:
         get_catalog()
@@ -349,12 +350,6 @@ def create_app() -> Flask:
 
     # /health covers /health/coach, which the pipeline polls during warm-up.
     _READINESS_EXEMPT = ("/api/health", "/health", "/static/", "/socket.io", "/favicon")
-    _WARMING_UP_PAGE = """<!doctype html><html><head><meta charset="utf-8">
-<meta http-equiv="refresh" content="3"><title>Banko is getting ready</title>
-<style>body{font-family:Inter,system-ui,sans-serif;background:#F6F5F2;color:#1F1D1A;display:grid;place-items:center;height:100vh;margin:0}
-.card{background:#fff;border:1px solid #ECE9E2;border-radius:14px;padding:28px 32px;max-width:440px}
-small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting ready</h2>
-<p>{{ detail }}</p><small>This page refreshes on its own.</small></div></body></html>"""
 
     # Pages wait for the schema and the three personas. Without the
     # personas, typing "maya" at /login would offer signup and create an
@@ -386,14 +381,14 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         detail = _gate_detail()
         if request.path.startswith("/api/"):
             return jsonify({"error": "warming_up", "detail": detail}), 503
-        return render_template_string(_WARMING_UP_PAGE, detail=detail), 503
+        return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
 
     @app.errorhandler(ModelWarmingUp)
     def _model_warming_up(e):
         detail = "The embedding model is still loading. Try again in a few seconds."
         if request.path.startswith("/api/"):
             return jsonify({"error": "warming_up", "detail": detail}), 503
-        return render_template_string(_WARMING_UP_PAGE, detail=detail), 503
+        return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
 
     @app.before_request
     def _set_request_scope():
@@ -512,6 +507,14 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         threading.Thread(target=_post, daemon=True,
                          name="welcome-signal").start()
 
+    def _login_page(**context):
+        """The sign-in page: the catalog personas that exist, as one-click
+        cards, and create your own with the catalog's spending styles."""
+        personas = get_profiles([p.user_id for p in get_catalog().personas])
+        brand = {"name": config.brand_name, "accent": config.brand_accent}
+        return render_template("auth/login.html", personas=personas, styles=sorted(get_catalog().profiles),
+                               brand=brand, theme=config.ui_theme, **context)
+
     @app.route('/login', methods=['GET', 'POST'])
     def login():
         """Login for known users, reveal signup for unknown usernames."""
@@ -519,7 +522,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             username = request.form.get('username', '').strip()
             if not username:
                 flash('Username required', 'error')
-                return render_template('login.html', regions=[])
+                return _login_page(regions=[])
 
             um = UserManager(config.database_url)
             user = um.get_by_username(username)
@@ -532,10 +535,10 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             # database can carry fewer regions than the cluster, and rows
             # can never pin to a region outside its enum.
             regions = detect_database_regions(config.database_url)
-            return render_template('login.html', username=username,
-                                   regions=regions, show_signup=True)
+            return _login_page(username=username,
+                               regions=regions, show_signup=True)
 
-        return render_template('login.html', regions=[])
+        return _login_page(regions=[])
 
     @app.route('/signup', methods=['POST'])
     def signup():
@@ -549,16 +552,16 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", username):
             flash('Usernames are 1-32 characters: letters, digits, '
                   'dot, dash, underscore.', 'error')
-            return render_template('login.html', username='',
-                                   regions=detect_database_regions(config.database_url),
-                                   show_signup=True)
+            return _login_page(username='',
+                               regions=detect_database_regions(config.database_url),
+                               show_signup=True)
 
-        allowed_styles = ['diner', 'subscriber', 'saver', 'balanced']
+        allowed_styles = sorted(get_catalog().profiles)
         if spending_style not in allowed_styles:
             flash(f'Invalid spending style. Choose from: {", ".join(allowed_styles)}', 'error')
-            return render_template('login.html', username=username,
-                                   regions=detect_database_regions(config.database_url),
-                                   show_signup=True)
+            return _login_page(username=username,
+                               regions=detect_database_regions(config.database_url),
+                               show_signup=True)
 
         # Only accept a region the database actually has; the cluster can
         # know regions the database's enum does not, and anything else
@@ -573,8 +576,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         # existing account from the signup path.
         if um.get_by_username(username):
             flash(f'"{username}" already exists. Sign in below to continue.', 'info')
-            return render_template('login.html', username=username,
-                                   regions=detect_database_regions(config.database_url))
+            return _login_page(username=username,
+                               regions=detect_database_regions(config.database_url))
 
         user = None
         try:
@@ -605,10 +608,11 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 except Exception as cleanup_err:
                     print(f"signup rollback: expense cleanup failed: {cleanup_err}")
                 um.delete_by_username(username)
-            flash(f'Signup failed: {e}', 'error')
-            return render_template('login.html', username=username,
-                                   regions=detect_database_regions(config.database_url),
-                                   show_signup=True)
+            print(f"signup failed: {e}")
+            flash(f'Signup failed. {NEUTRAL_FAILED}', 'error')
+            return _login_page(username=username,
+                               regions=detect_database_regions(config.database_url),
+                               show_signup=True)
 
     def current_demo_user() -> str:
         """The session persona, falling back to the coach default so API
