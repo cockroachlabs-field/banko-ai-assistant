@@ -74,6 +74,16 @@ def _thread(client) -> str:
     return resp.get_json()["thread_id"]
 
 
+def test_test_apps_never_join_the_live_kafka_group(monkeypatch, member):
+    """The shell profile exports COACH_KAFKA_ENABLED=true for the live demo;
+    a test app must not start a consumer in that group."""
+    from banko_ai.config.settings import get_config
+    monkeypatch.setenv("COACH_KAFKA_ENABLED", "true")
+    monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9")  # harmless even if the guard regresses
+    app_client(monkeypatch, REPORTING_FOLLOWER_READS="false")
+    assert get_config().coach_kafka_enabled is False
+
+
 def test_a_streamed_answer(client):
     tid = _thread(client)
     resp = client.post(f"/api/v1/assistant/threads/{tid}/messages",

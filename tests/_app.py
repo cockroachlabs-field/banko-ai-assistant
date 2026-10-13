@@ -1,5 +1,7 @@
 """A test client on a real app: Ollama as the serving provider (its init
-never reaches for the network) and no autosetup."""
+never reaches for the network), no autosetup, and no Kafka consumer (the
+shell profile turns Kafka on for the live demo, and a test app must never
+join that consumer group)."""
 
 _apps = []
 
@@ -10,6 +12,7 @@ def app_client(monkeypatch, **env):
 
     monkeypatch.setenv("BANKO_SKIP_AUTOSETUP", "1")
     env.setdefault("AI_SERVICE", "ollama")
+    env.setdefault("COACH_KAFKA_ENABLED", "false")
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     reset_config()
