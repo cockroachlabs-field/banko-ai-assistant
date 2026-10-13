@@ -66,7 +66,11 @@ def test_planner_prompt_lists_tools_memories_and_context():
 
 
 def test_answer_prompt_sets_language_and_citation_format():
+    """The model copies a ready-made cite value from the facts; a placeholder
+    pattern in the prompt is what granite copied literally."""
     from banko_ai.assistant.prompts import answer_messages
     msgs = answer_messages("q", language="French", history=[], memories=[], facts="[]", context_facts="")
     system = msgs[0]["content"]
-    assert "French" in system and "[txn:" in system and "Banko" in system
+    assert "French" in system and '"cite"' in system and "Banko" in system
+    assert "[txn:" not in system and "<expense_id>" not in system
+    assert "not done until the user confirms" in system

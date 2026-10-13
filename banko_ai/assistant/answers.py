@@ -11,7 +11,11 @@ LANGUAGES = {
     "it-IT": "Italian", "pt-PT": "Portuguese", "ja-JP": "Japanese", "ko-KR": "Korean",
     "zh-CN": "Chinese", "hi-IN": "Hindi",
 }
-_CITE = re.compile(r"\s*\[txn:([0-9a-fA-F-]{36})\]")
+# Any [txn:...] marker a model writes, with the spaces before it on the same
+# line. Models copy the template loosely: angle brackets around the id
+# ([txn:<uuid>]), the bare placeholder ([txn:<expense_id>]), stray spaces.
+_MARKER = re.compile(r"[ \t]*\[\s*txn\s*:([^\]]*)\]", re.I)
+_MARKER_ID = re.compile(r"\s*<?\s*([0-9a-fA-F-]{36})\s*>?\s*")
 
 
 def language_name(code: str | None) -> str:
@@ -71,17 +75,41 @@ def translate(text: str, language: str, chat) -> str:
     return out.strip() or text
 
 
+def _marker_id(inner: str) -> str | None:
+    m = _MARKER_ID.fullmatch(inner)
+    return m.group(1).lower() if m else None
+
+
 def citation_ids(text: str) -> list[str]:
+    """The ids the markers in text point at, in order, once each."""
     seen: list[str] = []
-    for m in _CITE.finditer(text or ""):
-        tid = m.group(1).lower()
-        if tid not in seen:
+    for m in _MARKER.finditer(text or ""):
+        tid = _marker_id(m.group(1))
+        if tid and tid not in seen:
             seen.append(tid)
     return seen
 
 
+def resolve_citations(text: str, known) -> str:
+    """Markers for ids in known become canonical [txn:<id>]; every other
+    marker (a placeholder, an id that is not one of the turn's purchases)
+    goes, so nothing raw is ever cached, streamed in the answer or shown."""
+    ids = {str(k).lower() for k in known}
+
+    def keep_or_drop(m: re.Match) -> str:
+        tid = _marker_id(m.group(1))
+        if tid is None or tid not in ids:
+            return ""
+        whole = m.group(0)
+        lead = whole[:len(whole) - len(whole.lstrip(" \t"))]
+        return f"{lead}[txn:{tid}]"
+
+    return _MARKER.sub(keep_or_drop, text or "")
+
+
 def strip_citations(text: str) -> str:
-    return _CITE.sub("", text or "")
+    """The text without any [txn:...] marker, well formed or not."""
+    return _MARKER.sub("", text or "")
 
 
 def redirect_message() -> str:

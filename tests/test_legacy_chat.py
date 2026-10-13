@@ -83,6 +83,19 @@ def test_the_session_cookie_keeps_the_thread(client, chat):
     assert "planning time" in resp.get_data(as_text=True)  # the plan still renders with the answer
 
 
+def test_the_chat_page_never_shows_a_raw_citation_marker(client, chat):
+    """granite3.3:8b copied the [txn:<expense_id>] template onto the page."""
+    from tests.test_assistant_answers import GRANITE_PAGE, GRANITE_PLACEHOLDER
+    chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "pizza"}}]}',
+                                '{"steps": []}', f"{GRANITE_PLACEHOLDER}\n{GRANITE_PAGE}")
+    page = client.post("/banko", data={"user_input": "show me my pizza purchases",
+                                       "response_language": "en-US"}).get_data(as_text=True)
+    assert "could save money. Consider" in page
+    assert "txn:" not in page and "expense_id&gt;" not in page
+    with client.session_transaction() as s:
+        assert "txn" not in s["chat"][-1]["text"]
+
+
 def test_upload_then_ask_on_the_chat_page(client, chat, monkeypatch):
     fields = {"merchant": "Lantern Books", "amount": 42.00, "date": str(date.today()), "category": "shopping",
               "items": ["Atlas"], "payment_method": "credit card"}

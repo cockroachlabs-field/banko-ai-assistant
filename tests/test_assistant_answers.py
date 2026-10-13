@@ -53,6 +53,37 @@ def test_citations():
     assert A.strip_citations(text) == "Coffee at Blue Bottle and again."
 
 
+# What granite3.3:8b really wrote in the Ollama smoke (task-13-smoke-report.md).
+RECEIPT_EXPENSE = "20818c6c-4aa5-461a-a786-827173c43206"
+MEMORY_ID = "37e68312-0b8a-4c43-9f0e-5a3c1d2e4f60"
+GRANITE_RECEIPT = f"The amount of this receipt from Trader Joe's was $25.94 [txn:<{RECEIPT_EXPENSE}>]."
+GRANITE_PLACEHOLDER = ("However, generally, dining out can be reduced by cooking at home, which could save "
+                       "money [txn:<expense_id>]. Consider setting a budget.")
+GRANITE_MEMORY = f"You are saving for a trip to Japan. * Goal: Saving for Japan [txn:<{MEMORY_ID}>]"
+GRANITE_PAGE = "- [txn:<expense_id>] de83b07c-f3cf-4d62-8415-2eed569fcc88\n- Pizza [txn:<uuid>]"
+
+
+def test_citation_ids_accept_angle_brackets_and_spaces():
+    assert A.citation_ids(GRANITE_RECEIPT) == [RECEIPT_EXPENSE]
+    assert A.citation_ids(f"wine [ txn: < {RECEIPT_EXPENSE.upper()} > ]") == [RECEIPT_EXPENSE]
+    assert A.citation_ids(GRANITE_PLACEHOLDER) == []
+
+
+def test_resolve_citations_keeps_known_ids_and_drops_everything_else():
+    text = f"{GRANITE_RECEIPT} {GRANITE_PLACEHOLDER} {GRANITE_MEMORY}"
+    out = A.resolve_citations(text, {RECEIPT_EXPENSE})
+    assert f"[txn:{RECEIPT_EXPENSE}]" in out
+    assert out.count("[txn:") == 1 and "<" not in out and MEMORY_ID not in out
+    assert "could save money. Consider" in out and out.endswith("Saving for Japan")
+    assert A.resolve_citations(GRANITE_PAGE, set()) == "- de83b07c-f3cf-4d62-8415-2eed569fcc88\n- Pizza"
+
+
+def test_strip_citations_removes_every_variant():
+    for text in (GRANITE_RECEIPT, GRANITE_PLACEHOLDER, GRANITE_MEMORY, GRANITE_PAGE,
+                 f"x [txn:{RECEIPT_EXPENSE}]", "y [ TXN: whatever ]"):
+        assert "txn" not in A.strip_citations(text).lower()
+
+
 def test_insights_use_only_given_figures():
     chat = ScriptedChat("- You visit Blue Bottle often.")
     out = A.aggregation_insights(_agg(), "how much on coffee", chat)

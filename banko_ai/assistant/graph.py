@@ -256,9 +256,40 @@ def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
     return {"region": serving_regions(explain) or home, "db_ms": db_ms, "explain": explain}
 
 
+PROPOSAL_STATUS = "waiting for you to confirm"
+CONFIRM_LINE = "Waiting for your confirmation: {summary}."
+
+
+def _with_cites(value: Any) -> Any:
+    """A tool result as the model reads it: every purchase carries a ready
+    made "cite" marker to copy, so the model never has to build one."""
+    if isinstance(value, dict):
+        out = {k: _with_cites(v) for k, v in value.items()}
+        if value.get("expense_id"):
+            out["cite"] = f"[txn:{value['expense_id']}]"
+        return out
+    if isinstance(value, list):
+        return [_with_cites(v) for v in value]
+    return value
+
+
 def _facts(results: list[dict]) -> str:
-    useful = [{"tool": r["tool"], "result": r.get("result")} for r in results if r.get("ok")]
+    useful = []
+    for r in results:
+        if not r.get("ok"):
+            continue
+        result = r.get("result")
+        if r["tool"].startswith("propose_") and isinstance(result, dict):
+            # No action id: the model cited it as a purchase. And not done yet.
+            result = {"proposal": result.get("summary"), "status": PROPOSAL_STATUS}
+        else:
+            result = _with_cites(result)
+        useful.append({"tool": r["tool"], "result": result})
     return json.dumps(useful, default=str)[:8000] if useful else "[]"
+
+
+def _positive(amount: Any) -> Any:
+    return abs(amount) if isinstance(amount, (int, float)) else amount
 
 
 def _cited(answer: str, results: list[dict]) -> list[dict]:
@@ -276,7 +307,7 @@ def _cited(answer: str, results: list[dict]) -> list[dict]:
 
     walk([r.get("result") for r in results])
     return [{"expense_id": rows[i]["expense_id"], "merchant": rows[i].get("merchant"),
-             "amount": rows[i].get("amount"), "date": rows[i].get("date")}
+             "amount": _positive(rows[i].get("amount")), "date": rows[i].get("date")}
             for i in answers.citation_ids(answer) if i in rows]
 
 
@@ -291,48 +322,62 @@ def _cited_from_ledger(user_id: str, answer: str, deps: TurnDeps) -> list[dict]:
             log.warning("citation lookup skipped", exc_info=True)
             continue
         if d and d.get("expense_id"):
-            amount = d.get("amount")
             out.append({"expense_id": d["expense_id"], "merchant": d.get("merchant"),
-                        "amount": abs(amount) if isinstance(amount, (int, float)) else amount,
-                        "date": d.get("posted_at")})
+                        "amount": _positive(d.get("amount")), "date": d.get("posted_at")})
     return out
+
+
+def _confirmation(proposals: list[dict], language: str, chat: Chat) -> str:
+    """The fixed line a proposal turn ends with, whatever the model said:
+    nothing changes until the user clicks Confirm."""
+    lines = "\n".join(CONFIRM_LINE.format(summary=str(p.get("summary") or "").rstrip(".")) for p in proposals)
+    return answers.translate(lines, language, chat)
 
 
 def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     deps = runtime.context
+    language = state.get("language") or "English"
     answer = state.get("answer") or ""
+    generated = False
     if answer:
         for i in range(0, len(answer), 48):
             _emit({"type": "token", "text": answer[i:i + 48]})
     else:
-        msgs = answer_messages(state["message"], language=state.get("language") or "English",
+        msgs = answer_messages(state["message"], language=language,
                                history=state.get("messages") or [], memories=state.get("memories") or [],
                                facts=_facts(state.get("results") or []),
                                context_facts=state.get("context_facts") or "")
-        narration.generating(state.get("language") or "English")
+        narration.generating(language)
         t0 = time.perf_counter()
         parts = []
         for piece in deps.chat.stream(msgs, temperature=0.3):
             parts.append(piece)
             _emit({"type": "token", "text": piece})
         answer = "".join(parts).strip()
+        generated = True
         _step("LLM answer", "streamed", ms=(time.perf_counter() - t0) * 1000, status="success")
-        # Only answers whose whole value is in the text are cached: a proposal
-        # card or an empty reply would replay wrong on a hit.
-        if state["route"].get("kind") == "plan" and _cacheable(state) and answer and not state.get("proposals"):
-            try:
-                from ..services._vector import embed
-                caches.put_answer(state["user_id"], version=ledger.data_version(state["user_id"], deps.url),
-                                  language=state.get("language") or "English", query=state["message"],
-                                  qvec=embed(state["message"]), answer=answer,
-                                  tokens=caches.estimate_tokens(answer), url=deps.url)
-            except Exception:
-                log.warning("answer cache write skipped", exc_info=True)
     results = state.get("results") or []
     citations = _cited(answer, results) if results else _cited_from_ledger(state["user_id"], answer, deps)
+    # From here on the answer holds canonical markers for real purchases only.
+    answer = answers.resolve_citations(answer, {c["expense_id"] for c in citations})
+    proposals = state.get("proposals") or []
+    if proposals:
+        line = _confirmation(proposals, language, deps.chat)
+        _emit({"type": "token", "text": f"\n\n{line}" if answer else line})
+        answer = f"{answer}\n\n{line}" if answer else line
+    # Only answers whose whole value is in the text are cached: a proposal
+    # card or an empty reply would replay wrong on a hit.
+    elif generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer:
+        try:
+            from ..services._vector import embed
+            caches.put_answer(state["user_id"], version=ledger.data_version(state["user_id"], deps.url),
+                              language=language, query=state["message"], qvec=embed(state["message"]),
+                              answer=answer, tokens=caches.estimate_tokens(answer), url=deps.url)
+        except Exception:
+            log.warning("answer cache write skipped", exc_info=True)
     for c in citations:
         _emit({"type": "citation", **c})
-    for p in state.get("proposals") or []:
+    for p in proposals:
         _emit(p)
     return {"answer": answer, "citations": citations,
             "messages": [{"role": "user", "content": state["message"]},
