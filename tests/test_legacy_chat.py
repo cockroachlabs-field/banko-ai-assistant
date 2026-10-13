@@ -174,6 +174,69 @@ def test_a_posted_receipt_reports_even_when_the_thread_cannot_open(client, monke
     assert up.status_code == 200 and up.get_json()["success"] and up.get_json()["expense_id"]
 
 
+def test_the_chat_page_keeps_every_turn(client):
+    questions = ["how much did I spend on restaurants in the last 30 days",
+                 "what is the capital of France", "tell me a joke about cats"]
+    for q in questions:
+        page = client.post("/banko", data={"user_input": q, "response_language": "en-US"}).get_data(as_text=True)
+    with client.session_transaction() as s:
+        chat = s["chat"]
+    assert len(chat) == 6 and [m["text"] for m in chat if m["class"] == "User"] == questions
+    assert questions[0] in page
+
+
+def test_a_long_session_sheds_its_oldest_turns_before_the_cookie_outgrows_a_browser(client):
+    """Browsers ignore a cookie over 4 KB, and the thread id riding on it."""
+    import secrets
+
+    asked, sizes = [], []
+    for _ in range(6):
+        asked.append(f"tell me about {secrets.token_hex(600)}")
+        resp = client.post("/banko", data={"user_input": asked[-1]})
+        sizes.append(len(resp.headers.get("Set-Cookie", "")))
+    with client.session_transaction() as s:
+        kept = [m["text"] for m in s["chat"] if m["class"] == "User"]
+        assert s["thread_id"]
+    assert 0 < max(sizes) < 4093
+    assert kept[-1] == asked[-1] and asked[0] not in kept
+
+
+def _thread_count(uid: str) -> int:
+    with get_engine().connect() as c:
+        return c.execute(text("SELECT count(*) FROM chat_threads WHERE user_id = CAST(:u AS UUID)"),
+                         {"u": uid}).scalar()
+
+
+def _cookieless(monkeypatch, uid: str):
+    """A client that never sends a cookie, acting as uid (the default persona)."""
+    app = app_client(monkeypatch, REPORTING_FOLLOWER_READS="false", COACH_DEFAULT_USER_ID=uid).application
+    return app.test_client(use_cookies=False)
+
+
+def test_cookie_less_rag_calls_share_one_thread(member, monkeypatch, chat):
+    from banko_ai.web.app import api_thread_id
+
+    bare = _cookieless(monkeypatch, member)
+    before = _thread_count(member)
+    for q in ("what is the capital of France", "who painted the Mona Lisa"):
+        body = bare.post("/api/rag", json={"query": q}).get_json()
+        assert body["success"] and body["metadata"]["route"] == "offtopic"
+    assert _thread_count(member) == before
+    assert len(G.thread_messages(api_thread_id(member))) == 4
+
+
+def test_a_cookie_less_upload_and_follow_up_share_the_api_thread(member, monkeypatch, chat):
+    bare = _cookieless(monkeypatch, member)
+    before = _thread_count(member)
+    _hooks(monkeypatch, {"merchant": "Curl Street Cafe", "amount": 8.75, "date": str(date.today()),
+                         "category": "shopping", "items": ["Flat white"], "payment_method": "debit card"})
+    assert _upload(bare).status_code == 200
+    chat["chat"] = ScriptedChat(lambda msgs: "That receipt from Curl Street Cafe came to $8.75.")
+    body = bare.post("/api/rag", json={"query": "how much was this receipt?"}).get_json()
+    assert body["metadata"]["route"] == "receipt" and "Curl Street Cafe" in body["response"]
+    assert _thread_count(member) == before
+
+
 def test_a_duplicate_upload_says_so(client, monkeypatch):
     _hooks(monkeypatch, {"merchant": "Twice Told Tales", "amount": 17.25, "date": str(date.today()),
                          "category": "shopping", "items": ["Paperback"], "payment_method": "credit card"})

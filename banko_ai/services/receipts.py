@@ -14,6 +14,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 
+from ..assistant import narration
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine, run_transaction
@@ -183,6 +184,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
 
     url = request_url(url)
     cfg = get_config()
+    narration.receipt_uploaded(filename)
     mime = ALLOWED_TYPES.get(Path(filename).suffix.lower(), "application/octet-stream")
     doc = _insert(user_id, filename, mime, _thumbnail(path), url)
     state = {"step": "ocr", "t0": 0.0, "terminal": None, "posted_data": None}
@@ -196,6 +198,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
                 "ms": round((time.perf_counter() - state["t0"]) * 1000, 1)}
 
     def fail(message: str, ocr_text: str | None = None) -> Iterator[dict]:
+        narration.receipt_failed(message)
         yield end("failed", message)
         try:
             _finish(doc, user_id, url, status="failed", error=message,
@@ -221,6 +224,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
 
         yield start("extract")
         fields = hooks.extract(ocr_text) or {}
+        narration.receipt_fields(fields)
         if is_placeholder_payload(fields):
             yield from fail(TEMPLATE_ECHO, ocr_text)
             return
@@ -245,6 +249,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
                                           window_days=cfg.duplicate_window_days,
                                           max_distance=cfg.receipt_duplicate_max_distance, url=url)
         if dupes:
+            narration.receipt_duplicate(f"matches {dupes[0]['merchant']} on {dupes[0]['date']}")
             yield end("done", f"matches {dupes[0]['merchant']} on {dupes[0]['date']}")
             yield {"type": "step", "step": "post", "status": "skipped", "detail": "duplicate, nothing posted",
                    "ms": None}
@@ -271,6 +276,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
                                 "amount": extracted["amount"], "date": extracted["date"], "category": category,
                                 "items": extracted["items"], "payment_method": extracted["payment_method"],
                                 "expense_id": expense_id, "created_at": datetime.now(timezone.utc)}
+        narration.receipt_posted(expense_id)
 
         try:
             _finish(doc, user_id, url, status="posted", extracted=extracted, ocr_text=ocr_text[:20000],
@@ -291,11 +297,16 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
         for step, check in (("fraud", lambda: hooks.fraud(user_id, expense_id)),
                             ("budget", lambda: hooks.budget(user_id))):
             yield start(step)
+            narration.receipt_check(step)
             try:
-                yield end("done", check())
+                result = check()
             except Exception:
                 log.warning("receipt %s check failed", step, exc_info=True)
+                narration.receipt_check_result("check failed")
                 yield end("failed", "check failed")
+                continue
+            narration.receipt_check_result(result)
+            yield end("done", result)
 
         try:
             yield {"type": "receipt", **get_receipt(user_id, doc, url=url)}

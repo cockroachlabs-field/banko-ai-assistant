@@ -67,6 +67,15 @@ from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
 
 PROVIDER_CHECK_SECONDS = 8.0
+# Fixed forever: changing it would orphan every cookie-less caller's thread.
+API_THREAD_NAMESPACE = uuid.UUID("ced3c92c-95fb-4c08-95d5-aa7a5b1f0334")
+
+
+def api_thread_id(user_id: str) -> str:
+    """The thread API calls without a signed-in session (curl demos) run on:
+    one per user, the same on every request and restart, and never listed,
+    since it has no chat_threads row."""
+    return str(uuid.uuid5(API_THREAD_NAMESPACE, f"banko-api:{user_id}"))
 
 
 def bounded_connection_test(provider, seconds: float = PROVIDER_CHECK_SECONDS) -> bool:
@@ -758,7 +767,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             from ..assistant import answers
             from ..assistant.graph import run_turn
             from .assistant_api import _chat
-            out = run_turn(current_demo_user(), _session_thread(), query, language_code=code, chat=_chat())
+            out = run_turn(current_demo_user(), _turn_thread(), query, language_code=code, chat=_chat())
             # The identity the persona shows, as this endpoint always reported it.
             shown = _shown()
             return jsonify({'success': True, 'response': answers.strip_citations(out['answer']),
@@ -1003,7 +1012,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 status = 422 if message in (receipt_service.TEMPLATE_ECHO, receipt_service.INVALID) else 500
                 return jsonify({'success': False, 'error': message}), status
             try:
-                set_active_receipt(_session_thread(), {k: final.get(k) for k in (
+                set_active_receipt(_turn_thread(), {k: final.get(k) for k in (
                     'document_id', 'merchant', 'amount', 'date', 'category', 'items', 'expense_id')})
             except Exception as e:
                 # The purchase has posted by now: report it, just without a follow-up thread.
@@ -1045,6 +1054,19 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         trace_step("total", "Total request time", ms=trace_elapsed_ms())
         return store_trace(current_trace(), plan)
 
+    # Browsers silently ignore a cookie over 4 KB, and every session change
+    # riding on it, a new thread id included. Each turn adds a few hundred
+    # bytes, so a long session sheds its oldest turns first.
+    _SESSION_COOKIE_BUDGET = 3800
+
+    def _fit_chat_in_cookie() -> None:
+        signer = getattr(app.session_interface, "get_signing_serializer", None)
+        serializer = signer(app) if signer else None
+        chat_log = session.get('chat') or []
+        while (serializer is not None and len(chat_log) > 2
+               and len(serializer.dumps(dict(session))) > _SESSION_COOKIE_BUDGET):
+            del chat_log[:2]
+
     def _render_chat(ai_provider_display):
         """Render the chat page with each message's stored trace and plan
         attached for the template; the session itself keeps only the ids."""
@@ -1081,6 +1103,14 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             session['thread_id'] = tid
         return tid
 
+    def _turn_thread() -> str:
+        """A signed-in browser keeps its session's thread. Calls without a
+        signed-in session share one stable thread per user, so curl demos
+        never open a new thread per request."""
+        if session.get('user_id'):
+            return _session_thread()
+        return api_thread_id(current_demo_user())
+
     def _chat_impl():
         if request.method == 'GET':
             session['chat'] = []
@@ -1094,13 +1124,16 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         if not user_message:
             return _render_chat(ai_provider_display)
         session['chat'].append({'text': user_message, 'class': 'User'})
+        # Flask only notices assignments to the session, not appends to the
+        # list inside it; without this, only the first turn ever persisted.
+        session.modified = True
         language = request.form.get('response_language', 'en-US')
         try:
             from ..assistant import answers
             from ..assistant.graph import run_turn
             from .assistant_api import _chat
             timed = _TimedChat(_chat())
-            out = run_turn(current_demo_user(), _session_thread(), user_message,
+            out = run_turn(current_demo_user(), _turn_thread(), user_message,
                            language_code=language, chat=timed)
             if timed.calls:
                 # Cache hits, memory commands and English redirects never
@@ -1127,6 +1160,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             trace_step("error", "Answer stopped", trace_detail, status="error")
             session['chat'].append({'text': error_message, 'class': 'Assistant',
                                     'meta': {'trace_id': _finish_trace()}})
+        _fit_chat_in_cookie()
         return _render_chat(ai_provider_display)
 
     @app.route('/home')

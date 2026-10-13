@@ -21,6 +21,7 @@ from ..services import accounts, actions, budgets, caches, goals, ledger, memori
 from ..services import transactions as txns
 from ..services._sql import jsonable
 from ..utils.request_trace import trace_step
+from . import narration
 
 log = logging.getLogger("banko.assistant")
 
@@ -101,15 +102,20 @@ class BudgetArgs(BaseModel):
 
 
 def _search(ctx: ToolContext, a: SearchArgs) -> dict:
+    narration.vector_search(a.query, a.limit)
     payload = a.model_dump(mode="json")
     key = caches.search_key(ctx.user_id, ledger.data_version(ctx.user_id, ctx.url), payload)
     cached = caches.get_search(ctx.user_id, key, url=ctx.url)
     if cached is not None:
+        narration.vector_cache(len(cached))
         trace_step("cache", "Search cache", f"hit for '{a.query}'", status="hit")
         return {"items": cached}
+    narration.vector_cache(None)
     trace_step("cache", "Search cache", f"miss for '{a.query}'", status="miss")
+    t0 = time.perf_counter()
     found = txns.semantic_search(ctx.user_id, a.query, limit=a.limit, category=a.category,
                                  date_from=a.date_from, date_to=a.date_to, url=ctx.url)["items"]
+    narration.vector_rows(len(found), (time.perf_counter() - t0) * 1000)
     items = [{"expense_id": i["expense_id"], "date": i["posted_at"], "merchant": i["merchant"],
               "amount": abs(i["amount"]), "category": i["category"], "description": i["description"]}
              for i in found]

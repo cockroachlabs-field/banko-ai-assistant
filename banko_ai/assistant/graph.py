@@ -30,7 +30,7 @@ from ..db.regions import money_region
 from ..services import caches, ledger, memories, reports, threads
 from ..services import transactions as txns
 from ..utils.request_trace import serving_regions, trace_step
-from . import answers
+from . import answers, narration
 from .planner import first_object, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
 from .router import route as decide
@@ -133,9 +133,11 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         merchant = resolve_merchant(intent.subject, user_id, url)
     with get_engine(url).connect() as conn:
         region = money_region(conn, user_id, url)
+    narration.aggregation(intent, region)
     t0 = time.perf_counter()
     agg = run_aggregation(intent, user_id, url, region=region, merchant=merchant)
     db_ms = (time.perf_counter() - t0) * 1000
+    narration.aggregation_sql(agg, db_ms)
     _step("Aggregation SQL", f"${agg.total:,.2f} across {agg.count} transactions "
           f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success")
     explain = explain_aggregation(intent, user_id, url, region=region, merchant=merchant)
@@ -152,11 +154,17 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         log.warning("narrative cache read skipped", exc_info=True)
     if hit:
         text, cached = hit[0]["answer"], True
+        narration.narrative_cache(True, caches.estimate_tokens(text))
         _step("Narrative cache", "hit: SQL reran, the prose was reused", status="hit")
     else:
+        narration.narrative_cache(False)
         insights = answers.aggregation_insights(agg, state["message"], deps.chat) if agg.count else None
-        text = card + (f"\n\n{insights}" if insights else "")
-        text, cached = answers.translate(text, language, deps.chat), False
+        if insights:
+            narration.insights()
+        english = card + (f"\n\n{insights}" if insights else "")
+        text, cached = answers.translate(english, language, deps.chat), False
+        if text != english:
+            narration.rendered(language)
         try:
             caches.put_search(user_id, key, [{"answer": text}], url=deps.url, stat="narrative")
         except Exception:
@@ -208,8 +216,10 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         except Exception:  # a cache outage is a miss, never a broken answer
             log.warning("answer cache read skipped", exc_info=True)
         if hit:
+            narration.answer_cache(True, hit["tokens"])
             _step("Answer cache", f"hit, about {hit['tokens']} tokens saved", status="hit")
             return {"answer": hit["answer"], "cached": True}
+        narration.answer_cache(False)
         _step("Answer cache", "miss", status="miss")
 
     def on_step(result: dict) -> None:
@@ -299,6 +309,7 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                history=state.get("messages") or [], memories=state.get("memories") or [],
                                facts=_facts(state.get("results") or []),
                                context_facts=state.get("context_facts") or "")
+        narration.generating(state.get("language") or "English")
         t0 = time.perf_counter()
         parts = []
         for piece in deps.chat.stream(msgs, temperature=0.3):
