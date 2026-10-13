@@ -55,6 +55,7 @@ def shell_context() -> dict:
         return {}
     cfg = get_config()
     shown = current_app.extensions["banko_ai"]["shown"]()
+    page_raw = (request.endpoint or "").rsplit(".", 1)[-1]
     return {"shell": {
         "brand": {"name": cfg.brand_name, "accent": cfg.brand_accent},
         "theme": cfg.ui_theme,
@@ -65,7 +66,6 @@ def shell_context() -> dict:
                  "display_name": profile["display_name"], "avatar_color": profile["avatar_color"],
                  "initial": (profile["display_name"] or "?")[0].upper(), "region": _region(profile)},
         "nav": nav_groups(current_app),
-        "page": {"assistant_thread": "assistant"}.get(
-            (request.endpoint or "").rsplit(".", 1)[-1],
-            (request.endpoint or "").rsplit(".", 1)[-1]),
+        "page": {"assistant_thread": "assistant"}.get(page_raw, page_raw),
+        "section": {"assistant_thread": "assistant", "account": "accounts"}.get(page_raw, page_raw),
     }}

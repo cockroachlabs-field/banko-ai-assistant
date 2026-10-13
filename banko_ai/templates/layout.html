@@ -19,7 +19,7 @@
         {% if not loop.first %}<div class="sep"></div>{% endif %}
         {% if group.title %}<div class="grp">{{ group.title }}</div>{% endif %}
         {% for item in group['items'] %}
-        <a href="{{ item.href }}" class="{{ 'on' if item.key == shell.page else '' }}"{% if item.key == shell.page %} aria-current="page"{% endif %}>{{ icon(item.icon) }}{{ item.label }}</a>
+        <a href="{{ item.href }}" class="{{ 'on' if item.key == shell.section else '' }}"{% if item.key == shell.section %} aria-current="page"{% endif %}>{{ icon(item.icon) }}{{ item.label }}</a>
         {% endfor %}
       {% endfor %}
     </nav>

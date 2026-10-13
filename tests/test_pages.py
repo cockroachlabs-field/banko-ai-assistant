@@ -135,3 +135,16 @@ def test_assistant_page(monkeypatch, member):
         assert c2.get(f"/assistant/{tid}").status_code == 404
     finally:
         drop_user(other)
+
+
+def test_nav_highlights_correct_section(monkeypatch, member):
+    client = signed_in(monkeypatch, member)
+    acct = client.get("/api/v1/accounts").get_json()["accounts"][0]["account_id"]
+    html = client.get(f"/accounts/{acct}").get_data(as_text=True)
+    assert 'data-page="account"' in html
+    assert re.search(r'<a[^>]*href="/accounts"[^>]*aria-current="page"', html)
+    assert not re.search(r'<a[^>]*href="/"[^>]*aria-current="page"', html)
+    tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
+    html2 = client.get(f"/assistant/{tid}").get_data(as_text=True)
+    assert 'data-page="assistant"' in html2
+    assert re.search(r'<a[^>]*href="/assistant"[^>]*aria-current="page"', html2)
