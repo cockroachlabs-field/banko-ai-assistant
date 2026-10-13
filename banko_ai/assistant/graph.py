@@ -233,10 +233,10 @@ def _narrate(agg, question: str, language: str, chat: Chat) -> str:
         if insights:
             narration.insights()
         return card + insights
-    insights = answers.aggregation_insights(agg, question, chat) if agg.count else None
-    if insights:
+    notes = answers.aggregation_insights(agg, question, chat) if agg.count else None
+    if notes:
         narration.insights()
-    english = card + (f"\n\n{insights}" if insights else "")
+    english = card + (f"\n\n{notes}" if notes else "")
     translated = _relay(lambda: chat.stream(answers.translation_messages(english, language), temperature=0.1))
     if not translated:  # no translation came back: the English, figures and all
         _emit_text(english)
