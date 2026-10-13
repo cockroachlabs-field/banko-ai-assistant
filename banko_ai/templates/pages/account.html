@@ -1,0 +1,50 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Account{% endblock %}
+{% block content %}
+<section x-data='accountPage({{ account_id|tojson }})' x-init="load()">
+  <div class="b-page-h">
+    <a class="b-btn ghost sm" href="/accounts">← Accounts</a>
+    <h1 x-text="account ? account.name + ' ··' + account.mask : ''"></h1><div class="sp"></div>
+    <button class="b-btn" type="button" @click="Banko.emit('banko:move-money', { from: id })">{{ icon('arrow-left-right') }}Move money</button>
+  </div>
+  <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong></div></template>
+  <div class="b-grid" x-show="account" x-cloak style="margin-top:14px">
+    <div class="b-card">
+      <div class="b-lbl">Balance</div><div class="b-big" x-text="account && Banko.fmt.money(account.balance)"></div>
+      <div class="b-muted" x-show="account && account.credit_limit" x-text="account && account.credit_limit ? 'Limit ' + Banko.fmt.money(account.credit_limit) + ' · APR ' + account.apr + '%' : ''"></div>
+      <div class="b-muted" x-text="account ? account.institution + ' · opened ' + Banko.fmt.date(account.opened_at, { month: 'short', year: 'numeric' }) : ''"></div>
+    </div>
+    <div class="b-card b-s2">
+      <div class="b-row">
+        <div class="b-lbl">Statement</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <select class="b-select" style="width:auto" x-model="month" @change="loadStatement()" aria-label="Statement month">
+            <template x-for="m in months" :key="m"><option :value="m" x-text="Banko.fmt.month(m) + ' ' + m.slice(0, 4)"></option></template>
+          </select>
+          <a class="b-btn sm" :href="'/api/v1/accounts/' + id + '/statements?month=' + month + '&format=csv'" x-show="month">{{ icon('download') }}CSV</a>
+        </div>
+      </div>
+      <div x-show="statement" class="b-row" style="margin:10px 0">
+        <span class="b-muted">Opening <b x-text="statement && Banko.fmt.money(statement.opening)"></b></span>
+        <span class="b-muted">Charges <b x-text="statement && Banko.fmt.money(statement.charges)"></b></span>
+        <span class="b-muted">Credits <b x-text="statement && Banko.fmt.money(statement.credits)"></b></span>
+        <span class="b-muted">Closing <b x-text="statement && Banko.fmt.money(statement.closing)"></b></span>
+      </div>
+      <table class="b-table" x-show="statement && statement.entries.length">
+        <thead><tr><th>Date</th><th>Description</th><th class="num">Amount</th></tr></thead>
+        <tbody><template x-for="(e, i) in (statement ? statement.entries : [])" :key="i">
+          <tr><td x-text="Banko.fmt.date(e.posted_at)"></td><td x-text="e.description"></td><td class="num" x-text="Banko.fmt.money(e.amount, { sign: true })"></td></tr>
+        </template></tbody>
+      </table>
+      <div class="b-muted" x-show="statement && !statement.entries.length">No activity this month.</div>
+      <div class="b-muted" x-show="!months.length">No statements yet.</div>
+    </div>
+  </div>
+</section>
+{% include "components/move_money.html" %}
+{% endblock %}
+{% block page_scripts %}
+<script src="{{ url_for('static', filename='js/pages/accounts.js') }}"></script>
+<script src="{{ url_for('static', filename='js/pages/account.js') }}"></script>
+{% endblock %}

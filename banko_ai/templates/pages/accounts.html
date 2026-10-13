@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Accounts{% endblock %}
+{% block content %}
+<section x-data="accountsPage" x-init="load()">
+  <div class="b-page-h"><h1>Accounts</h1><div class="sp"></div>
+    <button class="b-btn primary" type="button" @click="Banko.emit('banko:move-money', {})">{{ icon('arrow-left-right') }}Move money</button></div>
+  <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong><button class="b-btn" type="button" @click="load()">Try again</button></div></template>
+  <div class="b-grid" x-show="data" x-cloak style="margin-top:14px">
+    <div class="b-card b-s2">
+      <div class="b-lbl">Net worth</div>
+      <div class="b-big" x-text="data && Banko.fmt.money(data.net_worth)"></div>
+      <div style="height:140px;margin-top:8px"><canvas x-ref="net"></canvas></div>
+    </div>
+    <div class="b-card">
+      <div class="b-lbl">Credit utilization</div>
+      <div class="b-big" x-text="data && Banko.fmt.pct(data.utilization)"></div>
+      <div class="b-bar" :class="{ warn: data && data.utilization > 0.3, over: data && data.utilization > 0.7 }"><span :style="'width:' + (data ? Math.min(100, data.utilization * 100) : 0) + '%'"></span></div>
+      <div class="b-muted">Keeping this under 30% helps a credit score.</div>
+    </div>
+    <template x-for="group in [['Cash', 'cash', 'cash_total'], ['Credit', 'credit', 'credit_total']]" :key="group[1]">
+      <div class="b-card" :class="group[1] === 'cash' ? 'b-s2' : ''">
+        <div class="b-row"><div class="b-lbl" x-text="group[0]"></div><b x-text="data && Banko.fmt.money(data[group[2]])"></b></div>
+        <template x-for="a in (data ? data.groups[group[1]] : [])" :key="a.account_id">
+          <a class="b-bill" :href="'/accounts/' + a.account_id" style="text-decoration:none">
+            <span class="b-m" :style="'background:' + Banko.monogram(a.institution).color" x-text="Banko.monogram(a.institution).letters"></span>
+            <span style="flex:1"><div class="b-name" x-text="a.name"></div><div class="b-muted" x-text="a.institution + ' ··' + a.mask"></div>
+              <div class="b-bar" x-show="a.kind === 'credit'" style="margin:4px 0 0;width:160px"><span :style="'width:' + used(a) * 100 + '%'"></span></div></span>
+            <span class="b-amt" :class="{ pos: a.balance > 0 && a.kind !== 'credit' }" x-text="Banko.fmt.money(a.balance)"></span>
+          </a>
+        </template>
+        <div class="b-muted" x-show="data && !data.groups[group[1]].length">No accounts here yet.</div>
+      </div>
+    </template>
+  </div>
+</section>
+{% include "components/move_money.html" %}
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/accounts.js') }}"></script>{% endblock %}

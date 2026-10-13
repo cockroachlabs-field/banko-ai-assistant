@@ -140,5 +140,14 @@
     return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   }
 
-  window.Banko = { shell, api, stream, parseSSE, fmt, monogram, emit, newKey, ApiError, FALLBACK };
+  // API error codes the UI turns into plain copy. Anything else is already
+  // neutral text from the server.
+  const COPY = {
+    insufficient_funds: "There isn't enough available in that account.",
+    key_conflict: "That request was already used with a different amount.",
+    not_found: "That item no longer exists.",
+  };
+  function explain(err) { const m = (err && err.message) || ""; return COPY[m] || m || FALLBACK; }
+
+  window.Banko = { shell, api, stream, parseSSE, fmt, monogram, emit, newKey, explain, ApiError, FALLBACK };
 })();

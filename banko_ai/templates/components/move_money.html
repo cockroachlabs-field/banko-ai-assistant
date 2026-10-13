@@ -1,0 +1,26 @@
+{% from "components/icons.html" import icon %}
+<div x-data="moveMoney" @banko:move-money.window="open($event.detail || {})" @keydown.escape.window="close()">
+  <div class="b-scrim" x-show="shown" x-cloak @click="close()"></div>
+  <form class="b-dialog" x-show="shown" x-cloak @submit.prevent="submit()" aria-label="Move money">
+    <h2>Move money</h2>
+    <label class="b-field">From
+      <select class="b-select" x-model="from" required>
+        <template x-for="a in accounts" :key="a.account_id"><option :value="a.account_id" x-text="a.name + ' ··' + a.mask + ' · ' + Banko.fmt.money(a.balance)"></option></template>
+      </select>
+    </label>
+    <label class="b-field">To
+      <select class="b-select" x-model="to" required>
+        <template x-for="a in accounts.filter(x => x.account_id !== from)" :key="a.account_id"><option :value="a.account_id" x-text="a.name + ' ··' + a.mask"></option></template>
+      </select>
+    </label>
+    <label class="b-field">Amount
+      <input class="b-input" x-model="amount" inputmode="decimal" placeholder="0.00" required>
+    </label>
+    <div class="b-muted" x-show="isCardPayment()">This pays down the card.</div>
+    <div class="b-tag bad" x-show="error" x-text="error"></div>
+    <div class="b-row" style="justify-content:flex-end">
+      <button class="b-btn" type="button" @click="close()">Cancel</button>
+      <button class="b-btn primary" type="submit" :disabled="busy">{{ icon('arrow-left-right') }}<span x-text="busy ? 'Moving' : 'Move'"></span></button>
+    </div>
+  </form>
+</div>

@@ -139,6 +139,11 @@ def list_accounts():
     return jsonify(accounts.list_accounts(_uid()))
 
 
+@api_v1.get("/accounts/history")
+def account_history():
+    return jsonify({"items": accounts.net_worth_history(_uid(), months=_int_arg("months", 12, 1, 24))})
+
+
 @api_v1.get("/accounts/<account_id>")
 def get_account(account_id: str):
     found = accounts.get_account(_uid(), account_id)

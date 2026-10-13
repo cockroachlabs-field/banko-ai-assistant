@@ -81,3 +81,21 @@ def test_latest_insight_carries_the_nudge_id(member):
     finally:
         with get_engine().begin() as c:
             c.execute(text("DELETE FROM coach_nudges WHERE nudge_id = :n"), {"n": nid})
+
+
+def test_accounts_pages(monkeypatch, member):
+    client = signed_in(monkeypatch, member)
+    html = assert_page(client.get("/accounts"), "accounts")
+    assert 'x-data="moveMoney"' in html
+    acct = client.get("/api/v1/accounts").get_json()["accounts"][0]["account_id"]
+    detail = assert_page(client.get(f"/accounts/{acct}"), "account")
+    # The controller ruling: tojson inside double quotes breaks the attribute.
+    assert f"x-data='accountPage(\"{acct}\"" in detail
+    assert client.get("/accounts/00000000-0000-0000-0000-000000000000").status_code == 404
+
+
+def test_account_history_api(monkeypatch, member):
+    client = signed_in(monkeypatch, member)
+    items = client.get("/api/v1/accounts/history?months=3").get_json()["items"]
+    assert len(items) == 3 and {"month", "net_worth"} <= set(items[0])
+    assert client.get("/api/v1/accounts/history?months=abc").status_code == 400
