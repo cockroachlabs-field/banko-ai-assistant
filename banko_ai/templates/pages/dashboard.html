@@ -22,8 +22,8 @@
       <div class="b-row">
         <div>
           <div class="b-lbl">Net worth</div>
-          <div class="b-big" x-text="Banko.fmt.money(data.net_worth)"></div>
-          <div class="b-delta" :class="{ neg: netDelta() < 0 }" x-show="data.net_worth_history.length > 1"
+          <div class="b-big" x-text="data && Banko.fmt.money(data.net_worth)"></div>
+          <div class="b-delta" :class="{ neg: netDelta() < 0 }" x-show="data && data.net_worth_history.length > 1"
                x-text="Banko.fmt.money(netDelta(), { sign: true }) + ' this month'"></div>
         </div>
         <div class="b-muted">Last 6 months</div>
@@ -44,7 +44,7 @@
     <div class="b-card">
       <div class="b-lbl" x-text="'Spending · ' + monthName()"></div>
       <div class="b-row">
-        <div class="b-big" x-text="Banko.fmt.money0(data.spending.this_total)"></div>
+        <div class="b-big" x-text="data && Banko.fmt.money0(data.spending.this_total)"></div>
         <div class="b-delta" :class="{ neg: spendDelta() > 0 }" x-text="Banko.fmt.money0(spendDelta()) + ' vs last month'"></div>
       </div>
       <div style="height:90px"><canvas x-ref="spend"></canvas></div>
@@ -53,33 +53,33 @@
 
     <div class="b-card">
       <div class="b-row"><div class="b-lbl">Budgets</div><a class="b-muted" href="/budget">See all →</a></div>
-      <template x-for="b in data.budgets.items.slice(0, 4)" :key="b.category">
+      <template x-for="b in (data && data.budgets.items || []).slice(0, 4)" :key="b.category">
         <div>
           <div class="b-row" style="margin-top:8px"><span x-text="b.icon + ' ' + b.category"></span><span class="b-muted" x-text="Banko.fmt.money0(b.spent) + ' of ' + Banko.fmt.money0(b.budget)"></span></div>
           <div class="b-bar" :class="{ warn: b.status === 'watch', over: b.status === 'over' }"><span :style="'width:' + Math.min(100, b.pct * 100) + '%'"></span></div>
         </div>
       </template>
-      <div class="b-muted" x-show="!data.budgets.items.length" style="margin-top:8px">No budgets yet. Set one on the Budget page.</div>
+      <div class="b-muted" x-show="data && !data.budgets.items.length" style="margin-top:8px">No budgets yet. Set one on the Budget page.</div>
     </div>
 
     <div class="b-card">
       <div class="b-lbl">Upcoming</div>
       <div style="margin-top:6px">
-        <template x-for="bill in data.upcoming_bills.slice(0, 4)" :key="bill.merchant + bill.next_due">
+        <template x-for="bill in (data && data.upcoming_bills || []).slice(0, 4)" :key="bill.merchant + bill.next_due">
           <div class="b-bill">
             <span class="b-date" x-html="dateBadge(bill.next_due)"></span>
             <span style="flex:1" x-text="bill.merchant"></span>
             <span class="b-amt" x-text="Banko.fmt.money(bill.amount)"></span>
           </div>
         </template>
-        <div class="b-muted" x-show="!data.upcoming_bills.length">Nothing due in the next two weeks.</div>
+        <div class="b-muted" x-show="data && !data.upcoming_bills.length">Nothing due in the next two weeks.</div>
       </div>
     </div>
 
     <div class="b-card b-s3">
       <div class="b-row"><div class="b-lbl">Recent transactions</div><a class="b-muted" href="/transactions">View all →</a></div>
       <div style="margin-top:4px">
-        <template x-for="t in data.recent" :key="t.id">
+        <template x-for="t in (data && data.recent || [])" :key="t.id">
           <button type="button" class="b-tx" @click="Banko.emit('banko:open-transaction', { id: t.expense_id || t.id })">
             <span class="b-m" :style="'background:' + Banko.monogram(t.merchant || t.description).color" x-text="Banko.monogram(t.merchant || t.description).letters"></span>
             <span><div class="b-name" x-text="t.merchant || t.description"></div><div class="b-muted" x-text="Banko.fmt.dayLabel(t.posted_at)"></div></span>
