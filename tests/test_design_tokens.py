@@ -21,8 +21,14 @@ def test_both_themes_define_every_token():
     day, night = _block(":root"), _block('[data-theme="dark"]')
     for token in TOKENS:
         assert f"{token}:" in day, f"Daylight misses {token}"
-        if token != "--r":
+        if token not in ("--r", "--ac"):
             assert f"{token}:" in night, f"Midnight misses {token}"
+
+
+def test_single_accent_color_rule():
+    day, night = _block(":root"), _block('[data-theme="dark"]')
+    assert "--ac:" in day, "Accent color must be defined in :root"
+    assert "--ac:" not in night, "Accent color must not be redefined in dark theme (set once on <html>)"
 
 
 def test_daylight_and_midnight_use_the_approved_values():

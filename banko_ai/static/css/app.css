@@ -37,7 +37,6 @@
 }
 
 [data-theme="dark"] {
-  --ac: #6933FF;
   --acsoft: color-mix(in srgb, var(--ac) 18%, #090B12);
   --bg: #090B12;
   --side: #0C0F18;
