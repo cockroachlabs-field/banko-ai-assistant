@@ -146,20 +146,20 @@ Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts
 
 **SSE events from POST `/api/v1/assistant/threads/<thread_id>/messages`:**
 
-- `step` — `{"label": "...", "detail": "...", "ms": 123.4, "status": "success|start|cached"}`
-- `token` — `{"text": "partial answer text"}`
-- `citation` — `{"expense_id": "...", "merchant": "...", "amount": -12.34, "date": "2026-10-01", ...}`
-- `proposal` — `{"id": "<uuid>", "kind": "budget_change", "category": "groceries", "current": "400.00", "proposed": "450.00", "reason": "..."}`
-- `answer` — `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": true|false, "route": "aggregate|receipt|memory|offtopic|plan", "meta": {...}}`
-- `error` — `{"message": "error description"}`
-- `done` — `{}` (final event)
+- `step`: `{"label": "...", "detail": "...", "ms": 123.4, "status": "success|start|cached"}`
+- `token`: `{"text": "partial answer text"}`
+- `citation`: `{"expense_id": "...", "merchant": "...", "amount": -12.34, "date": "2026-10-01", ...}`
+- `proposal`: `{"id": "<uuid>", "kind": "budget_change", "category": "groceries", "current": "400.00", "proposed": "450.00", "reason": "..."}`
+- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": true|false, "route": "aggregate|receipt|memory|offtopic|plan", "meta": {...}}`
+- `error`: `{"message": "error description"}`
+- `done`: `{}` (final event)
 
 **SSE events from POST `/api/v1/receipts`:**
 
-- `step` — `{"step": "ocr|extract|fraud|budget|post", "status": "start|done|skipped|failed", "detail": "...", "ms": 123.4}`
-- `receipt` — `{"document_id": "...", "merchant": "...", "amount": "12.34", "date": "2026-10-12", "category": "groceries", "items": [...], "expense_id": "...", "thread_id": "...", ...}`
-- `error` — `{"message": "error description"}`
-- `done` — `{}` (final event)
+- `step`: `{"step": "ocr|extract|fraud|budget|post", "status": "start|done|skipped|failed", "detail": "...", "ms": 123.4}`
+- `receipt`: `{"document_id": "...", "merchant": "...", "amount": "12.34", "date": "2026-10-12", "category": "groceries", "items": [...], "expense_id": "...", "thread_id": "...", ...}`
+- `error`: `{"message": "error description"}`
+- `done`: `{}` (final event)
 
 **Kept for compatibility:** `/api/rag` (POST, RAG-based Q&A) and `/api/upload-receipt` (POST, receipt upload without SSE) still work. New code should use the `/api/v1/assistant` routes.
 

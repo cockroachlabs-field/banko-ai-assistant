@@ -13,8 +13,8 @@ CockroachDB cluster.
 
 ## What it can do
 
-- **Ask in natural language** — "what did I spend on dining last month?",
-  "show me anything unusual" — answers stream token by token on every
+- **Ask in natural language**. Ask "what did I spend on dining last month?"
+  or "show me anything unusual" and answers stream token by token on every
   provider. Math questions (totals, averages, counts) run SQL instead of
   asking the LLM to compute. Threads remember receipts across restarts,
   memories you create are searchable and deletable, and proposed budget
