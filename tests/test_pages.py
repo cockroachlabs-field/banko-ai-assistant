@@ -99,3 +99,8 @@ def test_account_history_api(monkeypatch, member):
     items = client.get("/api/v1/accounts/history?months=3").get_json()["items"]
     assert len(items) == 3 and {"month", "net_worth"} <= set(items[0])
     assert client.get("/api/v1/accounts/history?months=abc").status_code == 400
+
+
+def test_transactions_page(monkeypatch, member):
+    html = assert_page(signed_in(monkeypatch, member).get("/transactions"), "transactions")
+    assert 'x-data="txDrawer"' in html

@@ -15,7 +15,7 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine
-from ..services import accounts, budgets, goals, ledger, recurring, reports, seeding, transactions
+from ..services import accounts, agent_feed, budgets, goals, ledger, receipts, recurring, reports, seeding, transactions
 from ..services._sql import jsonable, valid_uuid
 from ..services.profile import get_profile
 
@@ -129,6 +129,26 @@ def ai_model():
     return jsonify(payload), status
 
 
+@api_v1.get("/categories")
+def list_categories():
+    return jsonify({"items": [{"key": c.key, "label": c.label, "icon": c.icon, "color": c.color, "group": c.grp}
+                              for c in get_catalog().categories]})
+
+
+def _enriched(detail: dict) -> dict:
+    cfg = get_config()
+    uid = _uid()
+    expense_id = detail.get("expense_id")
+    detail["receipt"] = receipts.receipt_for_expense(uid, expense_id) if expense_id else None
+    detail["checks"] = {
+        "duplicates": transactions.duplicate_check(uid, expense_id, window_days=cfg.duplicate_window_days,
+                                                   max_distance=cfg.receipt_duplicate_max_distance)["candidates"]
+        if expense_id else [],
+        "decisions": agent_feed.decisions_for_expense(expense_id) if expense_id else [],
+    }
+    return detail
+
+
 @api_v1.get("/dashboard")
 def dashboard():
     return jsonify(reports.dashboard(_uid()))
@@ -190,7 +210,22 @@ def list_transactions():
 @api_v1.get("/transactions/<txn_id>")
 def transaction_detail(txn_id: str):
     found = transactions.transaction_detail(_uid(), txn_id)
-    return (jsonify(found), 200) if found else (jsonify({"error": "not_found"}), 404)
+    return (jsonify(_enriched(found)), 200) if found else (jsonify({"error": "not_found"}), 404)
+
+
+@api_v1.patch("/transactions/<txn_id>")
+def recategorize_transaction(txn_id: str):
+    category = _body().get("category")
+    if not isinstance(category, str) or not category.strip():
+        raise _BadRequest("Pick a category")
+    detail = transactions.transaction_detail(_uid(), txn_id)
+    if detail is None or not detail.get("expense_id"):
+        return jsonify({"error": "not_found"}), 404
+    try:
+        transactions.recategorize(_uid(), detail["expense_id"], category)
+    except ValueError as exc:
+        raise _BadRequest(str(exc)) from None
+    return jsonify(_enriched(transactions.transaction_detail(_uid(), txn_id)))
 
 
 @api_v1.get("/cashflow")

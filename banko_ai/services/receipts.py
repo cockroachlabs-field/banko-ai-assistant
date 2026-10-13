@@ -330,3 +330,26 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
                 _finish(doc, user_id, url, status="failed", error=FAILED)
             except Exception:
                 log.error("finally cleanup failed, row may stay processing", exc_info=True)
+
+
+def receipt_for_expense(user_id: str, expense_id: str, *, url: str | None = None) -> dict | None:
+    if not valid_uuid(expense_id):
+        return None
+    url = request_url(url)
+    with get_engine(url).connect() as conn:
+        r = conn.execute(text(f"""
+            SELECT {_COLS}, thumbnail IS NOT NULL FROM receipts@receipts_expense_idx
+            WHERE expense_id = CAST(:x AS UUID) AND user_id = CAST(:u AS UUID)
+            ORDER BY created_at DESC LIMIT 1
+        """), {"x": expense_id, "u": user_id}).fetchone()
+    return {**_row(r[:7]), "has_thumbnail": bool(r[7])} if r else None
+
+
+def thumbnail(user_id: str, document_id: str, *, url: str | None = None) -> bytes | None:
+    if not valid_uuid(document_id):
+        return None
+    url = request_url(url)
+    with get_engine(url).connect() as conn:
+        data = conn.execute(text("SELECT thumbnail FROM receipts WHERE document_id = CAST(:d AS UUID) "
+                                 "AND user_id = CAST(:u AS UUID)"), {"d": document_id, "u": user_id}).scalar()
+    return bytes(data) if data else None

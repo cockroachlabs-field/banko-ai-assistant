@@ -24,3 +24,8 @@ def account(account_id: str):
     if accounts_service.get_account(session["user_id"], account_id) is None:
         abort(404)
     return render_template("pages/account.html", account_id=account_id)
+
+
+@pages.get("/transactions")
+def transactions():
+    return render_template("pages/transactions.html")

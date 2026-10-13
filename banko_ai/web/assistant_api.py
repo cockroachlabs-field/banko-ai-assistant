@@ -293,3 +293,11 @@ def upload_receipt():
 
     return Response(stream_with_context(run()), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@assistant_api.get("/receipts/<document_id>/thumbnail")
+def receipt_thumbnail(document_id: str):
+    data = receipts.thumbnail(_uid(), document_id)
+    if data is None:
+        return jsonify({"error": "not_found"}), 404
+    return Response(data, mimetype="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})

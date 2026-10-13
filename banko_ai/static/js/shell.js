@@ -26,6 +26,9 @@ document.addEventListener("alpine:init", () => {
       this.applyTheme();
       darkQuery.addEventListener("change", () => this.applyTheme());
       this.connect();
+      window.addEventListener("banko:open-transaction", (e) => {
+        if (Banko.shell.page !== "transactions") window.location.assign("/transactions?open=" + encodeURIComponent(e.detail.id));
+      });
       window.addEventListener("dragenter", (e) => this.dragEnter(e));
       window.addEventListener("dragleave", () => this.dragLeave());
       window.addEventListener("dragover", (e) => { if (this.hasFiles(e)) e.preventDefault(); });
