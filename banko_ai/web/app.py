@@ -41,7 +41,6 @@ from ..ai_providers.display import (
     ui_context,
 )
 from ..ai_providers.factory import AIProviderFactory
-from ..ai_providers.streaming import TimedChat
 from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.catalog import get_catalog
@@ -53,16 +52,7 @@ from ..services.profile import get_profiles
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
 from ..utils.embeddings import ModelWarmingUp
-from ..utils.request_trace import (
-    current_trace,
-    get_stored_plan,
-    get_stored_trace,
-    reset_trace,
-    start_trace,
-    store_trace,
-    trace_elapsed_ms,
-    trace_step,
-)
+from ..utils.request_trace import trace_step
 from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
@@ -646,24 +636,6 @@ def create_app() -> Flask:
         user_manager.logout_user()
         return redirect(url_for('login'))
 
-    @app.context_processor
-    def inject_identity():
-        """Who is signed in, for the header pill on every page. The region
-        is the user's home region (where their rows live), shown only on
-        regional deployments; the per-answer badge shows where each query
-        was actually served."""
-        username = session.get('username')
-        region = None
-        if username and session.get('user_id'):
-            try:
-                from ..db.regions import regional_tables_ready
-                if regional_tables_ready(config.database_url):
-                    from .auth import resolve_user_region
-                    region = resolve_user_region(session['user_id'], config.database_url)
-            except Exception:
-                region = None
-        return {'current_username': username, 'current_user_region': region}
-    
     @app.route('/api/search', methods=['POST'])
     def api_search():
         """API endpoint for expense search."""
@@ -999,72 +971,10 @@ def create_app() -> Flask:
             except OSError:
                 pass
     
-    def _trace_identity() -> str:
-        """The model as the persona shows it, for LLM steps in the trace."""
-        shown = _shown()
-        return f"{shown.name} · {shown.model}"
-
-    def _finish_trace(plan: str | None = None) -> str:
-        """Close this request's trace and park it server side, with the
-        answer's EXPLAIN plan. The chat history lives in the signed session
-        cookie (4 KB, and a plan can be 20 KB), so the message keeps only
-        the short id."""
-        trace_step("total", "Total request time", ms=trace_elapsed_ms())
-        return store_trace(current_trace(), plan)
-
-    # Browsers silently ignore a cookie over 4 KB, and every session change
-    # riding on it, a new thread id included. Each turn adds a few hundred
-    # bytes, so a long session sheds its oldest turns first, and a turn too
-    # big on its own (a long pasted message) shows on the page shortened.
-    _SESSION_COOKIE_BUDGET = 3800
-
-    def _fit_chat_in_cookie() -> None:
-        signer = getattr(app.session_interface, "get_signing_serializer", None)
-        serializer = signer(app) if signer else None
-        if serializer is None:
-            return
-        chat_log = session.get('chat') or []
-
-        def too_big() -> bool:
-            return len(serializer.dumps(dict(session))) > _SESSION_COOKIE_BUDGET
-
-        while len(chat_log) > 2 and too_big():
-            del chat_log[:2]
-        # Only the page's copy is cut: the thread's checkpoint keeps the full text.
-        while chat_log and too_big():
-            entry = max(chat_log[-2:], key=lambda m: len(m.get('text') or ''))
-            text_now = entry.get('text') or ''
-            body = text_now[:-1] if text_now.endswith('…') else text_now
-            if len(body) < 2:
-                break
-            entry['text'] = body[:len(body) // 2].rstrip() + '…'
-            session.modified = True
-
-    def _render_chat(ai_provider_display):
-        """Render the chat page with each message's stored trace and plan
-        attached for the template; the session itself keeps only the ids."""
-        view = []
-        for message in session.get('chat', []):
-            meta = message.get('meta')
-            if meta and meta.get('trace_id'):
-                message = dict(message)
-                message['meta'] = dict(meta, trace=get_stored_trace(meta['trace_id']) or [],
-                                       explain=get_stored_plan(meta['trace_id']))
-            view.append(message)
-        return render_template('index.html',
-                               chat=view,
-                               ai_provider=ai_provider_display,
-                               current_page='banko')
-
     @app.route('/banko', methods=['GET', 'POST'])
     def chat():
-        """Main chat interface. Each request records its own trace, which
-        the DB Ops panel shows for the answer it produced."""
-        token = start_trace()
-        try:
-            return _chat_impl()
-        finally:
-            reset_trace(token)
+        """The old chat page; the assistant lives at /assistant now."""
+        return redirect('/assistant', code=303)
 
     def _session_thread() -> str:
         """The chat page's thread: one per browser session and user."""
@@ -1084,81 +994,12 @@ def create_app() -> Flask:
             return _session_thread()
         return api_thread_id(current_demo_user())
 
-    def _chat_impl():
-        if request.method == 'GET':
-            session['chat'] = []
-            session.pop('thread_id', None)
-        elif 'chat' not in session:
-            session['chat'] = []
-        ai_provider_display = _provider_ui()
-        if request.method != 'POST':
-            return _render_chat(ai_provider_display)
-        user_message = (request.form.get('user_input') or request.form.get('message') or '').strip()
-        if not user_message:
-            return _render_chat(ai_provider_display)
-        session['chat'].append({'text': user_message, 'class': 'User'})
-        # Flask only notices assignments to the session, not appends to the
-        # list inside it; without this, only the first turn ever persisted.
-        session.modified = True
-        language = request.form.get('response_language', 'en-US')
-        try:
-            from ..assistant import answers
-            from ..assistant.graph import run_turn
-            from .assistant_api import _chat
-            timed = TimedChat(_chat())
-            out = run_turn(current_demo_user(), _turn_thread(), user_message,
-                           language_code=language, chat=timed)
-            if timed.calls:
-                # Cache hits, memory commands and English redirects never
-                # reach the model, so their trace does not name one.
-                detail = f"{_trace_identity()}, {timed.calls} call{'s' if timed.calls > 1 else ''}"
-                trace_step("llm", "Model", detail + (f", {timed.failed} failed" if timed.failed else ""),
-                           ms=timed.ms, status="warning" if timed.failed else "success")
-            meta = out.get('meta') or {}
-            # Only what the turn measured: the template prints any db_ms it is given.
-            measured = {k: meta[k] for k in ('region', 'db_ms') if meta.get(k) is not None}
-            session['chat'].append({'text': answers.strip_citations(out['answer']), 'class': 'Assistant',
-                                    'meta': {**measured, 'trace_id': _finish_trace(meta.get('explain'))}})
-        except Exception as e:
-            if isinstance(e, ModelWarmingUp):
-                error_message = "I'm still warming up my embedding model. Try that again in a few seconds."
-                trace_detail = "The embedding model is still loading"
-            elif isinstance(e, TRANSIENT_ERRORS):
-                error_message = "Reconnecting to the database, try that again in a moment."
-                trace_detail = "The database connection dropped; nothing was answered"
-            else:
-                print(f"Error with {config.ai_service}: {str(e)}")
-                error_message = neutral_error(e)
-                trace_detail = "The answer failed here; details are in the server log"
-            trace_step("error", "Answer stopped", trace_detail, status="error")
-            session['chat'].append({'text': error_message, 'class': 'Assistant',
-                                    'meta': {'trace_id': _finish_trace()}})
-        _fit_chat_in_cookie()
-        return _render_chat(ai_provider_display)
-
-    @app.route('/home')
-    def dashboard():
-        return render_template('dashboard.html', current_page='home')
-
-    @app.route('/savings')
-    def savings():
-        return render_template('dashboard.html', current_page='savings')
-
-    @app.route('/wallet')
-    def wallet():
-        return render_template('dashboard.html', current_page='wallet')
-
-    @app.route('/credit-card')
-    def credit_card():
-        return render_template('dashboard.html', current_page='credit-card')
-
-    @app.route('/statements')
-    def statements():
-        return render_template('dashboard.html', current_page='statements')
-
-    @app.route('/benefits')
-    def benefits():
-        return render_template('dashboard.html', current_page='benefits')
+    # Old page links land on their new homes.
+    _MOVED = {"/home": "/", "/benefits": "/", "/savings": "/accounts", "/wallet": "/accounts",
+              "/credit-card": "/accounts", "/statements": "/accounts", "/data-generator": "/settings#data"}
+    for _old, _new in _MOVED.items():
+        app.add_url_rule(_old, endpoint="moved_" + _old.strip("/").replace("-", "_"),
+                         view_func=lambda _new=_new: redirect(_new))
 
     @app.route('/cache-stats')
     def cache_stats():
@@ -1558,12 +1399,7 @@ def create_app() -> Flask:
 
     # Data Generator Routes
     generation_state = {'running': False, 'should_stop': False}
-    
-    @app.route('/data-generator')
-    def data_generator_page():
-        """Render data generator page."""
-        return render_template('data_generator.html')
-    
+
     @app.route('/api/generate-data', methods=['POST'])
     def start_generation():
         """Start data generation with real-time updates."""

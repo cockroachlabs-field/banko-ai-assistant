@@ -1,13 +1,16 @@
-"""The chat page never fabricates activity: no random cache hits, no
-hardcoded provider names in the DB Ops panel."""
+"""No page fabricates activity: no random numbers, no simulated database
+operations, no hardcoded provider names."""
 
 from pathlib import Path
 
-INDEX = Path(__file__).resolve().parents[1] / "banko_ai" / "templates" / "index.html"
+ROOT = Path(__file__).resolve().parents[1] / "banko_ai"
+BANNED = ("simulateDatabaseOperations", "OpenAI/gpt-4o-mini", "cacheScenarios", "Math.random")
 
 
-def test_db_ops_panel_has_no_simulated_operations():
-    html = INDEX.read_text()
-    assert "simulateDatabaseOperations" not in html
-    assert "OpenAI/gpt-4o-mini" not in html
-    assert "cacheScenarios" not in html
+def test_no_ui_file_fabricates_activity():
+    files = [*(ROOT / "templates").rglob("*.html"), *(ROOT / "static" / "js").rglob("*.js")]
+    assert files
+    for path in files:
+        text = path.read_text()
+        for banned in BANNED:
+            assert banned not in text, f"{banned} in {path.relative_to(ROOT)}"

@@ -7,12 +7,13 @@ import banko_ai
 
 STATIC = Path(banko_ai.__file__).parent / "static"
 
-MAX_STATIC_BYTES = 3 * 1024 * 1024  # static/ is about 2.3 MB after the cleanup
+MAX_STATIC_BYTES = int(1.5 * 1024 * 1024)  # static/ is about 1 MB after the UI rewrite
 
 
 def test_dead_assets_are_gone():
     for name in ("creditcard_files", "creditcard.png", "Anallytics.png", "profilepic.jpeg",
-                 "banko-ai-architecture.png", "banko-ai-assistant-watsonx.gif"):
+                 "banko-ai-architecture.png", "banko-ai-assistant-watsonx.gif", "Graph.png", "Graph2.png",
+                 "vendor/tailwind.js", "vendor/fontawesome", "css/style.css"):
         assert not (STATIC / name).exists(), name
 
 

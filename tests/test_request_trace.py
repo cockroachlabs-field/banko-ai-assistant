@@ -2,6 +2,7 @@
 did for that request, it names the provider the way the persona shows it,
 and failures leave a neutral error step instead of the exception."""
 
+import json
 import os
 import uuid
 from datetime import date, timedelta
@@ -35,24 +36,6 @@ def test_trace_step_records_in_order_with_an_active_trace():
     assert steps[2]["status"] == "info"
     assert all("t" in s for s in steps)
     assert rt.current_trace() == []
-
-
-def test_stored_traces_are_bounded():
-    first = rt.store_trace([{"label": "x"}])
-    for _ in range(rt.MAX_STORED_TRACES):
-        rt.store_trace([{"label": "y"}])
-    assert rt.get_stored_trace(first) is None
-    assert rt.get_stored_trace("not-an-id") is None
-
-
-def test_a_stored_plan_lives_and_goes_with_its_trace():
-    first = rt.store_trace([{"label": "x"}], plan="• scan\n  table: expenses@expenses_pkey")
-    assert rt.get_stored_plan(first).startswith("• scan")
-    assert rt.get_stored_plan(rt.store_trace([{"label": "y"}])) is None
-    for _ in range(rt.MAX_STORED_TRACES):
-        rt.store_trace([{"label": "z"}], plan="p")
-    assert rt.get_stored_plan(first) is None
-    assert rt.get_stored_plan(None) is None
 
 
 def test_serving_regions_and_index_parse_the_plan():
@@ -115,13 +98,21 @@ def trace_client(monkeypatch, chat):
     app.extensions["banko_warmup_stop"].set()
 
 
-def _latest(client):
-    with client.session_transaction() as s:
-        message = s["chat"][-1]
-    assert message["class"] == "Assistant"
-    trace = rt.get_stored_trace(message["meta"]["trace_id"])
-    assert trace, message
-    return message, trace
+def _ask(client, question):
+    """One turn on a fresh thread; the raw SSE body and its parsed events."""
+    tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
+    body = client.post(f"/api/v1/assistant/threads/{tid}/messages", json={"message": question}).get_data(as_text=True)
+    events = []
+    for block in body.strip().split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
+        events.append((lines["event"], json.loads(lines["data"])))
+    return body, events
+
+
+def _answer(client, question):
+    _, events = _ask(client, question)
+    answer = dict(events)["answer"]
+    return answer, answer["meta"]["trace"]
 
 
 def _assert_no_leaks(trace):
@@ -134,10 +125,8 @@ AGG_QUESTION = "How much did I spend on restaurants in the last 30 days?"
 
 
 @needs_db
-def test_aggregation_answer_stores_its_trace(trace_client):
-    page = trace_client.post("/banko", data={"user_input": AGG_QUESTION})
-    assert page.status_code == 200
-    message, trace = _latest(trace_client)
+def test_an_aggregation_answer_carries_its_trace(trace_client):
+    answer, trace = _answer(trace_client, AGG_QUESTION)
     labels, kinds = [s["label"] for s in trace], [s["kind"] for s in trace]
     assert "SQL" in trace[labels.index("Intent routing")]["detail"]
     assert labels.index("Intent routing") < labels.index("Aggregation SQL") < kinds.index("llm")
@@ -149,10 +138,7 @@ def test_aggregation_answer_stores_its_trace(trace_client):
     llm = trace[kinds.index("llm")]
     assert "IBM watsonx" in llm["detail"] and "ibm/granite-3-3-8b-instruct" in llm["detail"]
     assert llm["ms"] is not None
-    # The plan rides with the trace; the session cookie keeps only the id.
-    assert message["meta"]["db_ms"] is not None and "explain" not in message["meta"]
-    assert rt.get_stored_plan(message["meta"]["trace_id"])
-    assert "Intent routing" in page.get_data(as_text=True)
+    assert answer["meta"]["db_ms"] is not None and answer["meta"]["explain"]
     _assert_no_leaks(trace)
 
 
@@ -160,10 +146,8 @@ def test_aggregation_answer_stores_its_trace(trace_client):
 def test_a_repeat_aggregation_names_no_model(trace_client):
     """SQL reruns and the prose comes back from the narrative cache, so the
     trace shows the hit and no model step: no model ran."""
-    trace_client.post("/banko", data={"user_input": AGG_QUESTION})
-    trace_client.get("/banko")  # a fresh thread, so the session keeps the next answer
-    trace_client.post("/banko", data={"user_input": AGG_QUESTION})
-    _, trace = _latest(trace_client)
+    _answer(trace_client, AGG_QUESTION)
+    _, trace = _answer(trace_client, AGG_QUESTION)
     labels = [s["label"] for s in trace]
     assert trace[labels.index("Narrative cache")]["status"] == "hit"
     assert "Aggregation SQL" in labels
@@ -172,11 +156,10 @@ def test_a_repeat_aggregation_names_no_model(trace_client):
 
 
 @needs_db
-def test_retrieval_answer_stores_its_trace(trace_client, chat):
+def test_a_retrieval_answer_carries_its_trace(trace_client, chat):
     chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "restaurant dinners"}}]}',
                                 '{"steps": []}', "You had a few dinners.")
-    trace_client.post("/banko", data={"user_input": "Show me my restaurant dinners"})
-    message, trace = _latest(trace_client)
+    answer, trace = _answer(trace_client, "Show me my restaurant dinners")
     labels, kinds = [s["label"] for s in trace], [s["kind"] for s in trace]
     assert trace[labels.index("Intent routing")]["detail"].startswith("plan")
     assert trace[labels.index("Answer cache")]["status"] == "miss"
@@ -186,12 +169,12 @@ def test_retrieval_answer_stores_its_trace(trace_client, chat):
     llm = trace[kinds.index("llm")]
     assert "IBM watsonx" in llm["detail"] and "3 calls" in llm["detail"]
     assert kinds[-1] == "total"
-    assert rt.get_stored_plan(message["meta"]["trace_id"])
+    assert answer["meta"]["explain"]
     _assert_no_leaks(trace)
 
 
 @needs_db
-def test_error_path_records_a_neutral_error_step(trace_client, chat):
+def test_a_failed_answer_keeps_a_neutral_trace(trace_client, chat):
     class Down:
         def complete(self, messages, *, temperature=0.3):
             raise RuntimeError("Cannot reach Ollama at http://localhost:11434 secret-token")
@@ -201,11 +184,9 @@ def test_error_path_records_a_neutral_error_step(trace_client, chat):
             yield ""
 
     chat["chat"] = Down()
-    page = trace_client.post("/banko", data={"user_input": "Show me my restaurant dinners please"})
-    message, trace = _latest(trace_client)
-    assert "Intent routing" in [s["label"] for s in trace]
-    errors = [s for s in trace if s["status"] == "error"]
-    assert errors, trace
-    assert "secret-token" not in str(trace) and "Cannot reach" not in str(trace)
-    assert "secret-token" not in message["text"] and "secret-token" not in page.get_data(as_text=True)
-    _assert_no_leaks(trace)
+    body, events = _ask(trace_client, "Show me my restaurant dinners please")
+    failed = dict(events)["error"]
+    assert "Intent routing" in [s["label"] for s in failed["trace"]]
+    assert [s for s in failed["trace"] if s["status"] == "error"]
+    assert "secret-token" not in body and "Cannot reach" not in body
+    _assert_no_leaks(failed["trace"])

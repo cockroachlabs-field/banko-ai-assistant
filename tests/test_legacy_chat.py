@@ -59,44 +59,12 @@ def client(member, monkeypatch, chat):
     return c
 
 
-def test_chat_page_answers_with_meta(client):
-    resp = client.post("/banko", data={"user_input": "how much did I spend on restaurants in the last 30 days",
-                                       "response_language": "en-US"})
-    assert resp.status_code == 200
-    page = resp.get_data(as_text=True)
-    assert "You spent" in page
-    with client.session_transaction() as s:
-        last = s["chat"][-1]
-        assert last["class"] == "Assistant" and last["meta"]["trace_id"]
-        assert "db_ms" in last["meta"]
-        assert s["thread_id"]
+def test_the_old_chat_page_sends_people_to_the_assistant(client):
+    assert client.post("/banko", data={"user_input": "x"}).status_code == 303
+    assert client.get("/banko").headers["Location"].endswith("/assistant")
 
 
-def test_the_session_cookie_keeps_the_thread(client, chat):
-    """A semantic search EXPLAIN runs to 20 KB. Kept in the 4 KB session
-    cookie, it made browsers drop the cookie and the new thread id with it."""
-    chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "restaurant dinners"}}]}',
-                                '{"steps": []}', "You had a few dinners.")
-    resp = client.post("/banko", data={"user_input": "show me my restaurant dinners", "response_language": "en-US"})
-    cookie = resp.headers.get("Set-Cookie", "")
-    assert cookie and len(cookie) < 4000
-    assert "planning time" in resp.get_data(as_text=True)  # the plan still renders with the answer
-
-
-def test_the_chat_page_never_shows_a_raw_citation_marker(client, chat):
-    """granite3.3:8b copied the [txn:<expense_id>] template onto the page."""
-    from tests.test_assistant_answers import GRANITE_PAGE, GRANITE_PLACEHOLDER
-    chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "pizza"}}]}',
-                                '{"steps": []}', f"{GRANITE_PLACEHOLDER}\n{GRANITE_PAGE}")
-    page = client.post("/banko", data={"user_input": "show me my pizza purchases",
-                                       "response_language": "en-US"}).get_data(as_text=True)
-    assert "could save money. Consider" in page
-    assert "txn:" not in page and "expense_id&gt;" not in page
-    with client.session_transaction() as s:
-        assert "txn" not in s["chat"][-1]["text"]
-
-
-def test_upload_then_ask_on_the_chat_page(client, chat, monkeypatch):
+def test_upload_then_ask_through_the_api(client, chat, monkeypatch):
     fields = {"merchant": "Lantern Books", "amount": 42.00, "date": str(date.today()), "category": "Shopping",
               "items": ["Atlas"], "payment_method": "credit card"}
     monkeypatch.setattr(receipts, "default_hooks", lambda model=None, url=None: receipts.ReceiptHooks(
@@ -110,9 +78,8 @@ def test_upload_then_ask_on_the_chat_page(client, chat, monkeypatch):
     assert up.status_code == 200 and body["success"] and body["merchant"] == "Lantern Books"
     assert {"expense_id", "document_id", "fraud_status", "budget_impact"} <= set(body)
     chat["chat"] = ScriptedChat(lambda msgs: "That receipt from Lantern Books came to $42.00.")
-    page = client.post("/banko", data={"user_input": "how much was this receipt?",
-                                       "response_language": "en-US"}).get_data(as_text=True)
-    assert "Lantern Books came to $42.00" in page
+    body = client.post("/api/rag", json={"query": "how much was this receipt?", "language": "en-US"}).get_json()
+    assert "Lantern Books came to $42.00" in body["response"]
 
 
 def test_template_echo_is_422(client, monkeypatch):
@@ -136,7 +103,7 @@ def test_shared_default_history_is_not_written(client):
     with get_engine().connect() as c:
         exists = c.execute(text("SELECT count(*) FROM [SHOW TABLES] WHERE table_name = 'chat_message_store'")).scalar()
         before = c.execute(text("SELECT count(*) FROM chat_message_store WHERE session_id = 'default'")).scalar() if exists else 0
-    client.post("/banko", data={"user_input": "how much did I spend on groceries this month"})
+    client.post("/api/rag", json={"query": "how much did I spend on groceries this month"})
     with get_engine().connect() as c:
         after = c.execute(text("SELECT count(*) FROM chat_message_store WHERE session_id = 'default'")).scalar() if exists else 0
     assert after == before
@@ -153,13 +120,6 @@ def _upload(client):
     Image.new("RGB", (300, 400), "white").save(buf, "PNG")
     return client.post("/api/upload-receipt", data={"receipt": (io.BytesIO(buf.getvalue()), "r.png")},
                        content_type="multipart/form-data")
-
-
-def test_an_answer_without_database_work_shows_no_latency(client):
-    page = client.post("/banko", data={"user_input": "what is the capital of France"}).get_data(as_text=True)
-    assert "Nonems" not in page and "how was this answered" in page
-    with client.session_transaction() as s:
-        assert set(s["chat"][-1]["meta"]) == {"trace_id"}
 
 
 def test_upload_steps_reach_the_agent_feed_with_their_region(client, monkeypatch):
@@ -185,49 +145,6 @@ def test_a_posted_receipt_reports_even_when_the_thread_cannot_open(client, monke
     monkeypatch.setattr(threads, "create_thread", thread_store_down)
     up = _upload(client)
     assert up.status_code == 200 and up.get_json()["success"] and up.get_json()["expense_id"]
-
-
-def test_the_chat_page_keeps_every_turn(client):
-    questions = ["how much did I spend on restaurants in the last 30 days",
-                 "what is the capital of France", "tell me a joke about cats"]
-    for q in questions:
-        page = client.post("/banko", data={"user_input": q, "response_language": "en-US"}).get_data(as_text=True)
-    with client.session_transaction() as s:
-        chat = s["chat"]
-    assert len(chat) == 6 and [m["text"] for m in chat if m["class"] == "User"] == questions
-    assert questions[0] in page
-
-
-def test_a_long_session_sheds_its_oldest_turns_before_the_cookie_outgrows_a_browser(client):
-    """Browsers ignore a cookie over 4 KB, and the thread id riding on it."""
-    import secrets
-
-    asked, sizes = [], []
-    for _ in range(6):
-        asked.append(f"tell me about {secrets.token_hex(600)}")
-        resp = client.post("/banko", data={"user_input": asked[-1]})
-        sizes.append(len(resp.headers.get("Set-Cookie", "")))
-    with client.session_transaction() as s:
-        kept = [m["text"] for m in s["chat"] if m["class"] == "User"]
-        assert s["thread_id"]
-    assert 0 < max(sizes) < 4093
-    assert kept[-1] == asked[-1] and asked[0] not in kept
-
-
-def test_one_long_pasted_message_still_fits_the_cookie(client):
-    """Shedding old turns cannot help when the newest turn alone is too big.
-    The page shows it shortened; the thread's checkpoint keeps it whole."""
-    import secrets
-
-    pasted = f"tell me about {secrets.token_hex(4000)}"
-    resp = client.post("/banko", data={"user_input": pasted})
-    cookie = resp.headers.get("Set-Cookie", "")
-    assert 0 < len(cookie) < 4093
-    with client.session_transaction() as s:
-        tid = s["thread_id"]
-        shown = [m["text"] for m in s["chat"] if m["class"] == "User"][-1]
-    assert tid and shown.endswith("…") and len(shown) < len(pasted) and pasted.startswith(shown[:-1])
-    assert G.thread_messages(tid)[-2]["content"] == pasted[:4000]
 
 
 def _thread_count(uid: str) -> int:

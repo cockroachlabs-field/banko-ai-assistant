@@ -1,32 +1,24 @@
-"""What the server did to answer one chat request.
+"""What the server did to answer one assistant turn.
 
-The DB Ops panel shows these steps, so every entry has to be something that
-really happened, with its real timing. Flask starts a trace per /banko
-request; code deeper down (caches, vector search) calls trace_step() and it
-lands on that request's list. Background threads never have a trace, so the
-same calls are no-ops for the coach, the warm-up and the sample data job.
+The "How this was answered" panel shows these steps, so every entry has to be
+something that really happened, with its real timing. The assistant API starts
+a trace per turn; code deeper down (caches, vector search, tools) calls
+trace_step() and it lands on that turn's list, which goes back to the browser
+with the answer. Background threads never have a trace, so the same calls are
+no-ops for the coach, the warm-up and the sample data job.
 
 Steps are short strings written by our own code. Never pass exception text,
 connection URLs or the real provider name under a persona into a step.
-
-Finished traces, with the EXPLAIN plan of the answer each one produced, live
-in a small in-process LRU keyed by a short id. The chat history sits in
-Flask's signed cookie (4 KB) and one semantic search plan runs to 20 KB, so
-the cookie keeps only the id.
 """
 
 from __future__ import annotations
 
 import contextvars
 import re
-import secrets
-import threading
 import time
-from collections import OrderedDict
 from typing import Any
 
 STATUSES = ("info", "hit", "miss", "success", "warning", "error")
-MAX_STORED_TRACES = 200
 _MAX_TEXT = 200
 _MAX_STEPS = 60
 
@@ -95,41 +87,6 @@ def current_trace() -> list[dict[str, Any]]:
 def trace_elapsed_ms() -> float | None:
     trace = _trace.get()
     return (time.perf_counter() - trace.t0) * 1000 if trace is not None else None
-
-
-_store: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
-_plans: dict[str, str] = {}
-_store_lock = threading.Lock()
-
-
-def store_trace(steps: list[dict[str, Any]], plan: str | None = None) -> str:
-    trace_id = secrets.token_urlsafe(8)
-    with _store_lock:
-        _store[trace_id] = list(steps)
-        if plan:
-            _plans[trace_id] = plan
-        while len(_store) > MAX_STORED_TRACES:
-            evicted, _ = _store.popitem(last=False)
-            _plans.pop(evicted, None)
-    return trace_id
-
-
-def get_stored_plan(trace_id: str | None) -> str | None:
-    """The EXPLAIN plan stored with a trace, while the trace is kept."""
-    if not trace_id:
-        return None
-    with _store_lock:
-        return _plans.get(trace_id)
-
-
-def get_stored_trace(trace_id: str | None) -> list[dict[str, Any]] | None:
-    if not trace_id:
-        return None
-    with _store_lock:
-        steps = _store.get(trace_id)
-        if steps is not None:
-            _store.move_to_end(trace_id)
-        return steps
 
 
 def serving_regions(explain_text: str | None) -> str | None:
