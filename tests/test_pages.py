@@ -148,3 +148,8 @@ def test_nav_highlights_correct_section(monkeypatch, member):
     html2 = client.get(f"/assistant/{tid}").get_data(as_text=True)
     assert 'data-page="assistant"' in html2
     assert re.search(r'<a[^>]*href="/assistant"[^>]*aria-current="page"', html2)
+
+
+def test_coach_page(monkeypatch, member):
+    html = assert_page(signed_in(monkeypatch, member).get("/coach"), "coach")
+    assert "Simulated" in html

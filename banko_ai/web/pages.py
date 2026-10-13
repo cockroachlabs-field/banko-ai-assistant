@@ -62,3 +62,8 @@ def assistant_thread(thread_id: str):
     if threads_service.get_thread(session["user_id"], thread_id) is None:
         abort(404)
     return render_template("pages/assistant.html", thread_id=thread_id)
+
+
+@pages.get("/coach")
+def coach():
+    return render_template("pages/coach.html")

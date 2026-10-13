@@ -1377,6 +1377,16 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             coach_log.exception("background handler failed",
                                 extra={"signal_id": sig.signal_id})
 
+    def _submit_signal(sig) -> bool:
+        """The webhook's path for one signal: claim it, then let the real
+        coach agent handle it in the background."""
+        if not _claim_signal(sig):
+            return False
+        app.socketio.start_background_task(_process_in_background, _get_coach_handler(), sig)
+        return True
+
+    app.extensions["banko_coach"] = {"submit": _submit_signal}
+
     @app.route("/api/cdc/signals", methods=["POST"])
     def cdc_signals_webhook():
         body = request.get_data() or b""
@@ -1427,13 +1437,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                         "replayed_signal_ids": replayed_ids}), 202
 
     # --- Coach v1 UI + REST ----------------------------------------------
-    @app.route("/coach")
-    def coach_page():
-        from ..config.settings import get_config
-        cfg = get_config()
-        user_id = session.get("user_id") or cfg.coach_default_user_id
-        return render_template("coach.html", user_id=user_id)
-
     @app.route("/api/coach/nudges", methods=["GET"])
     def coach_list_nudges():
 
@@ -1512,11 +1515,11 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         return jsonify(reply)
 
     @socketio.on("coach.join")
-    def coach_join(data):
+    def _coach_join(data=None):
         from flask_socketio import join_room
-        user_id = data.get("user_id")
+        user_id = session.get("user_id")
         if user_id:
-            join_room(f"{get_config().coach_socketio_room_prefix}{user_id}")
+            join_room(f"{config.coach_socketio_room_prefix}{user_id}")
 
     @app.route("/health/coach", methods=["GET"])
     def health_coach():
@@ -1702,6 +1705,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     app.register_blueprint(api_v1)
     from .assistant_api import assistant_api
     app.register_blueprint(assistant_api)
+    from .coach_api import coach_api
+    app.register_blueprint(coach_api)
     from .pages import pages
     app.register_blueprint(pages)
 

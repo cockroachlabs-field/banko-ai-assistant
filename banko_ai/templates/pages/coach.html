@@ -1,0 +1,45 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Coach{% endblock %}
+{% block content %}
+<section x-data="coachPage" x-init="load()">
+  <div class="b-page-h"><h1>Coach</h1><span class="b-muted">Nudges from your spending pipeline, written by the coach agent</span></div>
+  <div class="b-grid" style="margin-top:14px">
+    <div class="b-card b-s2">
+      <div class="b-lbl">Inbox</div>
+      <template x-for="n in nudges" :key="n.nudge_id">
+        <button type="button" class="b-tx" style="grid-template-columns:minmax(0,1fr) 120px" :class="{ sel: selected && selected.nudge_id === n.nudge_id }" @click="open(n)">
+          <span><div class="b-name" style="white-space:normal" x-text="n.message"></div>
+            <div class="b-muted" x-text="Banko.fmt.relative(n.created_at) + ' · ' + label(n.signal_type) + (n.provider ? ' · via ' + n.provider : '')"></div></span>
+          <span class="b-tag" :class="n.severity === 'critical' ? 'bad' : n.severity === 'warn' ? 'warn' : ''" x-text="n.severity || 'info'"></span>
+        </button>
+      </template>
+      <div class="b-empty" x-show="loaded && !nudges.length"><strong>No nudges yet</strong><span>When the pipeline sends a signal about your spending, the coach writes to you here.</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px">
+      <div class="b-card" x-show="selected" x-cloak>
+        <div class="b-lbl">Signal to nudge</div>
+        <template x-if="selected">
+          <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
+            <div x-text="selected.message"></div>
+            <div class="b-kv" x-text="JSON.stringify(selected.payload, null, 2)"></div>
+            <div class="b-tl">
+              <template x-for="(t, i) in (selected.tool_trace || [])" :key="i"><div><b x-text="t.tool"></b><span x-text="t.error ? 'failed' : 'ok'"></span></div></template>
+            </div>
+            <button class="b-btn primary" type="button" @click="Banko.emit('banko:ask', { context: { kind: 'nudge', id: selected.nudge_id } })">✦ Ask {{ shell.brand.name }} about this</button>
+          </div>
+        </template>
+      </div>
+      <div class="b-card">
+        <div class="b-lbl">Simulate a pipeline signal</div>
+        <p class="b-muted" style="margin:6px 0 10px">Simulated for demos. It sends a signal built from your real data, and the real coach agent answers it, exactly like a signal from the CDC pipeline.</p>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <template x-for="k in kinds" :key="k.type"><button class="b-btn" type="button" :disabled="busy" @click="simulate(k.type)" x-text="k.label"></button></template>
+        </div>
+        <div class="b-tag" :class="simError ? 'bad' : 'ok'" style="margin-top:8px" x-show="simText" x-text="simText"></div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/coach.js') }}"></script>{% endblock %}
