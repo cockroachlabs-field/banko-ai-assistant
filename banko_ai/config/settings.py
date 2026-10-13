@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 from dataclasses import dataclass
 from typing import Any
@@ -40,6 +41,7 @@ GROUPS = {
     "data": "Demo data",
     "coach": "Coach and CDC",
     "assistant": "Assistant",
+    "ui": "Brand and UI",
 }
 
 # Old names that still work, and the setting each one now feeds.
@@ -263,6 +265,14 @@ class Settings(BaseSettings):
     duplicate_window_days: int = _field(3, group="assistant", env="DUPLICATE_WINDOW_DAYS",
         description="Days before and after a purchase in which a same-amount, similar purchase counts as a possible duplicate.")
 
+    # Brand and UI
+    brand_accent: str = _field("#6933FF", group="ui", env="BRAND_ACCENT",
+        description="Accent color for the UI, as #RRGGBB. Both themes derive their accent shades from it.")
+    ui_theme: str = _field("system", group="ui", env="UI_THEME",
+        description="Default theme: light, dark or system. People can still switch it from the header.")
+    ui_languages: str = _field("en-US,es-ES,fr-FR,de-DE,it-IT,pt-PT,ja-JP,ko-KR,zh-CN,hi-IN", group="ui",
+        env="UI_LANGUAGES", description="Comma-separated languages offered in the assistant's picker.")
+
     @field_validator("ai_service", "ai_display_provider", mode="before")
     @classmethod
     def _normalize_provider(cls, value: Any) -> Any:
@@ -288,6 +298,31 @@ class Settings(BaseSettings):
         if value not in allowed:
             raise ValueError(f"RLS_MODE={value!r} must be one of {', '.join(sorted(allowed))}")
         return value
+
+    @field_validator("brand_accent")
+    @classmethod
+    def _hex_accent(cls, v: str) -> str:
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", (v or "").strip()):
+            raise ValueError("BRAND_ACCENT must look like #6933FF")
+        return v.strip().upper()
+
+    @field_validator("ui_theme")
+    @classmethod
+    def _theme(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in ("light", "dark", "system"):
+            raise ValueError("UI_THEME must be light, dark or system")
+        return v
+
+    @field_validator("ui_languages")
+    @classmethod
+    def _languages(cls, v: str) -> str:
+        from ..assistant.answers import LANGUAGES
+        codes = [c.strip() for c in (v or "").split(",") if c.strip()]
+        unknown = [c for c in codes if c not in LANGUAGES]
+        if not codes or unknown:
+            raise ValueError(f"UI_LANGUAGES has unknown codes: {', '.join(unknown) or 'none given'}")
+        return ",".join(codes)
 
     @model_validator(mode="after")
     def _check_choices(self) -> Settings:

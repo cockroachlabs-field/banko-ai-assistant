@@ -102,6 +102,7 @@ dev = [
     "ruff>=0.3.0",
     "mypy>=1.0.0"
 ]
+ui = ["playwright>=1.48"]
 
 [project.scripts]
 banko-ai = "banko_ai.cli:main"
@@ -117,7 +118,7 @@ where = ["."]
 include = ["banko_ai*"]
 
 [tool.setuptools.package-data]
-banko_ai = ["templates/*", "static/*", "static/**/*", "*.html", "*.css", "*.js", "config/defaults/*.yaml"]
+banko_ai = ["templates/**/*", "static/*", "static/**/*", "*.html", "*.css", "*.js", "config/defaults/*.yaml"]
 
 [tool.ruff]
 line-length = 120

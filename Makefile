@@ -4,7 +4,7 @@ help:
 	@echo "Targets:"
 	@echo "  make test            - run full pytest suite"
 	@echo "  make test-local      - lint + types + test (the gate before any push)"
-	@echo "  make audit           - known vulnerabilities in uv.lock (needs the network)"
+	@echo "  make audit           - known vulnerabilities in uv.lock and the vendored browser libraries (needs the network)"
 	@echo "  make lint            - ruff check"
 	@echo "  make types           - mypy"
 	@echo "  make fmt             - ruff format"
@@ -41,6 +41,7 @@ audit:
 	uv export --frozen --format requirements-txt --all-extras --all-groups --no-hashes --no-emit-project -o $$req >/dev/null && \
 	uvx pip-audit -r $$req --no-deps --disable-pip --progress-spinner off; \
 	status=$$?; rm -f $$req; exit $$status
+	uv run --no-project --with truststore python scripts/audit_vendor.py
 
 lint:
 	uv run ruff check banko_ai/ tests/

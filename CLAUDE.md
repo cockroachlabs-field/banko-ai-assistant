@@ -73,7 +73,7 @@ Schema for `expenses` table is **shared** between both repos — keep them in sy
 - **Agent framework**: LangGraph 1.x
 - **Vector store / chat history / checkpointer**: `langchain-cockroachdb` 0.2.x
 - **Web**: Flask 3.1.3 + Flask-SocketIO + eventlet (prod) / threading (dev)
-- **Dep manager**: `uv` (lockfile is `uv.lock`; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API). `make audit` checks the lock for known vulnerabilities; CI runs it on every PR, on pushes to main and weekly. Dependabot uses the uv ecosystem, so its PRs re-lock; they still get a local rebase and smoke before merge.
+- **Dep manager**: `uv` (lockfile is `uv.lock`; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API). `make audit` checks the lock and the vendored browser libraries for known vulnerabilities; CI runs it on every PR, on pushes to main and weekly. Dependabot uses the uv ecosystem, so its PRs re-lock; they still get a local rebase and smoke before merge.
 - **Testing**: pytest, ruff, mypy (mypy is advisory, see Open bugs)
 - **Docker**: multi-arch (amd64/arm64), images on Docker Hub at `virag/banko-ai-assistant`
 

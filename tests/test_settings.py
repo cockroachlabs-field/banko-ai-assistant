@@ -160,3 +160,21 @@ def test_cli_config_command():
     assert "AI_SERVICE" in result.output
     docs = CliRunner().invoke(cli, ["config", "--docs"])
     assert docs.exit_code == 0 and "| `AI_SERVICE` |" in docs.output
+
+
+def test_ui_settings_defaults_and_validation(monkeypatch):
+    cfg = S.Settings()
+    assert cfg.brand_accent == "#6933FF"
+    assert cfg.ui_theme == "system"
+    assert cfg.ui_languages.split(",")[0] == "en-US" and len(cfg.ui_languages.split(",")) == 10
+    monkeypatch.setenv("BRAND_ACCENT", "purple")
+    with pytest.raises(Exception):
+        S.Settings()
+    monkeypatch.setenv("BRAND_ACCENT", "#0F62FE")
+    monkeypatch.setenv("UI_THEME", "neon")
+    with pytest.raises(Exception):
+        S.Settings()
+    monkeypatch.setenv("UI_THEME", "dark")
+    monkeypatch.setenv("UI_LANGUAGES", "en-US,xx-XX")
+    with pytest.raises(Exception):
+        S.Settings()
