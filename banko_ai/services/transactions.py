@@ -13,11 +13,12 @@ from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import run_transaction
+from ..db.engine import get_engine, run_transaction
 from ..db.regions import money_region, regional_tables_ready
 from ..db.rls import request_url
 from ..utils.request_trace import trace_step
 from ._sql import jsonable, read_session, valid_uuid, vector_text
+from ._vector import nearest
 from .ledger import NotFound, bump_data_version
 
 log = logging.getLogger("banko.services")
@@ -313,3 +314,99 @@ def recategorize(user_id: str, expense_id: str, category: str, *, url: str | Non
         return {"expense_id": expense_id, "category": label}
 
     return run_transaction(fn, url=url, user_id=user_id)
+
+
+_EXPENSE_SEARCH = dict(table="expenses", index="idx_expenses_user_embedding",
+                       exact_index="idx_expenses_user_date", id_col="expense_id", emb_col="embedding")
+
+
+def _expense_rows(conn, user_id: str, ids: list[str]) -> dict[str, tuple]:
+    if not ids:
+        return {}
+    return {str(r[0]): r for r in conn.execute(text("""
+        SELECT expense_id, expense_date, expense_amount, merchant, shopping_type, description
+        FROM expenses WHERE user_id = CAST(:u AS UUID) AND expense_id = ANY(CAST(:ids AS UUID[]))
+    """), {"u": user_id, "ids": ids})}
+
+
+def _expense_json(r, distance: float | None = None) -> dict:
+    out = {"expense_id": str(r[0]), "date": r[1], "amount": r[2], "merchant": r[3], "category": r[4],
+           "description": r[5]}
+    if distance is not None:
+        out["distance"] = round(distance, 4)
+    return out
+
+
+def similar_transactions(user_id: str, expense_id: str, *, limit: int = 5, url: str | None = None) -> list[dict]:
+    """The user's purchases nearest to one of their own, by embedding."""
+    url = request_url(url)
+    if not valid_uuid(expense_id):
+        return []
+    limit = max(1, min(int(limit), 20))
+    with read_session(user_id, url=url) as conn:
+        emb = conn.execute(text("SELECT embedding::STRING FROM expenses WHERE expense_id = CAST(:x AS UUID) "
+                                "AND user_id = CAST(:u AS UUID) AND embedding IS NOT NULL"),
+                           {"x": expense_id, "u": user_id}).scalar()
+        if not emb:
+            return []
+        near = [(i, d) for i, d in nearest(conn, user_id=user_id, qvec=emb, k=limit + 1, **_EXPENSE_SEARCH)
+                if i != expense_id][:limit]
+        rows = _expense_rows(conn, user_id, [i for i, _ in near])
+    return jsonable([_expense_json(rows[i], d) for i, d in near if i in rows])
+
+
+def duplicate_candidates(user_id: str, *, amount, day: date, embedding: str | None, exclude: str | None = None,
+                         window_days: int = 3, max_distance: float = 0.2, url: str | None = None) -> list[dict]:
+    """Purchases with the same amount within a few days whose description is
+    close by meaning. Without an embedding, amount and date alone decide."""
+    url = request_url(url)
+    with read_session(user_id, url=url) as conn:
+        rows = conn.execute(text("""
+            SELECT expense_id, expense_date, expense_amount, merchant, shopping_type, description,
+                   CASE WHEN CAST(:emb AS VECTOR(384)) IS NULL OR embedding IS NULL THEN NULL
+                        ELSE embedding <=> CAST(:emb AS VECTOR(384)) END
+            FROM expenses@idx_expenses_user_date
+            WHERE user_id = CAST(:u AS UUID) AND expense_date BETWEEN :d1 AND :d2
+              AND abs(expense_amount - CAST(:amt AS DECIMAL)) < 0.01
+              AND (CAST(:x AS UUID) IS NULL OR expense_id <> CAST(:x AS UUID))
+        """), {"u": user_id, "emb": embedding, "amt": str(amount), "x": exclude if valid_uuid(exclude) else None,
+               "d1": day - timedelta(days=window_days), "d2": day + timedelta(days=window_days)}).fetchall()
+    out = [(r, r[6]) for r in rows if r[6] is None or float(r[6]) <= max_distance]
+    out.sort(key=lambda pair: 0.0 if pair[1] is None else float(pair[1]))
+    return jsonable([_expense_json(r, None if d is None else float(d)) for r, d in out])
+
+
+def merchant_history(user_id: str, merchant: str, *, url: str | None = None) -> dict | None:
+    from ..utils.aggregations import resolve_merchant
+    admin_url = url or get_config().database_url
+    name = resolve_merchant(merchant, user_id, admin_url)
+    if name is None:
+        return None
+    url = request_url(url)
+    with read_session(user_id, url=url) as conn:
+        agg = conn.execute(text("""
+            SELECT count(*), COALESCE(sum(expense_amount), 0), min(expense_date), max(expense_date)
+            FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant = :m
+        """), {"u": user_id, "m": name}).fetchone()
+        recent = conn.execute(text("""
+            SELECT expense_id, expense_date, expense_amount, merchant, shopping_type, description
+            FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant = :m
+            ORDER BY expense_date DESC LIMIT 5
+        """), {"u": user_id, "m": name}).fetchall()
+    visits = int(agg[0])
+    return jsonable({"merchant": name, "visits": visits, "total": agg[1],
+                     "average": (agg[1] / visits) if visits else 0, "first": agg[2], "last": agg[3],
+                     "recent": [_expense_json(r) for r in recent]})
+
+
+def explain_semantic(user_id: str, q: str, *, limit: int = 10, url: str | None = None) -> str:
+    import psycopg
+
+    from ..utils.aggregations import _to_pyformat
+    url = request_url(url)
+    qvec = _qvec(q)
+    with get_engine(url).connect() as conn:
+        with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
+            cur.execute("EXPLAIN ANALYZE " + _to_pyformat(semantic_sql()),
+                        {"u": user_id, "qvec": qvec, "k": MAX_K, "limit": min(limit, MAX_LIMIT)})
+            return "\n".join(str(r[0]) for r in cur.fetchall())
