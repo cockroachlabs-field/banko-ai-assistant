@@ -270,6 +270,24 @@ def _cited(answer: str, results: list[dict]) -> list[dict]:
             for i in answers.citation_ids(answer) if i in rows]
 
 
+def _cited_from_ledger(user_id: str, answer: str, deps: TurnDeps) -> list[dict]:
+    """Citations for an answer that arrived without tool results (a cache
+    hit): each marked id is looked up again, scoped to this user."""
+    out = []
+    for i in answers.citation_ids(answer):
+        try:
+            d = txns.transaction_detail(user_id, i, url=deps.url)
+        except Exception:
+            log.warning("citation lookup skipped", exc_info=True)
+            continue
+        if d and d.get("expense_id"):
+            amount = d.get("amount")
+            out.append({"expense_id": d["expense_id"], "merchant": d.get("merchant"),
+                        "amount": abs(amount) if isinstance(amount, (int, float)) else amount,
+                        "date": d.get("posted_at")})
+    return out
+
+
 def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     deps = runtime.context
     answer = state.get("answer") or ""
@@ -288,7 +306,9 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             _emit({"type": "token", "text": piece})
         answer = "".join(parts).strip()
         _step("LLM answer", "streamed", ms=(time.perf_counter() - t0) * 1000, status="success")
-        if state["route"].get("kind") == "plan" and _cacheable(state):
+        # Only answers whose whole value is in the text are cached: a proposal
+        # card or an empty reply would replay wrong on a hit.
+        if state["route"].get("kind") == "plan" and _cacheable(state) and answer and not state.get("proposals"):
             try:
                 from ..services._vector import embed
                 caches.put_answer(state["user_id"], version=ledger.data_version(state["user_id"], deps.url),
@@ -297,7 +317,8 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                   tokens=caches.estimate_tokens(answer), url=deps.url)
             except Exception:
                 log.warning("answer cache write skipped", exc_info=True)
-    citations = _cited(answer, state.get("results") or [])
+    results = state.get("results") or []
+    citations = _cited(answer, results) if results else _cited_from_ledger(state["user_id"], answer, deps)
     for c in citations:
         _emit({"type": "citation", **c})
     for p in state.get("proposals") or []:

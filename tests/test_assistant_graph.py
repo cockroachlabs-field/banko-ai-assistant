@@ -104,8 +104,38 @@ def test_plan_path_cites_and_caches(g, member, thread):
     assert out["route"]["kind"] == "plan" and not out["cached"]
     cites = [e for e in events if e["type"] == "citation"]
     assert len(cites) == 1 and out["citations"][0]["expense_id"] == cites[0]["expense_id"]
-    again, _ = _turn(g, member, thread, "where do I usually get pizza late at night?", ScriptedChat("unused"))
+    again, again_events = _turn(g, member, thread, "where do I usually get pizza late at night?",
+                                ScriptedChat("unused"))
     assert again["cached"] and again["answer"] == out["answer"]
+    again_cites = [e for e in again_events if e["type"] == "citation"]
+    assert len(again_cites) == 1 and again_cites[0]["expense_id"] == cites[0]["expense_id"]
+    assert [c["expense_id"] for c in again["citations"]] == [cites[0]["expense_id"]]
+
+
+def _answer_rows(member, query):
+    with get_engine().connect() as c:
+        return c.execute(text("SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID) "
+                              "AND query_text = :q"), {"u": member, "q": query}).scalar()
+
+
+def test_a_proposal_turn_is_not_cached(g, member, thread):
+    q = "please set my dining budget to 250 a month"
+    chat = ScriptedChat('{"steps": [{"tool": "propose_budget", "args": {"category": "Restaurant", "amount": "250"}}]}',
+                        '{"steps": []}', "I can set that for you.")
+    out, _ = _turn(g, member, thread, q, chat)
+    assert out["route"]["kind"] == "plan" and out["proposals"]
+    assert _answer_rows(member, q) == 0
+    chat2 = ScriptedChat('{"steps": [{"tool": "propose_budget", "args": {"category": "Restaurant", "amount": "250"}}]}',
+                         '{"steps": []}', "I can set that for you.")
+    again, events = _turn(g, member, thread, q, chat2)
+    assert not again["cached"] and any(e["type"] == "proposal" for e in events)
+
+
+def test_an_empty_answer_is_not_cached(g, member, thread):
+    q = "which of my subscriptions renew around the holidays?"
+    out, _ = _turn(g, member, thread, q, ScriptedChat('{"steps": []}', '{"steps": []}', ""))
+    assert out["route"]["kind"] == "plan" and out["answer"] == ""
+    assert _answer_rows(member, q) == 0
 
 
 def test_a_broken_answer_cache_does_not_break_the_answer(g, member, thread, monkeypatch):
