@@ -91,6 +91,11 @@ def vector_text(embedding: Iterable[float]) -> str:
     return "[" + ",".join(repr(float(x)) for x in embedding) + "]"
 
 
+def vector_floats(vector: str) -> list[float]:
+    """The inverse of vector_text: '[0.1,0.2]' back to floats."""
+    return [float(x) for x in vector.strip("[]").split(",") if x]
+
+
 def month_labels(today: date, months: int) -> list[str]:
     """The last `months` calendar months as YYYY-MM, oldest first, ending with today's."""
     labels, year, mon = [], today.year, today.month
