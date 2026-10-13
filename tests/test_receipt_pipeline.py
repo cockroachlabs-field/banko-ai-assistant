@@ -125,6 +125,7 @@ def test_vector_floats_is_the_inverse_of_vector_text():
 def test_default_hooks_extract_reaches_the_llm():
     """Issue #1: default_hooks().extract must work with a real LLM (monkeypatched here)."""
     from unittest.mock import MagicMock
+
     from banko_ai.agents import llm_factory
 
     class StubMessage:
