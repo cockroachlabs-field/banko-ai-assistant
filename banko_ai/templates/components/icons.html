@@ -1,0 +1,4 @@
+{# One Lucide icon from the vendored sprite. Decorative unless a label is given. #}
+{% macro icon(name, cls="b-i", label=None) -%}
+<svg class="{{ cls }}"{% if label %} role="img" aria-label="{{ label }}"{% else %} aria-hidden="true"{% endif %}><use href="{{ url_for('static', filename='vendor/lucide-sprite.svg') }}#i-{{ name }}"></use></svg>
+{%- endmacro %}
