@@ -31,12 +31,12 @@
       <div style="height:120px;margin-top:8px"><canvas x-ref="net"></canvas></div>
     </div>
 
-    <div class="b-card b-ins" x-show="data.insight">
+    <div class="b-card b-ins" x-show="data && data.insight">
       <div class="b-lbl" x-text="'Coach · ' + Banko.fmt.relative(data.insight && data.insight.created_at)"></div>
       <p x-text="data.insight && data.insight.message"></p>
       <button type="button" @click="Banko.emit('banko:ask', { context: { kind: 'nudge', id: data.insight.nudge_id } })">Ask {{ shell.brand.name }} about this →</button>
     </div>
-    <div class="b-card b-empty" x-show="!data.insight">
+    <div class="b-card b-empty" x-show="data && !data.insight">
       <strong>No coach insights yet</strong>
       <span>The coach writes here when your spending pipeline flags something.</span>
     </div>

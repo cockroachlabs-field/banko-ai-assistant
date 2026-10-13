@@ -41,10 +41,11 @@ document.addEventListener("alpine:init", () => {
     },
 
     netDelta() {
+      if (!this.data) return 0;
       const h = this.data.net_worth_history;
       return h.length > 1 ? Number(h[h.length - 1].net_worth) - Number(h[h.length - 2].net_worth) : 0;
     },
-    spendDelta() { return Number(this.data.spending.this_total) - Number(this.data.spending.last_same_day); },
+    spendDelta() { return this.data ? Number(this.data.spending.this_total) - Number(this.data.spending.last_same_day) : 0; },
     monthName() { return new Date().toLocaleDateString("en-US", { month: "long" }); },
     dateBadge(day) { return Banko.fmt.date(day, { month: "short" }) + "<br>" + Banko.fmt.date(day, { day: "numeric" }); },
     seedingPct() { const p = this.seeding || {}; return p.total ? Math.round((p.done / p.total) * 100) : 5; },
