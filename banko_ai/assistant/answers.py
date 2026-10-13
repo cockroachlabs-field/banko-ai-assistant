@@ -112,6 +112,24 @@ def strip_citations(text: str) -> str:
     return _MARKER.sub("", text or "")
 
 
+_SECOND_PERSON = (
+    (re.compile(r"\bI['’]m\b", re.I), "you're"), (re.compile(r"\bI am\b", re.I), "you are"),
+    (re.compile(r"\bI was\b", re.I), "you were"), (re.compile(r"\bI['’]ve\b", re.I), "you've"),
+    (re.compile(r"\bI['’]ll\b", re.I), "you'll"), (re.compile(r"\bI['’]d\b", re.I), "you'd"),
+    (re.compile(r"\bI\b", re.I), "you"), (re.compile(r"\bmyself\b", re.I), "yourself"),
+    (re.compile(r"\bmine\b", re.I), "yours"), (re.compile(r"\bmy\b", re.I), "your"),
+    (re.compile(r"\bme\b", re.I), "you"),
+)
+
+
+def second_person(text: str) -> str:
+    """A memory as said back to the user: "I'm saving for Japan" becomes
+    "you're saving for Japan". Covers the common first-person forms only."""
+    for pattern, repl in _SECOND_PERSON:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def redirect_message() -> str:
     from ..utils.intent_classifier import REDIRECT_MESSAGE
     return REDIRECT_MESSAGE

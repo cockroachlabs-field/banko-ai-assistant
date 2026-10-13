@@ -231,6 +231,54 @@ def _answer_rows(member, query):
                               "AND query_text = :q"), {"u": member, "q": query}).scalar()
 
 
+def _fresh_thread_turn(g, member, message, chat):
+    fresh = threads.create_thread(member)["thread_id"]
+    try:
+        return _turn(g, member, fresh, message, chat)
+    finally:
+        threads.delete_thread(member, fresh)
+
+
+def test_forgetting_a_memory_retires_cached_answers(g, member, thread):
+    mid = memories.remember(member, "I'm saving for a sailboat")["memory_id"]
+    q = "what big purchase am I saving up for?"
+    first, _ = _turn(g, member, thread, q, ScriptedChat(
+        '{"steps": [{"tool": "recall", "args": {"query": "saving for"}}]}', '{"steps": []}',
+        "You're saving for a sailboat."))
+    assert not first["cached"] and _answer_rows(member, q) == 1
+    assert memories.forget(member, mid)
+    again, _ = _fresh_thread_turn(g, member, q, ScriptedChat('{"steps": []}', '{"steps": []}', "No goal saved."))
+    assert not again["cached"] and again["answer"] == "No goal saved."
+
+
+def test_a_follow_up_skips_the_answer_cache(g, member, thread):
+    _cold_answer_cache(member)
+    first, _ = _turn(g, member, thread, "where do I buy groceries most often?", ScriptedChat(
+        '{"steps": [{"tool": "search_transactions", "args": {"query": "groceries"}}]}', '{"steps": []}',
+        "Mostly at the corner market."))
+    assert first["route"]["kind"] == "plan"
+    q = "what about grocery purchases at night?"
+    follow, events = _turn(g, member, thread, q, ScriptedChat(
+        '{"steps": [{"tool": "search_transactions", "args": {"query": "groceries at night"}}]}', '{"steps": []}',
+        "A few late runs."))
+    assert follow["route"]["kind"] == "plan" and not follow["cached"]
+    assert "Answer cache" not in [e["label"] for e in events if e["type"] == "step"]
+    assert _answer_rows(member, q) == 0
+    # The same words opening a new conversation are not a follow-up.
+    opener, opener_events = _fresh_thread_turn(g, member, q, ScriptedChat(
+        '{"steps": [{"tool": "search_transactions", "args": {"query": "groceries at night"}}]}', '{"steps": []}',
+        "A few late runs."))
+    assert [e["status"] for e in opener_events if e["type"] == "step" and e["label"] == "Answer cache"] == ["miss"]
+    assert _answer_rows(member, q) == 1
+
+
+def test_the_memory_reply_speaks_to_the_user(g, member, thread):
+    out, _ = _turn(g, member, thread, "remember that I'm saving for a new canoe", ScriptedChat("unused"))
+    assert out["answer"] == "Got it. I'll remember that you're saving for a new canoe."
+    gone, _ = _turn(g, member, thread, "forget about the new canoe", ScriptedChat("unused"))
+    assert gone["answer"] == "Done, I forgot that you're saving for a new canoe."
+
+
 def test_a_proposal_turn_is_not_cached(g, member, thread):
     q = "please set my dining budget to 250 a month"
     chat = ScriptedChat('{"steps": [{"tool": "propose_budget", "args": {"category": "Restaurant", "amount": "250"}}]}',

@@ -61,6 +61,17 @@ def test_search_returns_own_rows_and_caches(ctx, trace):
     assert any(s["kind"] == "cache" and s["status"] == "hit" for s in current_trace())
 
 
+def test_a_broken_search_cache_is_a_miss(ctx, monkeypatch):
+    from banko_ai.services import caches
+
+    def down(*args, **kwargs):
+        raise RuntimeError("search cache down")
+    monkeypatch.setattr(caches, "get_search", down)
+    monkeypatch.setattr(caches, "put_search", down)
+    out = T.run_tool("search_transactions", {"query": "coffee", "limit": 3}, ctx)
+    assert out["ok"] and 0 < len(out["result"]["items"]) <= 3
+
+
 def test_bad_arguments_and_unknown_tools_never_raise(ctx):
     bad = T.run_tool("search_transactions", {"limit": "lots"}, ctx)
     assert bad == {"tool": "search_transactions", "ok": False, "error": "bad arguments", "ms": bad["ms"]}

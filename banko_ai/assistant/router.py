@@ -24,6 +24,13 @@ _THIS_THAT_BEFORE_TIME = re.compile(
 _WORD = re.compile(r"[a-z]{4,}")
 _STOP = {"with", "from", "this", "that", "what", "much", "many", "have", "your", "about"}
 _ITEM_WITH_DETERMINER = re.compile(r"\b(the|that|this|my)\s+([a-z]{4,})", re.I)
+# Words that lean on the turn before: such a message means nothing alone.
+_FOLLOW_UP = re.compile(r"\b(what about|and|also|that|those|it|them|this one|that one|how about)\b", re.I)
+
+
+def reads_as_follow_up(message: str) -> bool:
+    """True when a message leans on the conversation before it."""
+    return bool(_FOLLOW_UP.search(message or ""))
 
 
 @dataclass(frozen=True)

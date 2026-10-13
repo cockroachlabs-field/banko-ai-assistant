@@ -1,14 +1,15 @@
 """The assistant's caches. Both are keyed on the user and the user's data
 version, so a cached answer or search result never crosses users and never
 outlives a write that changed the user's data (a new receipt, a
-recategorization). Hits and misses land in cache_stats, so /cache-stats
-keeps its shape."""
+recategorization, a memory added or deleted). Hits and misses land in
+cache_stats, so /cache-stats keeps its shape."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 from sqlalchemy import text
@@ -75,17 +76,38 @@ def put_search(user_id: str, key: str, results: list, *, url: str | None = None,
     record_stat(stat, "write")
 
 
-def get_answer(user_id: str, *, version: int, language: str, qvec: str,
+_PUNCT = re.compile(r"[^\w\s]")
+
+
+def normalize_question(question: str) -> str:
+    """The question as the answer cache compares it: lowercase, no
+    punctuation, single spaces."""
+    return " ".join(_PUNCT.sub("", (question or "").lower()).split())
+
+
+def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: str,
                url: str | None = None) -> dict | None:
+    """A cached answer to this exact question. The vector index finds the
+    candidates, but "bills due next week" and "bills due this week" sit
+    0.017 apart, so a hit also needs the same normalized question text."""
     url = request_url(url)
     max_distance = 1.0 - float(get_config().cache_similarity_threshold)
+    want = normalize_question(query)
 
     def fn(conn) -> dict | None:
-        for cache_id, distance in nearest(conn, table="answer_cache", index="answer_cache_user_embedding",
-                                          exact_index="answer_cache_user_idx", id_col="cache_id",
-                                          emb_col="query_embedding", user_id=user_id, qvec=qvec, k=10):
-            if distance > max_distance:
-                break
+        near = [(cache_id, distance) for cache_id, distance in nearest(
+            conn, table="answer_cache", index="answer_cache_user_embedding", exact_index="answer_cache_user_idx",
+            id_col="cache_id", emb_col="query_embedding", user_id=user_id, qvec=qvec, k=10)
+            if distance <= max_distance]
+        if not near:
+            return None
+        asked = {str(r[0]): r[1] for r in conn.execute(text("""
+            SELECT cache_id, query_text FROM answer_cache
+            WHERE user_id = CAST(:u AS UUID) AND cache_id = ANY(CAST(:ids AS UUID[]))
+        """), {"u": user_id, "ids": [c for c, _ in near]})}
+        for cache_id, distance in near:
+            if normalize_question(asked.get(cache_id) or "") != want:
+                continue
             row = conn.execute(text("""
                 UPDATE answer_cache SET hits = hits + 1
                 WHERE cache_id = CAST(:c AS UUID) AND user_id = CAST(:u AS UUID)

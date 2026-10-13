@@ -1,5 +1,7 @@
 """Long-term memories the user can see and delete. Stored with a per-user
-vector index, recalled by meaning, deduplicated on write."""
+vector index, recalled by meaning, deduplicated on write. Adding or deleting
+one advances the user's data version in the same transaction, so a cached
+answer that leaned on a memory never outlives it."""
 
 from __future__ import annotations
 
@@ -13,6 +15,7 @@ from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
 from ._sql import jsonable, valid_uuid
 from ._vector import embed, nearest
+from .ledger import bump_data_version
 
 DUPLICATE_DISTANCE = 0.08   # closer than this is the same memory said again
 FORGET_DISTANCE = 0.55      # "forget the Japan trip" matches within this
@@ -61,6 +64,7 @@ def remember(user_id: str, content: str, *, kind: str | None = None, source_thre
         """), {"u": user_id, "k": kind, "c": content, "e": qvec,
                "t": source_thread_id if valid_uuid(source_thread_id) else None,
                "crdb_region": region}).scalar()
+        bump_data_version(conn, user_id, region)
         return {"memory_id": str(mid), "content": content, "kind": kind, "created": True}
 
     return run_transaction(fn, url=url, idempotent=False)
@@ -107,9 +111,16 @@ def forget(user_id: str, memory_id: str, *, url: str | None = None) -> bool:
     if not valid_uuid(memory_id):
         return False
     url = request_url(url)
-    return bool(run_transaction(lambda conn: conn.execute(text(
-        "DELETE FROM memories WHERE memory_id = CAST(:m AS UUID) AND user_id = CAST(:u AS UUID)"),
-        {"m": memory_id, "u": user_id}).rowcount, url=url))
+
+    def fn(conn) -> bool:
+        deleted = conn.execute(text(
+            "DELETE FROM memories WHERE memory_id = CAST(:m AS UUID) AND user_id = CAST(:u AS UUID)"),
+            {"m": memory_id, "u": user_id}).rowcount
+        if deleted:
+            bump_data_version(conn, user_id, money_region(conn, user_id, url))
+        return bool(deleted)
+
+    return run_transaction(fn, url=url)
 
 
 def forget_matching(user_id: str, phrase: str, *, url: str | None = None) -> list[str]:
@@ -126,6 +137,9 @@ def forget_matching(user_id: str, phrase: str, *, url: str | None = None) -> lis
         row = conn.execute(text("DELETE FROM memories WHERE memory_id = CAST(:m AS UUID) "
                                 "AND user_id = CAST(:u AS UUID) RETURNING content"),
                            {"m": near[0][0], "u": user_id}).fetchone()
-        return [row[0]] if row else []
+        if row is None:
+            return []
+        bump_data_version(conn, user_id, money_region(conn, user_id, url))
+        return [row[0]]
 
     return run_transaction(fn, url=url)

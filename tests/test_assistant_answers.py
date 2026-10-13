@@ -84,6 +84,15 @@ def test_strip_citations_removes_every_variant():
         assert "txn" not in A.strip_citations(text).lower()
 
 
+def test_second_person_flips_the_common_cases():
+    assert A.second_person("I'm saving for Japan") == "you're saving for Japan"
+    assert A.second_person("my rent is due on the 1st") == "your rent is due on the 1st"
+    assert A.second_person("My goal is an emergency fund") == "your goal is an emergency fund"
+    assert A.second_person("I prefer paying with my card") == "you prefer paying with your card"
+    assert A.second_person("I am done with I've and I'll") == "you are done with you've and you'll"
+    assert A.second_person("I was paid by my landlord") == "you were paid by your landlord"
+
+
 def test_insights_use_only_given_figures():
     chat = ScriptedChat("- You visit Blue Bottle often.")
     out = A.aggregation_insights(_agg(), "how much on coffee", chat)

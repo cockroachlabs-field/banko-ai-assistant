@@ -66,6 +66,22 @@ def test_forget_matching_removes_the_closest(user):
     assert [m["content"] for m in M.list_memories(user)] == ["I prefer cash at farmers markets"]
 
 
+def test_memory_changes_bump_the_data_version(user):
+    """Cached answers are keyed on the data version, so a memory the user
+    adds or deletes must retire them like a new purchase does."""
+    from banko_ai.services.ledger import data_version
+    v0 = data_version(user)
+    m = M.remember(user, "I'm saving for a canoe")
+    assert data_version(user) == v0 + 1
+    M.remember(user, "I'm saving for a canoe.")  # the same memory again: nothing changed
+    assert data_version(user) == v0 + 1
+    assert M.forget(user, m["memory_id"]) and data_version(user) == v0 + 2
+    assert not M.forget(user, m["memory_id"]) and data_version(user) == v0 + 2
+    M.remember(user, "I prefer cash at farmers markets")
+    assert M.forget_matching(user, "farmers market cash") and data_version(user) == v0 + 4
+    assert M.forget_matching(user, "the zebra") == [] and data_version(user) == v0 + 4
+
+
 def test_kind_for():
     assert M.kind_for("my goal is an emergency fund") == "goal"
     assert M.kind_for("I prefer debit") == "preference"

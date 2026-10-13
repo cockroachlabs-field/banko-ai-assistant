@@ -104,8 +104,12 @@ class BudgetArgs(BaseModel):
 def _search(ctx: ToolContext, a: SearchArgs) -> dict:
     narration.vector_search(a.query, a.limit)
     payload = a.model_dump(mode="json")
-    key = caches.search_key(ctx.user_id, ledger.data_version(ctx.user_id, ctx.url), payload)
-    cached = caches.get_search(ctx.user_id, key, url=ctx.url)
+    key, cached = None, None
+    try:
+        key = caches.search_key(ctx.user_id, ledger.data_version(ctx.user_id, ctx.url), payload)
+        cached = caches.get_search(ctx.user_id, key, url=ctx.url)
+    except Exception:  # a cache outage is a miss, never a failed search
+        log.warning("search cache read skipped", exc_info=True)
     if cached is not None:
         narration.vector_cache(len(cached))
         trace_step("cache", "Search cache", f"hit for '{a.query}'", status="hit")
@@ -119,7 +123,11 @@ def _search(ctx: ToolContext, a: SearchArgs) -> dict:
     items = [{"expense_id": i["expense_id"], "date": i["posted_at"], "merchant": i["merchant"],
               "amount": abs(i["amount"]), "category": i["category"], "description": i["description"]}
              for i in found]
-    caches.put_search(ctx.user_id, key, items, url=ctx.url)
+    if key is not None:
+        try:
+            caches.put_search(ctx.user_id, key, items, url=ctx.url)
+        except Exception:
+            log.warning("search cache write skipped", exc_info=True)
     return {"items": items}
 
 

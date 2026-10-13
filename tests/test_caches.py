@@ -49,11 +49,12 @@ def test_answer_cache_is_per_user_and_version(two):
     qv = embed(q)
     v = ledger.data_version(a)
     C.put_answer(a, version=v, language="English", query=q, qvec=qv, answer="Mostly Blue Bottle.", tokens=40)
-    hit = C.get_answer(a, version=v, language="English", qvec=embed("where do I spend most on coffee"))
+    same = "Where do I spend the most  on coffee?"
+    hit = C.get_answer(a, version=v, language="English", query=same, qvec=embed(same))
     assert hit and hit["answer"] == "Mostly Blue Bottle." and hit["tokens"] == 40
-    assert C.get_answer(b, version=v, language="English", qvec=qv) is None
-    assert C.get_answer(a, version=v + 1, language="English", qvec=qv) is None
-    assert C.get_answer(a, version=v, language="French", qvec=qv) is None
+    assert C.get_answer(b, version=v, language="English", query=q, qvec=qv) is None
+    assert C.get_answer(a, version=v + 1, language="English", query=q, qvec=qv) is None
+    assert C.get_answer(a, version=v, language="French", query=q, qvec=qv) is None
 
 
 def test_answer_cache_ignores_unrelated_questions(two):
@@ -61,7 +62,29 @@ def test_answer_cache_ignores_unrelated_questions(two):
     v = ledger.data_version(a)
     C.put_answer(a, version=v, language="English", query="coffee spend", qvec=embed("coffee spend"),
                  answer="x", tokens=1)
-    assert C.get_answer(a, version=v, language="English", qvec=embed("what is my rent")) is None
+    assert C.get_answer(a, version=v, language="English", query="what is my rent",
+                        qvec=embed("what is my rent")) is None
+
+
+@pytest.mark.parametrize("cached_q, asked_q", [
+    ("what bills are due next week?", "what bills are due this week?"),
+    ("what are my biggest subscriptions?", "what are my cheapest subscriptions?"),
+    ("where do I spend the most on coffee", "where do I spend most on coffee"),
+])
+def test_a_near_question_is_not_the_same_question(two, cached_q, asked_q):
+    """Vectors find the candidates; only the same question, give or take
+    case, spacing and punctuation, replays its answer."""
+    a, _ = two
+    v = ledger.data_version(a)
+    C.put_answer(a, version=v, language="English", query=cached_q, qvec=embed(cached_q), answer="cached", tokens=5)
+    assert C.get_answer(a, version=v, language="English", query=asked_q, qvec=embed(asked_q)) is None
+    again = cached_q.upper().rstrip("?") + " ?"
+    assert C.get_answer(a, version=v, language="English", query=again, qvec=embed(again))["answer"] == "cached"
+
+
+def test_normalized_question():
+    assert C.normalize_question("  What's  my BIGGEST bill?! ") == "whats my biggest bill"
+    assert C.normalize_question("due next week") != C.normalize_question("due this week")
 
 
 def test_nearest_uses_the_per_user_vector_index(two):
@@ -106,5 +129,5 @@ def test_answer_cache_write_retires_older_versions(two):
             "SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID) AND data_version = 1"
         ), {"u": a}).scalar()
     assert old_count == 0
-    hit = C.get_answer(a, version=2, language="English", qvec=qv)
+    hit = C.get_answer(a, version=2, language="English", query=q, qvec=qv)
     assert hit and hit["answer"] == "new answer"

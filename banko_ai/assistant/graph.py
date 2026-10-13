@@ -33,6 +33,7 @@ from ..utils.request_trace import serving_regions, trace_step
 from . import answers, narration
 from .planner import first_object, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
+from .router import reads_as_follow_up
 from .router import route as decide
 from .tools import ToolContext, run_tool
 
@@ -187,11 +188,12 @@ def memory(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         saved = memories.remember(state["user_id"], r["payload"], source_thread_id=state.get("thread_id"),
                                   url=deps.url)
         _step("Memory saved", saved["content"], status="success")
-        text = f"Got it. I'll remember that {saved['content']}."
+        text = f"Got it. I'll remember that {answers.second_person(saved['content'])}."
     else:
         removed = memories.forget_matching(state["user_id"], r["payload"], url=deps.url)
         _step("Memory removed" if removed else "Nothing to forget", ", ".join(removed))
-        text = f"Done, I forgot that {removed[0]}." if removed else "I didn't have anything like that saved."
+        text = (f"Done, I forgot that {answers.second_person(removed[0])}." if removed
+                else "I didn't have anything like that saved.")
     return {"answer": answers.translate(text, language, deps.chat)}
 
 
@@ -201,7 +203,12 @@ def offtopic(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
 
 
 def _cacheable(state: TurnState) -> bool:
-    return not state.get("active_receipt") and not state.get("context")
+    """Whether the answer cache may serve or keep this turn's answer. A
+    follow-up ("what about restaurants?") means something only after the
+    turn before it, so its text alone must never key an answer."""
+    if state.get("active_receipt") or state.get("context"):
+        return False
+    return not (state.get("messages") and reads_as_follow_up(state["message"]))
 
 
 def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -212,7 +219,7 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         try:
             from ..services._vector import embed
             hit = caches.get_answer(user_id, version=ledger.data_version(user_id, deps.url), language=language,
-                                    qvec=embed(state["message"]), url=deps.url)
+                                    query=state["message"], qvec=embed(state["message"]), url=deps.url)
         except Exception:  # a cache outage is a miss, never a broken answer
             log.warning("answer cache read skipped", exc_info=True)
         if hit:
