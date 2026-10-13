@@ -542,23 +542,6 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         threading.Thread(target=_post, daemon=True,
                          name="welcome-signal").start()
 
-    @app.route('/')
-    def index():
-        """Main application page."""
-        # First visit goes to the persona picker; everything downstream
-        # scopes to the chosen persona.
-        if not session.get('user_id'):
-            return redirect(url_for('login'))
-        current_user = {'id': session['user_id'],
-                        'username': session.get('username', 'Demo')}
-
-        # Get AI provider info for display
-        ai_provider_display = _provider_ui()
-        
-        return render_template('index.html', 
-                             user=current_user,
-                             ai_provider=ai_provider_display)
-    
     @app.route('/login', methods=['GET', 'POST'])
     def login():
         """Login for known users, reveal signup for unknown usernames."""
@@ -573,7 +556,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             if user:
                 session['user_id'] = user["user_id"]
                 session['username'] = user["username"]
-                return redirect(url_for('index'))
+                return redirect(url_for('pages.dashboard'))
 
             # Offer only regions the database has: an operator-configured
             # database can carry fewer regions than the cluster, and rows
@@ -638,7 +621,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
             session['user_id'] = user["user_id"]
             session['username'] = user["username"]
-            return redirect(url_for('index'))
+            return redirect(url_for('pages.dashboard'))
         except Exception as e:
             # Roll back only what this request created, including any
             # partially seeded history, so a failure never orphans rows

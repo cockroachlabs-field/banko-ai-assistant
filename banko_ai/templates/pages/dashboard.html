@@ -1,0 +1,99 @@
+{% extends "layout.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<section x-data="dashboardPage" x-init="load()">
+  <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong><button class="b-btn" type="button" @click="load()">{{ icon('refresh-cw') }}Try again</button></div></template>
+
+  <div x-show="seeding" x-cloak class="b-card b-empty">
+    <strong>Setting up your accounts</strong>
+    <span x-text="seedingText()"></span>
+    <div class="b-bar" style="width:min(360px,80%)"><span :style="'width:' + seedingPct() + '%'"></span></div>
+  </div>
+
+  <div x-show="noData" x-cloak class="b-card b-empty">
+    <strong>No accounts yet</strong>
+    <span>Upload a receipt and {{ shell.brand.name }} opens a card for it, or ask the assistant what it can do.</span>
+    <button class="b-btn primary" type="button" @click="Banko.emit('banko:pick-receipt', {})">{{ icon('receipt') }}Add a receipt</button>
+  </div>
+
+  <div class="b-grid" x-show="data && !seeding && !noData" x-cloak>
+    <div class="b-card b-s2">
+      <div class="b-row">
+        <div>
+          <div class="b-lbl">Net worth</div>
+          <div class="b-big" x-text="Banko.fmt.money(data.net_worth)"></div>
+          <div class="b-delta" :class="{ neg: netDelta() < 0 }" x-show="data.net_worth_history.length > 1"
+               x-text="Banko.fmt.money(netDelta(), { sign: true }) + ' this month'"></div>
+        </div>
+        <div class="b-muted">Last 6 months</div>
+      </div>
+      <div style="height:120px;margin-top:8px"><canvas x-ref="net"></canvas></div>
+    </div>
+
+    <div class="b-card b-ins" x-show="data.insight">
+      <div class="b-lbl" x-text="'Coach · ' + Banko.fmt.relative(data.insight && data.insight.created_at)"></div>
+      <p x-text="data.insight && data.insight.message"></p>
+      <button type="button" @click="Banko.emit('banko:ask', { context: { kind: 'nudge', id: data.insight.nudge_id } })">Ask {{ shell.brand.name }} about this →</button>
+    </div>
+    <div class="b-card b-empty" x-show="!data.insight">
+      <strong>No coach insights yet</strong>
+      <span>The coach writes here when your spending pipeline flags something.</span>
+    </div>
+
+    <div class="b-card">
+      <div class="b-lbl" x-text="'Spending · ' + monthName()"></div>
+      <div class="b-row">
+        <div class="b-big" x-text="Banko.fmt.money0(data.spending.this_total)"></div>
+        <div class="b-delta" :class="{ neg: spendDelta() > 0 }" x-text="Banko.fmt.money0(spendDelta()) + ' vs last month'"></div>
+      </div>
+      <div style="height:90px"><canvas x-ref="spend"></canvas></div>
+      <div class="b-leg"><span><i></i>This month</span><span><i class="d"></i>Last month</span></div>
+    </div>
+
+    <div class="b-card">
+      <div class="b-row"><div class="b-lbl">Budgets</div><a class="b-muted" href="/budget">See all →</a></div>
+      <template x-for="b in data.budgets.items.slice(0, 4)" :key="b.category">
+        <div>
+          <div class="b-row" style="margin-top:8px"><span x-text="b.icon + ' ' + b.category"></span><span class="b-muted" x-text="Banko.fmt.money0(b.spent) + ' of ' + Banko.fmt.money0(b.budget)"></span></div>
+          <div class="b-bar" :class="{ warn: b.status === 'watch', over: b.status === 'over' }"><span :style="'width:' + Math.min(100, b.pct * 100) + '%'"></span></div>
+        </div>
+      </template>
+      <div class="b-muted" x-show="!data.budgets.items.length" style="margin-top:8px">No budgets yet. Set one on the Budget page.</div>
+    </div>
+
+    <div class="b-card">
+      <div class="b-lbl">Upcoming</div>
+      <div style="margin-top:6px">
+        <template x-for="bill in data.upcoming_bills.slice(0, 4)" :key="bill.merchant + bill.next_due">
+          <div class="b-bill">
+            <span class="b-date" x-html="dateBadge(bill.next_due)"></span>
+            <span style="flex:1" x-text="bill.merchant"></span>
+            <span class="b-amt" x-text="Banko.fmt.money(bill.amount)"></span>
+          </div>
+        </template>
+        <div class="b-muted" x-show="!data.upcoming_bills.length">Nothing due in the next two weeks.</div>
+      </div>
+    </div>
+
+    <div class="b-card b-s3">
+      <div class="b-row"><div class="b-lbl">Recent transactions</div><a class="b-muted" href="/transactions">View all →</a></div>
+      <div style="margin-top:4px">
+        <template x-for="t in data.recent" :key="t.id">
+          <button type="button" class="b-tx" @click="Banko.emit('banko:open-transaction', { id: t.expense_id || t.id })">
+            <span class="b-m" :style="'background:' + Banko.monogram(t.merchant || t.description).color" x-text="Banko.monogram(t.merchant || t.description).letters"></span>
+            <span><div class="b-name" x-text="t.merchant || t.description"></div><div class="b-muted" x-text="Banko.fmt.dayLabel(t.posted_at)"></div></span>
+            <span class="b-chip" x-text="t.category_icon + ' ' + t.category_label"></span>
+            <span class="b-amt" :class="{ pos: t.amount > 0 }" x-text="Banko.fmt.money(t.amount, { sign: true })"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+  </div>
+
+  <div class="b-grid" x-show="!data && !error && !seeding && !noData">
+    <div class="b-card b-s2"><div class="b-skel" style="height:150px"></div></div>
+    <div class="b-card"><div class="b-skel" style="height:150px"></div></div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/dashboard.js') }}"></script>{% endblock %}

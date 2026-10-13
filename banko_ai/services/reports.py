@@ -88,9 +88,9 @@ def spending_pace(user_id: str, *, today: date | None = None, url: str | None = 
 def latest_insight(user_id: str, *, url: str | None = None) -> dict | None:
     url = request_url(url)
     with read_session(user_id, url=url) as conn:
-        row = conn.execute(text("SELECT message, created_at FROM coach_nudges WHERE user_id = CAST(:u AS UUID) "
+        row = conn.execute(text("SELECT nudge_id, message, created_at FROM coach_nudges WHERE user_id = CAST(:u AS UUID) "
                                 "ORDER BY created_at DESC LIMIT 1"), {"u": user_id}).fetchone()
-    return jsonable({"message": row[0], "created_at": row[1]}) if row else None
+    return jsonable({"nudge_id": str(row[0]), "message": row[1], "created_at": row[2]}) if row else None
 
 
 def dashboard(user_id: str, *, today: date | None = None, url: str | None = None) -> dict:

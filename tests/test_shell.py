@@ -63,15 +63,16 @@ def test_persona_hides_the_actual_provider(monkeypatch, member):
 def test_nav_only_lists_registered_pages(monkeypatch):
     from banko_ai.web.shell import nav_groups
     app = app_client(monkeypatch).application
-    hrefs = [i["href"] for g in nav_groups(app) for i in g["items"]]
-    for group in nav_groups(app):
-        for item in group["items"]:
-            assert item["key"] and item["href"].startswith("/")
-    endpoints = set(app.view_functions)
-    from banko_ai.web.shell import NAV
-    expected = [n for n in NAV if n["endpoint"] in endpoints]
-    assert len(hrefs) == len(expected)
-    assert "/platform" not in hrefs
+    with app.test_request_context("/"):
+        hrefs = [i["href"] for g in nav_groups(app) for i in g["items"]]
+        for group in nav_groups(app):
+            for item in group["items"]:
+                assert item["key"] and item["href"].startswith("/")
+        endpoints = set(app.view_functions)
+        from banko_ai.web.shell import NAV
+        expected = [n for n in NAV if n["endpoint"] in endpoints]
+        assert len(hrefs) == len(expected)
+        assert "/platform" not in hrefs
 
 
 def test_api_responses_name_the_user(monkeypatch, member):
