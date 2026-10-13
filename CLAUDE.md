@@ -130,6 +130,9 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 - Seeding: deterministic per user and day, resumable via `banko_meta` key `seed:<user_id>` holding the window; reset and seeding take a per-user lease on `seed_lock:<user_id>`. The integrity worker must report 0 drift.
 - Vector search: semantic transaction search pins the per-user vector index with a hint (`FROM expenses@idx_expenses_user_embedding`) because freshly seeded users are not yet in table statistics.
 - RLS: policies on accounts, ledger_entries, transfers, goals, user_budgets only, for the `banko_app` role; request-path services resolve `url` with `rls.request_url()`. Never add RLS to a vector table.
+- Assistant: every chat turn runs the LangGraph graph in `banko_ai/assistant/graph.py` (ingest, route, aggregate | receipt | memory | offtopic | plan, respond, learn), checkpointed per thread with `CockroachDBSaver` (`assistant/checkpoint.py` owns its psycopg pool). Routing is deterministic (`assistant/router.py`); only open questions reach the JSON planner. Models are reached through `ai_providers/streaming.py` (`ProviderChat`), and tests use `tests/_chat.py` (`ScriptedChat`), never a live model.
+- Assistant data: `receipts` (not the legacy `documents`), `chat_threads` (RLS), `memories`, `answer_cache`, `search_cache`, `assistant_actions`. Every per-user vector lookup goes through `services/_vector.nearest`, which pins the index and falls back to an exact per-user scan (cockroachlabs/cockroach#13756). Cache keys include the user's data version.
+- Receipts: `services/receipts.process_receipt` posts through `ledger.post_purchase`; a receipt ends posted, duplicate or failed, never "processed" after a swallowed error. Duplicates are caught within `duplicate_window_days` (default 3 days, `DUPLICATE_WINDOW_DAYS`).
 
 ### Git workflow
 
@@ -141,7 +144,6 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 
 - Coach on Gemini is code-complete but never smoke-tested: the GCP project (cockroach-harsh-432021) lost Vertex access mid-test on July 15 (billing). When the project recovers, run the coach smoke (mock_signals x3 plus /api/coach/chat) with AI_SERVICE=gemini before claiming four-provider coverage.
 - The watsonx model dropdown lists every chat-capable model IBM returns, including code-tuned ones (`ibm/granite-8b-code-instruct`) that echo prompt templates on JSON extraction tasks. The `ReceiptExtraction` Pydantic gate now catches the bad payloads (422 instead of 500), but the dropdown still presents the foot-gun. Consider annotating models with a "suitable for structured extraction" hint, or filtering code-tuned models out of the JSON-extraction code paths.
-- `agent_memory.access_count` never incremented on read (defer to memory-system v2).
 - mypy carries findings that predate the July 2026 dep landing; the measured baseline is 222 findings (verified identical against the May lockfile, so not upgrade fallout). The `make types` target is advisory, same as CI. Someone needs to budget a real typing pass; until then do not treat mypy output as a regression signal.
 - The ibm-watsonx-ai SDK prints a third-party-license WatsonxAPIWarning on every agent LLM call while the default model is non-IBM (openai/gpt-oss-120b). Informational, not an error; switching WATSONX_MODEL to an ibm/granite model silences it.
 

@@ -14,8 +14,11 @@ CockroachDB cluster.
 ## What it can do
 
 - **Ask in natural language** — "what did I spend on dining last month?",
-  "show me anything unusual" — answers come from vector search over your
-  expenses plus an LLM-generated summary.
+  "show me anything unusual" — answers stream token by token on every
+  provider. Math questions (totals, averages, counts) run SQL instead of
+  asking the LLM to compute. Threads remember receipts across restarts,
+  memories you create are searchable and deletable, and proposed budget
+  changes wait for you to confirm.
 - **Upload a receipt** — image or PDF goes through an OCR + agent pipeline
   (`Receipt → Fraud → Budget`) that extracts items, flags duplicates, and
   reports budget impact, with each agent step durably checkpointed.
@@ -26,8 +29,6 @@ CockroachDB cluster.
   enum). Switching providers requires a restart with the new env value.
 - **See agents work in real time** — the dashboard streams actual agent
   state from the backend (no canned activity).
-- **Persistent chat** — conversations survive restarts via
-  `CockroachDBChatMessageHistory`.
 - **Three-layer semantic cache** — query / embedding / vector-search caches
   with tunable similarity thresholds.
 

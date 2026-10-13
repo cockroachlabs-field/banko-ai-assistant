@@ -126,6 +126,43 @@ is still running, the reset waits up to 30 seconds for it and tries again.
 If the lease is still taken, it skips that persona without deleting anything,
 and the server log says so. One persona failing doesn't stop the others.
 
+#### Assistant (threads, memories, actions, receipts)
+
+Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts also stream. Memories persist facts the assistant learns, and actions are proposed changes that wait for confirmation.
+
+| Method | Path | Purpose | Success | Errors |
+|--------|------|---------|---------|--------|
+| GET | `/api/v1/assistant/threads` | List your threads, newest first | 200 | |
+| POST | `/api/v1/assistant/threads` | Create a thread, `{"title": "...", "context": {"kind": "nudge|transaction", "id": "<uuid>"}}` (both fields optional) | 201 | 400 |
+| GET | `/api/v1/assistant/threads/<thread_id>` | One thread with its messages and active receipt | 200 | 404 |
+| PATCH | `/api/v1/assistant/threads/<thread_id>` | Rename a thread, `{"title": "..."}` | 200 | 404 |
+| DELETE | `/api/v1/assistant/threads/<thread_id>` | Delete a thread and its checkpoints | 204 | 404 |
+| POST | `/api/v1/assistant/threads/<thread_id>/messages` | Ask a question, `{"message": "...", "language": "es-ES"}` (language optional); streams SSE | SSE | 404, 400 |
+| POST | `/api/v1/actions/<action_id>/confirm` | Confirm a proposed action | 200 | 404, 400 |
+| POST | `/api/v1/actions/<action_id>/cancel` | Cancel a proposed action | 200 | 404 |
+| GET | `/api/v1/memories` | List your memories | 200 | |
+| DELETE | `/api/v1/memories/<memory_id>` | Delete a memory | 204 | 404 |
+| POST | `/api/v1/receipts` | Upload a receipt, multipart `receipt` file plus optional `thread_id` form field; streams SSE | SSE | 404, 400 |
+
+**SSE events from POST `/api/v1/assistant/threads/<thread_id>/messages`:**
+
+- `step` — `{"label": "...", "detail": "...", "ms": 123.4, "status": "success|start|cached"}`
+- `token` — `{"text": "partial answer text"}`
+- `citation` — `{"expense_id": "...", "merchant": "...", "amount": -12.34, "date": "2026-10-01", ...}`
+- `proposal` — `{"id": "<uuid>", "kind": "budget_change", "category": "groceries", "current": "400.00", "proposed": "450.00", "reason": "..."}`
+- `answer` — `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": true|false, "route": "aggregate|receipt|memory|offtopic|plan", "meta": {...}}`
+- `error` — `{"message": "error description"}`
+- `done` — `{}` (final event)
+
+**SSE events from POST `/api/v1/receipts`:**
+
+- `step` — `{"step": "ocr|extract|fraud|budget|post", "status": "start|done|skipped|failed", "detail": "...", "ms": 123.4}`
+- `receipt` — `{"document_id": "...", "merchant": "...", "amount": "12.34", "date": "2026-10-12", "category": "groceries", "items": [...], "expense_id": "...", "thread_id": "...", ...}`
+- `error` — `{"message": "error description"}`
+- `done` — `{}` (final event)
+
+**Kept for compatibility:** `/api/rag` (POST, RAG-based Q&A) and `/api/upload-receipt` (POST, receipt upload without SSE) still work. New code should use the `/api/v1/assistant` routes.
+
 ### Examples
 
 Accounts (trimmed to one account):
