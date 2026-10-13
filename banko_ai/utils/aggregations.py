@@ -39,6 +39,7 @@ class AggregationResult:
     first_date: date | None
     last_date: date | None
     rows: list[dict] = field(default_factory=list)
+    merchant: str | None = None
 
 
 @lru_cache(maxsize=4)
@@ -71,9 +72,33 @@ def resolve_category(subject: str | None, database_url: str) -> str | None:
     return None
 
 
+def resolve_merchant(subject: str | None, user_id: str, database_url: str) -> str | None:
+    """Map a question phrase ("starbucks", "blue bottle coffee") to one of
+    this user's merchants, or None. Exact match first, then containment for
+    phrases of four letters or more, then a close fuzzy match."""
+    if not subject:
+        return None
+    from ..db.engine import get_engine
+    with get_engine(database_url).connect() as c:
+        names = [r[0] for r in c.execute(text(
+            "SELECT DISTINCT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL"),
+            {"u": user_id}) if r[0]]
+    want = subject.lower().replace("'", "").strip()
+    flat = {n.lower().replace("'", ""): n for n in names}
+    if want in flat:
+        return flat[want]
+    if len(want) >= 4:
+        for low, name in flat.items():
+            if want in low or low in want:
+                return name
+    close = difflib.get_close_matches(want, list(flat), n=1, cutoff=0.8)
+    return flat[close[0]] if close else None
+
+
 def _where_and_params(intent: AggregationIntent, user_id: str,
                       category: str | None,
-                      region: str | None) -> tuple[str, dict]:
+                      region: str | None,
+                      merchant: str | None = None) -> tuple[str, dict]:
     """One WHERE builder for the query and its EXPLAIN so they can never
     drift apart. The region predicate prunes the scan to the user's home
     partition on REGIONAL BY ROW tables; single-region callers pass None
@@ -82,7 +107,10 @@ def _where_and_params(intent: AggregationIntent, user_id: str,
              "AND expense_date < :e")
     params: dict = {"u": user_id, "s": intent.window_start,
                     "e": intent.window_end}
-    if category:
+    if merchant:
+        where += " AND lower(merchant) = lower(:m)"
+        params["m"] = merchant
+    elif category:
         where += " AND shopping_type = :c"
         params["c"] = category
     if region:
@@ -93,10 +121,11 @@ def _where_and_params(intent: AggregationIntent, user_id: str,
 
 def run_aggregation(intent: AggregationIntent, user_id: str,
                     database_url: str,
-                    region: str | None = None) -> AggregationResult:
+                    region: str | None = None,
+                    merchant: str | None = None) -> AggregationResult:
     from ..db.engine import get_engine
-    category = resolve_category(intent.subject, database_url)
-    where, params = _where_and_params(intent, user_id, category, region)
+    category = None if merchant else resolve_category(intent.subject, database_url)
+    where, params = _where_and_params(intent, user_id, category, region, merchant)
 
     eng = get_engine(database_url)
     with eng.connect() as c:
@@ -127,20 +156,22 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
         last_date=agg[3],
         rows=[{"date": str(r[0]), "merchant": r[1],
                "amount": float(r[2])} for r in detail],
+        merchant=merchant,
     )
 
 
 def explain_aggregation(intent: AggregationIntent, user_id: str,
                         database_url: str,
-                        region: str | None = None) -> str:
+                        region: str | None = None,
+                        merchant: str | None = None) -> str:
     """Run EXPLAIN ANALYZE of the aggregation query and return the plan as text.
 
     CockroachDB does not accept bound placeholders in EXPLAIN under server-side binding,
     so this statement binds parameters client-side with psycopg.ClientCursor."""
     import psycopg
 
-    category = resolve_category(intent.subject, database_url)
-    where, params = _where_and_params(intent, user_id, category, region)
+    category = None if merchant else resolve_category(intent.subject, database_url)
+    where, params = _where_and_params(intent, user_id, category, region, merchant)
 
     # Convert :name placeholders to %(name)s for client-side binding
     where_pyformat = _to_pyformat(where)
