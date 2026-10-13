@@ -26,6 +26,24 @@ def test_card_for_categories_and_empty_windows():
     assert "No matching transactions" in A.render_aggregation_markdown(_agg(count=0, total=0.0, rows=[]))
 
 
+def test_card_shows_the_last_day_counted_not_the_day_after():
+    """The window end is exclusive; "between 2026-09-13 to 2026-10-14" for
+    the last 30 days, asked on the 13th, showed tomorrow."""
+    text = A.render_aggregation_markdown(_agg(category="Restaurant"))
+    assert "on Restaurant from 2026-09-01 to 2026-09-30 (3 transactions)" in text
+    assert "2026-10-01" not in text and "between" not in text
+    empty = A.render_aggregation_markdown(_agg(count=0, total=0.0, rows=[]))
+    assert "from 2026-09-01 to 2026-09-30" in empty and "between" not in empty
+    for op in ("count", "average"):
+        assert "from 2026-09-01 to 2026-09-30" in A.render_aggregation_markdown(_agg(operation=op))
+
+
+def test_insights_see_the_same_window_as_the_card():
+    chat = ScriptedChat("- ok")
+    A.aggregation_insights(_agg(), "how much on coffee", chat)
+    assert "from 2026-09-01 to 2026-09-30" in chat.prompts()[-1] and "2026-10-01" not in chat.prompts()[-1]
+
+
 def test_language_names():
     assert A.language_name("es-ES") == "Spanish"
     assert A.language_name(None) == "English"

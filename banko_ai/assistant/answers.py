@@ -5,6 +5,7 @@ deterministic text. Figures come from SQL; a model only adds prose."""
 from __future__ import annotations
 
 import re
+from datetime import timedelta
 
 LANGUAGES = {
     "en-US": "English", "es-ES": "Spanish", "fr-FR": "French", "de-DE": "German",
@@ -22,28 +23,35 @@ def language_name(code: str | None) -> str:
     return LANGUAGES.get(code or "", "English")
 
 
+def _window(agg) -> str:
+    # window_end is exclusive (the day after the last one counted), so the
+    # card names the last day the sum includes.
+    return f"from {agg.window_start} to {agg.window_end - timedelta(days=1)}"
+
+
 def render_aggregation_markdown(agg) -> str:
-    window = f"{agg.window_start} to {agg.window_end}"
+    window = _window(agg)
     merchant = getattr(agg, "merchant", None)
     scope = f"at {merchant}" if merchant else f"on {agg.category or 'all categories'}"
     if not agg.count:
-        return (f"No matching transactions {scope} between {window}. "
+        return (f"No matching transactions {scope} {window}. "
                 f"Try a wider window or a different category.")
     if agg.operation == "count":
-        headline = f"You made **{agg.count} transactions** {scope} between {window}."
+        headline = f"You made **{agg.count} transactions** {scope} {window}."
     elif agg.operation == "average":
-        headline = (f"Your average transaction {scope} was **${agg.average:,.2f}** between {window} "
+        headline = (f"Your average transaction {scope} was **${agg.average:,.2f}** {window} "
                     f"({agg.count} transactions, ${agg.total:,.2f} total).")
     else:
-        headline = f"You spent **${agg.total:,.2f}** {scope} between {window} ({agg.count} transactions)."
+        headline = f"You spent **${agg.total:,.2f}** {scope} {window} ({agg.count} transactions)."
     lines = [headline, "", "| Date | Merchant | Amount |", "|---|---|---|"]
     for row in agg.rows:
         lines.append(f"| {row['date']} | {row['merchant']} | ${row['amount']:,.2f} |")
     return "\n".join(lines)
 
 
-def aggregation_insights(agg, question: str, chat) -> str | None:
-    """Two or three observations over figures SQL already computed."""
+def insights_messages(agg, question: str) -> list[dict]:
+    """The prompt for two or three observations over figures SQL already
+    computed (top merchants are summed here, never by the model)."""
     merchants: dict[str, float] = {}
     for row in agg.rows:
         merchants[row["merchant"]] = merchants.get(row["merchant"], 0) + row["amount"]
@@ -51,25 +59,34 @@ def aggregation_insights(agg, question: str, chat) -> str | None:
     scope = getattr(agg, "merchant", None) or agg.category or "all categories"
     prompt = ("You are a personal finance coach. Exact figures, already computed from the user's "
               f"expense database: total ${agg.total:,.2f} across {agg.count} transactions on {scope} "
-              f"between {agg.window_start} and {agg.window_end}. Top merchants: {top}. "
+              f"{_window(agg)}. Top merchants: {top}. "
               f"The user asked: \"{question}\". Write two or three short, specific observations or "
               "suggestions as markdown bullets. Use only the figures given; do not compute new totals "
               "or restate the question. No headings, bullets only.")
+    return [{"role": "user", "content": prompt}]
+
+
+def aggregation_insights(agg, question: str, chat) -> str | None:
+    """Two or three observations over figures SQL already computed."""
     try:
-        text = chat.complete([{"role": "user", "content": prompt}], temperature=0.4)
+        text = chat.complete(insights_messages(agg, question), temperature=0.4)
     except Exception:
         return None
     return text.strip() or None
 
 
+def translation_messages(text: str, language: str) -> list[dict]:
+    return [{"role": "user", "content": (
+        f"Translate the following financial summary into {language}. Keep every number, "
+        "currency amount, percentage, date, and merchant name exactly as written. Keep the "
+        f"markdown formatting. Output only the translation.\n\n{text}")}]
+
+
 def translate(text: str, language: str, chat) -> str:
     if not text or language == "English":
         return text
-    prompt = (f"Translate the following financial summary into {language}. Keep every number, "
-              "currency amount, percentage, date, and merchant name exactly as written. Keep the "
-              f"markdown formatting. Output only the translation.\n\n{text}")
     try:
-        out = chat.complete([{"role": "user", "content": prompt}], temperature=0.1)
+        out = chat.complete(translation_messages(text, language), temperature=0.1)
     except Exception:
         return text
     return out.strip() or text

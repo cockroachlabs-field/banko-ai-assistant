@@ -19,8 +19,6 @@ from flask import Blueprint, Response, current_app, jsonify, request, session, s
 
 from ..ai_providers.display import NEUTRAL_FAILED
 from ..ai_providers.streaming import ProviderChat
-from ..assistant import checkpoint
-from ..assistant import graph as G
 from ..config.settings import get_config
 from ..db.regions import agent_home_region
 from ..services import actions, memories, receipts, threads
@@ -35,6 +33,14 @@ WARMING = "I'm still warming up. Try that again in a few seconds."
 RECONNECTING = "Reconnecting to the database, try that again in a moment."
 _AGENT_FOR_STEP = {"fraud": "fraud", "budget": "budget"}
 _RECEIPT_KEYS = ("document_id", "merchant", "amount", "date", "category", "items", "expense_id")
+
+
+def _graph():
+    """The assistant graph module, imported on first use. LangGraph costs
+    about half a second, and create_app registers this blueprint before the
+    server listens. Tests patch its _graph attribute as before."""
+    from ..assistant import graph
+    return graph
 
 
 def _uid() -> str:
@@ -101,7 +107,7 @@ def create_thread():
         context = {"kind": context["kind"], "id": str(context["id"])}
     thread = threads.create_thread(_uid(), title=str(body.get("title") or threads.DEFAULT_TITLE))
     if context:
-        G.set_context(thread["thread_id"], context)
+        _graph().set_context(thread["thread_id"], context)
     return jsonify(thread), 201
 
 
@@ -110,7 +116,7 @@ def get_thread(thread_id: str):
     thread = _owned(thread_id)
     if thread is None:
         return jsonify({"error": "not_found"}), 404
-    state = G.thread_state(thread_id)
+    state = _graph().thread_state(thread_id)
     return jsonify({**thread, "messages": state.get("messages") or [],
                     "active_receipt": state.get("active_receipt")})
 
@@ -125,6 +131,7 @@ def rename_thread(thread_id: str):
 def delete_thread(thread_id: str):
     if not threads.delete_thread(_uid(), thread_id):
         return jsonify({"error": "not_found"}), 404
+    from ..assistant import checkpoint
     checkpoint.delete_checkpoints(thread_id)
     return "", 204
 
@@ -138,7 +145,7 @@ def _turn_stream(user_id: str, thread_id: str, message: str, language: str | Non
     def work() -> None:
         token = start_trace()
         try:
-            out = G.run_turn(user_id, thread_id, message, language_code=language, chat=chat,
+            out = _graph().run_turn(user_id, thread_id, message, language_code=language, chat=chat,
                              on_event=events.put)
             meta = {k: v for k, v in (out.get("meta") or {}).items() if k != "explain"}
             # Shaped like the proposal events, which drop their "type" key on the way out.
@@ -229,7 +236,7 @@ def _attach_receipt(user_id: str, thread_id: str | None, receipt: dict) -> str |
         if not thread_id:
             thread_id = threads.create_thread(
                 user_id, title=f"Receipt from {receipt.get('merchant') or 'a store'}")["thread_id"]
-        G.set_active_receipt(thread_id, {k: receipt.get(k) for k in _RECEIPT_KEYS})
+        _graph().set_active_receipt(thread_id, {k: receipt.get(k) for k in _RECEIPT_KEYS})
         return thread_id
     except Exception:
         log.warning("receipt %s posted but not attached to a thread", receipt.get("document_id"), exc_info=True)

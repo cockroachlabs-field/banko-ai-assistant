@@ -33,6 +33,17 @@ def test_importing_the_app_touches_no_database_and_no_provider_sdk():
     assert loaded == "False False False"
 
 
+def test_the_assistant_api_loads_no_langgraph_before_the_server_listens():
+    """create_app registers the assistant blueprint before the server
+    listens. LangGraph costs about half a second and loads on the first turn."""
+    code = ("import sys; import banko_ai.web.app, banko_ai.web.assistant_api; "
+            "print('langgraph' in sys.modules, 'banko_ai.assistant.graph' in sys.modules)")
+    env = dict(os.environ, DATABASE_URL="postgresql://root@203.0.113.1:26257/defaultdb?sslmode=disable&connect_timeout=2")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().splitlines()[-1] == "False False"
+
+
 def test_server_starts_without_a_reverse_dns_lookup(monkeypatch):
     import socket
 

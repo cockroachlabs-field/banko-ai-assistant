@@ -60,6 +60,7 @@ class TurnState(TypedDict, total=False):
     last_route: str | None  # the previous turn's route; "receipt" right after an upload
     results: list[dict]
     answer: str
+    streamed: bool  # the answer already went out as tokens while it was made
     cached: bool
     meta: dict
     proposals: list[dict]
@@ -111,8 +112,8 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     elif ctx.get("kind") == "transaction":
         detail = txns.transaction_detail(user_id, str(ctx.get("id")), url=deps.url)
         facts = f"Transaction: {json.dumps(detail, default=str)}" if detail else ""
-    return {"memories": recalled, "context_facts": facts, "results": [], "answer": "", "cached": False,
-            "meta": {}, "proposals": [], "citations": [], "route": {}}
+    return {"memories": recalled, "context_facts": facts, "results": [], "answer": "", "streamed": False,
+            "cached": False, "meta": {}, "proposals": [], "citations": [], "route": {}}
 
 
 def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -147,43 +148,102 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     with get_engine(url).connect() as conn:
         region = money_region(conn, user_id, url)
     narration.aggregation(intent, region)
+    if region:
+        _step("Region pruning", f"Scoped to {region} (REGIONAL BY ROW)")
     t0 = time.perf_counter()
     agg = run_aggregation(intent, user_id, url, region=region, merchant=merchant)
     db_ms = (time.perf_counter() - t0) * 1000
     narration.aggregation_sql(agg, db_ms)
     _step("Aggregation SQL", f"${agg.total:,.2f} across {agg.count} transactions "
           f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success")
-    explain = explain_aggregation(intent, user_id, url, region=region, merchant=merchant)
-    served = serving_regions(explain) or region
-    card = answers.render_aggregation_markdown(agg)
     language = state.get("language") or "English"
-    key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),
-                            {"agg": [agg.operation, agg.category, agg.merchant, str(agg.window_start),
-                                     str(agg.window_end), agg.total, agg.count], "lang": language})
-    hit = None
+    key, hit = None, None
     try:
+        key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),
+                                {"agg": [agg.operation, agg.category, agg.merchant, str(agg.window_start),
+                                         str(agg.window_end), agg.total, agg.count], "lang": language})
         hit = caches.get_search(user_id, key, url=deps.url, stat="narrative")
     except Exception:  # a cache outage is a miss, never a broken answer
         log.warning("narrative cache read skipped", exc_info=True)
     if hit:
-        text, cached = hit[0]["answer"], True
+        text, cached, streamed = hit[0]["answer"], True, False
         narration.narrative_cache(True, caches.estimate_tokens(text))
         _step("Narrative cache", "hit: SQL reran, the prose was reused", status="hit")
     else:
         narration.narrative_cache(False)
-        insights = answers.aggregation_insights(agg, state["message"], deps.chat) if agg.count else None
+        _step("Narrative cache", "miss: generating the narrative", status="miss")
+        text, cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
+        if key is not None:
+            try:
+                caches.put_search(user_id, key, [{"answer": text}], url=deps.url, stat="narrative")
+            except Exception:
+                log.warning("narrative cache write skipped", exc_info=True)
+    t0 = time.perf_counter()
+    explain = explain_aggregation(intent, user_id, url, region=region, merchant=merchant)
+    served = serving_regions(explain) or region
+    _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""),
+          ms=(time.perf_counter() - t0) * 1000)
+    return {"answer": text, "cached": cached, "streamed": streamed,
+            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+
+
+def _emit_text(text: str) -> None:
+    for i in range(0, len(text), 48):
+        _emit({"type": "token", "text": text[i:i + 48]})
+
+
+def _relay(open_stream, prefix: str = "") -> str:
+    """Send a model stream out as token events and return exactly what was
+    sent. Whitespace at either end is held back, and prefix goes out just
+    before the first real text, so nothing dangles when the stream is empty.
+    A stream that fails to open or breaks keeps what already went out."""
+    sent: list[str] = []
+    held, started = "", False
+    try:
+        for piece in open_stream():
+            if not started:
+                piece = piece.lstrip()
+                if not piece:
+                    continue
+                started, piece = True, prefix + piece
+            body = piece.rstrip()
+            if not body:
+                held += piece
+                continue
+            chunk, held = held + body, piece[len(body):]
+            _emit({"type": "token", "text": chunk})
+            sent.append(chunk)
+    except Exception:
+        log.warning("model stream stopped early", exc_info=True)
+    return "".join(sent)
+
+
+def _narrate(agg, question: str, language: str, chat: Chat) -> str:
+    """The aggregation answer, streamed as it is produced. In English the SQL
+    card goes out at once and the insights stream after it. In another
+    language the insights come first (one call), then the translation of
+    card and insights streams. Returns exactly the text sent."""
+    card = answers.render_aggregation_markdown(agg)
+    if language == "English":
+        _emit_text(card)
+        if not agg.count:
+            return card
+        insights = _relay(lambda: chat.stream(answers.insights_messages(agg, question), temperature=0.4),
+                          prefix="\n\n")
         if insights:
             narration.insights()
-        english = card + (f"\n\n{insights}" if insights else "")
-        text, cached = answers.translate(english, language, deps.chat), False
-        if text != english:
-            narration.rendered(language)
-        try:
-            caches.put_search(user_id, key, [{"answer": text}], url=deps.url, stat="narrative")
-        except Exception:
-            log.warning("narrative cache write skipped", exc_info=True)
-    return {"answer": text, "cached": cached,
-            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+        return card + insights
+    insights = answers.aggregation_insights(agg, question, chat) if agg.count else None
+    if insights:
+        narration.insights()
+    english = card + (f"\n\n{insights}" if insights else "")
+    translated = _relay(lambda: chat.stream(answers.translation_messages(english, language), temperature=0.1))
+    if not translated:  # no translation came back: the English, figures and all
+        _emit_text(english)
+        return english
+    if translated != english:
+        narration.rendered(language)
+    return translated
 
 
 RECEIPT_KEYS = ("document_id", "merchant", "amount", "date", "category", "items", "expense_id")
@@ -377,8 +437,8 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     answer = state.get("answer") or ""
     generated = False
     if answer:
-        for i in range(0, len(answer), 48):
-            _emit({"type": "token", "text": answer[i:i + 48]})
+        if not state.get("streamed"):  # a fixed or cached answer; a streamed one already went out
+            _emit_text(answer)
     else:
         msgs = answer_messages(state["message"], language=language,
                                history=state.get("messages") or [], memories=state.get("memories") or [],

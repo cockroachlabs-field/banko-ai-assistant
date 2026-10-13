@@ -142,6 +142,10 @@ def test_aggregation_answer_stores_its_trace(trace_client):
     assert "SQL" in trace[labels.index("Intent routing")]["detail"]
     assert labels.index("Intent routing") < labels.index("Aggregation SQL") < kinds.index("llm")
     assert kinds[-1] == "total"
+    # The steps the old page showed: the narrative cache on a miss too, and the plan.
+    narrative = next(s for s in trace if s["label"] == "Narrative cache")
+    assert narrative["status"] == "miss"
+    assert labels.index("Aggregation SQL") < labels.index("Narrative cache") < labels.index("EXPLAIN ANALYZE")
     llm = trace[kinds.index("llm")]
     assert "IBM watsonx" in llm["detail"] and "ibm/granite-3-3-8b-instruct" in llm["detail"]
     assert llm["ms"] is not None

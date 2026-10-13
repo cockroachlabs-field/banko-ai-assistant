@@ -59,10 +59,87 @@ def test_aggregation_answers_from_sql_and_streams(g, member, thread):
     assert any(e["type"] == "step" and e["label"] == "Aggregation SQL" for e in events)
 
 
+def _token_log(monkeypatch):
+    """What the nodes emit, in order, as they emit it (not as the caller
+    happens to drain the stream)."""
+    log = []
+    real = G._emit
+
+    def spy(event):
+        if event.get("type") == "token":
+            log.append(("token", event["text"]))
+        real(event)
+    monkeypatch.setattr(G, "_emit", spy)
+    return log
+
+
+def test_an_english_aggregation_streams_the_card_before_the_insights(g, member, thread, monkeypatch):
+    log = _token_log(monkeypatch)
+
+    def insights(msgs):
+        log.append(("insights call", ""))
+        return "- Restaurants are steady.\n- Fridays cost the most.\n"
+    chat = ScriptedChat(insights)
+    out, events = _turn(g, member, thread, "how much did I spend on restaurants in the last 45 days", chat)
+    kinds = [kind for kind, _ in log]
+    assert kinds.index("token") < kinds.index("insights call")
+    assert log[0][1].startswith("You spent **$")  # the SQL card goes out before any model work
+    assert [kind for kind, _ in chat.calls] == ["stream"]
+    tokens = "".join(e["text"] for e in events if e["type"] == "token")
+    assert tokens == out["answer"] and out["answer"].endswith("\n\n- Restaurants are steady.\n- Fridays cost the most.")
+    again, again_events = _turn(g, member, thread, "how much did I spend on restaurants in the last 45 days",
+                                ScriptedChat("unused"))
+    assert again["cached"] and again["answer"] == out["answer"]
+    assert "".join(e["text"] for e in again_events if e["type"] == "token") == out["answer"]
+
+
+def test_a_spanish_aggregation_streams_the_translation(g, member, thread, monkeypatch):
+    log = _token_log(monkeypatch)
+    translated = "Gastaste **$1** en Restaurant.\n\n- Estable."
+
+    def translation(msgs):
+        log.append(("translation call", ""))
+        return translated
+    chat = ScriptedChat("- Steady.", translation)
+    out, events = _turn(g, member, thread, "how much did I spend on restaurants in the last 50 days", chat,
+                        language_code="es-ES")
+    assert [kind for kind, _ in chat.calls] == ["complete", "stream"]
+    assert [kind for kind, _ in log][0] == "translation call"  # nothing goes out in English first
+    translate_prompt = chat.calls[1][1][-1]["content"]
+    assert "Spanish" in translate_prompt and "You spent **$" in translate_prompt and "- Steady." in translate_prompt
+    tokens = "".join(e["text"] for e in events if e["type"] == "token")
+    assert tokens == out["answer"] == translated
+
+
+def test_a_regional_aggregation_traces_pruning_and_the_serving_region(g, member, thread, monkeypatch):
+    from banko_ai.utils import aggregations
+    from banko_ai.utils.aggregations import AggregationResult
+    used = {}
+
+    def run(intent, user_id, url, region=None, merchant=None):
+        used["region"] = region
+        return AggregationResult(operation="sum", category="Restaurant", window_start=intent.window_start,
+                                 window_end=intent.window_end, total=42.0, count=2, average=21.0,
+                                 first_date=None, last_date=None,
+                                 rows=[{"date": "2026-10-01", "merchant": "Bistro", "amount": 21.0}] * 2)
+    monkeypatch.setattr(aggregations, "run_aggregation", run)
+    monkeypatch.setattr(aggregations, "explain_aggregation", lambda *a, **k: "• group\n  regions: us-west-2\n")
+    monkeypatch.setattr(G, "money_region", lambda conn, user_id, url: "us-east-1")
+    out, events = _turn(g, member, thread, "how much did I spend on restaurants in the last 20 days",
+                        ScriptedChat("- Two dinners."))
+    steps = {e["label"]: e for e in events if e["type"] == "step"}
+    assert steps["Region pruning"]["detail"] == "Scoped to us-east-1 (REGIONAL BY ROW)"
+    assert steps["EXPLAIN ANALYZE"]["detail"] == "plan captured, served by us-west-2"
+    assert steps["Narrative cache"]["status"] == "miss"
+    labels = [e["label"] for e in events if e["type"] == "step"]
+    assert labels.index("Region pruning") < labels.index("Aggregation SQL") < labels.index("Narrative cache")
+    assert used["region"] == "us-east-1" and out["meta"]["region"] == "us-west-2"
+
+
 def test_the_readme_question_sums_one_category(g, member, thread):
     out, _ = _turn(g, member, thread, "what did I spend on dining last month?", ScriptedChat("- steady"))
     assert out["route"]["kind"] == "aggregate"
-    assert "on Restaurant" in out["answer"] and "all categories" not in out["answer"]
+    assert "on Restaurant from" in out["answer"] and "all categories" not in out["answer"]
 
 
 def test_an_unknown_subject_is_said_not_summed(g, member, thread):
