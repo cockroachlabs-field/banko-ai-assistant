@@ -104,3 +104,10 @@ def test_account_history_api(monkeypatch, member):
 def test_transactions_page(monkeypatch, member):
     html = assert_page(signed_in(monkeypatch, member).get("/transactions"), "transactions")
     assert 'x-data="txDrawer"' in html
+
+
+def test_cashflow_and_budget_pages(monkeypatch, member):
+    client = signed_in(monkeypatch, member)
+    assert_page(client.get("/cashflow"), "cashflow")
+    html = assert_page(client.get("/budget"), "budget")
+    assert "projected" in html.lower()

@@ -1,0 +1,46 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Budget{% endblock %}
+{% block content %}
+<section x-data="budgetPage" x-init="load()">
+  <div class="b-page-h"><h1>Budget</h1><span class="b-muted" x-text="data ? 'Day ' + data.day + ' of ' + data.days_in_month : ''"></span><div class="sp"></div>
+    <button class="b-btn" type="button" @click="adding = !adding">{{ icon('plus') }}Add a budget</button></div>
+  <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong></div></template>
+  <form class="b-card" x-show="adding" x-cloak style="margin-top:12px;display:flex;gap:10px;align-items:flex-end" @submit.prevent="add()">
+    <label class="b-field" style="flex:1">Category
+      <select class="b-select" x-model="newCategory" required>
+        <template x-for="c in addable()" :key="c.key"><option :value="c.label" x-text="c.icon + ' ' + c.label"></option></template>
+      </select></label>
+    <label class="b-field" style="width:160px">Monthly amount<input class="b-input" x-model="newAmount" inputmode="decimal" required></label>
+    <button class="b-btn primary" type="submit">Add</button>
+  </form>
+  <div class="b-grid" x-show="data" x-cloak style="margin-top:14px">
+    <div class="b-card">
+      <div class="b-lbl">This month</div>
+      <div class="b-big" x-text="data && Banko.fmt.money0(data.total_spent)"></div>
+      <div class="b-muted" x-text="data ? 'of ' + Banko.fmt.money0(data.total_budget) + ' budgeted' : ''"></div>
+      <div class="b-bar" :class="{ warn: data && data.total_spent > data.total_budget * data.day / data.days_in_month }"><span :style="'width:' + (data && data.total_budget ? Math.min(100, data.total_spent / data.total_budget * 100) : 0) + '%'"></span></div>
+    </div>
+    <div class="b-card b-s2">
+      <div class="b-lbl">Categories</div>
+      <template x-for="b in (data ? data.items : [])" :key="b.key">
+        <div style="padding:8px 0;border-top:1px solid var(--bd2)">
+          <div class="b-row">
+            <span x-text="b.icon + ' ' + b.category"></span>
+            <span class="b-muted">
+              <span x-text="Banko.fmt.money0(b.spent) + ' of '"></span>
+              <template x-if="editing !== b.key"><button type="button" class="b-btn sm ghost" @click="edit(b)" x-text="Banko.fmt.money0(b.budget)" :aria-label="'Edit ' + b.category + ' budget'"></button></template>
+              <template x-if="editing === b.key"><form style="display:inline-flex;gap:6px" @submit.prevent="save(b)"><input class="b-input" style="width:100px;padding:4px 8px" x-model="draft" inputmode="decimal" @keydown.escape="editing = null"><button class="b-btn sm" type="submit">{{ icon('check') }}</button></form></template>
+            </span>
+          </div>
+          <div class="b-bar" :class="{ warn: b.status === 'watch', over: b.status === 'over' }"><span :style="'width:' + Math.min(100, b.pct * 100) + '%'"></span></div>
+          <div class="b-muted" x-text="'Projected ' + Banko.fmt.money0(b.projected) + ' by month end' + (b.status === 'over' ? ' · over budget' : b.status === 'watch' ? ' · on pace to go over' : '')"></div>
+        </div>
+      </template>
+      <div class="b-empty" x-show="data && !data.items.length"><strong>No budgets yet</strong><span>Add one to start tracking a category.</span></div>
+      <div class="b-tag bad" x-show="saveError" x-text="saveError"></div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/budget.js') }}"></script>{% endblock %}

@@ -29,3 +29,13 @@ def account(account_id: str):
 @pages.get("/transactions")
 def transactions():
     return render_template("pages/transactions.html")
+
+
+@pages.get("/cashflow")
+def cashflow():
+    return render_template("pages/cashflow.html")
+
+
+@pages.get("/budget")
+def budget():
+    return render_template("pages/budget.html")
