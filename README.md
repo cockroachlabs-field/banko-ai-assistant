@@ -19,9 +19,11 @@ CockroachDB cluster.
   asking the LLM to compute. Threads remember receipts across restarts,
   memories you create are searchable and deletable, and proposed budget
   changes wait for you to confirm.
-- **Upload a receipt** — image or PDF goes through an OCR + agent pipeline
-  (`Receipt → Fraud → Budget`) that extracts items, flags duplicates, and
-  reports budget impact, with each agent step durably checkpointed.
+- **Upload a receipt**: an image or PDF goes through OCR and field
+  extraction, posts through the ledger (a duplicate posts nothing), then
+  runs the fraud and budget agents, each step showing up as it finishes.
+  The receipt joins a conversation checkpointed in CockroachDB, so you can
+  still ask about it after a restart.
 - **Multi-provider LLM** — watsonx (default), OpenAI, AWS Bedrock, or
   Google Gemini. The provider is chosen at startup via `AI_SERVICE`;
   within a running app you can swap models inside the active provider from
@@ -41,7 +43,7 @@ Five layers, one database:
 | Layer | What it does | Where |
 |-------|--------------|-------|
 | **Web** | Flask + SocketIO UI, REST API, real-time agent status | `banko_ai/web/` |
-| **Agents** | LangGraph pipeline (`Receipt → Fraud → Budget`), checkpointed by `CockroachDBSaver` for crash recovery and replay | `banko_ai/agents/` |
+| **Agents** | A LangGraph assistant graph (routing, SQL aggregation, receipts, memories, a tool planner), each conversation checkpointed by `CockroachDBSaver`; receipt, fraud and budget agents check every upload | `banko_ai/assistant/`, `banko_ai/agents/` |
 | **AI providers** | One abstraction over watsonx, OpenAI, Bedrock, Gemini — all LLM calls go through it | `banko_ai/ai_providers/` |
 | **Vector search** | `CockroachDBVectorStore` with C-SPANN cosine indexes, 384-dim `all-MiniLM-L6-v2` embeddings (local, no API key) | `banko_ai/vector_search/` |
 | **Persistence** | CockroachDB stores SQL rows, vectors, and agent state in one cluster | `banko_ai/utils/` |

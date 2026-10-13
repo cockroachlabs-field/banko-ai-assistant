@@ -1056,16 +1056,31 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
 
     # Browsers silently ignore a cookie over 4 KB, and every session change
     # riding on it, a new thread id included. Each turn adds a few hundred
-    # bytes, so a long session sheds its oldest turns first.
+    # bytes, so a long session sheds its oldest turns first, and a turn too
+    # big on its own (a long pasted message) shows on the page shortened.
     _SESSION_COOKIE_BUDGET = 3800
 
     def _fit_chat_in_cookie() -> None:
         signer = getattr(app.session_interface, "get_signing_serializer", None)
         serializer = signer(app) if signer else None
+        if serializer is None:
+            return
         chat_log = session.get('chat') or []
-        while (serializer is not None and len(chat_log) > 2
-               and len(serializer.dumps(dict(session))) > _SESSION_COOKIE_BUDGET):
+
+        def too_big() -> bool:
+            return len(serializer.dumps(dict(session))) > _SESSION_COOKIE_BUDGET
+
+        while len(chat_log) > 2 and too_big():
             del chat_log[:2]
+        # Only the page's copy is cut: the thread's checkpoint keeps the full text.
+        while chat_log and too_big():
+            entry = max(chat_log[-2:], key=lambda m: len(m.get('text') or ''))
+            text_now = entry.get('text') or ''
+            body = text_now[:-1] if text_now.endswith('…') else text_now
+            if len(body) < 2:
+                break
+            entry['text'] = body[:len(body) // 2].rstrip() + '…'
+            session.modified = True
 
     def _render_chat(ai_provider_display):
         """Render the chat page with each message's stored trace and plan

@@ -146,20 +146,20 @@ Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts
 
 **SSE events from POST `/api/v1/assistant/threads/<thread_id>/messages`:**
 
-- `step`: `{"label": "...", "detail": "...", "ms": 123.4, "status": "success|start|cached"}`
-- `token`: `{"text": "partial answer text"}`
-- `citation`: `{"expense_id": "...", "merchant": "...", "amount": -12.34, "date": "2026-10-01", ...}`
-- `proposal`: `{"id": "<uuid>", "kind": "budget_change", "category": "groceries", "current": "400.00", "proposed": "450.00", "reason": "..."}`
-- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": true|false, "route": "aggregate|receipt|memory|offtopic|plan", "meta": {...}}`
-- `error`: `{"message": "error description"}`
-- `done`: `{}` (final event)
+- `step`: `{"label": "Aggregation SQL", "detail": "$922.23 across 16 transactions (Restaurant), computed by CockroachDB", "ms": 23.6, "status": "success"}`. One per piece of work that ran (intent routing, region pruning, SQL, caches, tools, EXPLAIN ANALYZE, the model's answer). `status` is `info`, `success`, `hit`, `miss` or `warning`; `ms` is a number, or null when the step was not timed.
+- `token`: `{"text": "partial answer text"}`. Tokens arrive while the answer is written. The `answer` event carries the final text, so replace what you streamed with it.
+- `citation`: `{"expense_id": "...", "merchant": "Blue Bottle", "amount": 13.58, "date": "2026-10-11"}`, one per purchase the answer cites. Amounts are positive.
+- `proposal`: `{"action_id": "<uuid>", "kind": "budget", "summary": "Set your Groceries budget to $450.00 a month", "status": "pending"}`. `kind` is `budget` or `recategorize`. Nothing changes until `POST /api/v1/actions/<action_id>/confirm`, and the answer of a proposal turn ends with "Waiting for your confirmation: <summary>."
+- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": false, "route": "aggregate", "meta": {"region": "us-east-1", "db_ms": 23}}`. `route` is `aggregate`, `receipt`, `remember`, `forget`, `offtopic` or `plan`. The only markers left in `answer` are `[txn:<expense_id>]` for the purchases in `citations`. On aggregation and planner answers, `meta` holds the region that served the query (null on a single-region cluster) and the database time in ms; receipt, memory and off-topic answers, and answers from the answer cache, send `{}`.
+- `error`: `{"message": "..."}`, a neutral message (still warming up, reconnecting, or a general failure), never the exception text.
+- `done`: `{}`, always the last event.
 
 **SSE events from POST `/api/v1/receipts`:**
 
-- `step`: `{"step": "ocr|extract|fraud|budget|post", "status": "start|done|skipped|failed", "detail": "...", "ms": 123.4}`
-- `receipt`: `{"document_id": "...", "merchant": "...", "amount": "12.34", "date": "2026-10-12", "category": "groceries", "items": [...], "expense_id": "...", "thread_id": "...", ...}`
-- `error`: `{"message": "error description"}`
-- `done`: `{}` (final event)
+- `step`: `{"step": "ocr", "status": "done", "detail": "221 characters", "ms": 746.6}`. The steps run in order: `ocr`, `extract`, `category`, `duplicate`, `post`, `fraud`, `budget`. Each sends `start`, then `done` or `failed`; for a duplicate, `post` is `skipped` and the fraud and budget checks don't run. `ms` is null on `start` and `skipped`.
+- `receipt`: `{"document_id": "...", "status": "posted", "filename": "receipt.png", "merchant": "TRADER JOE'S", "amount": 25.94, "date": "2026-10-13", "category": "Groceries", "items": [...], "payment_method": "VISA", "expense_id": "...", "created_at": "...", "error": null, "thread_id": "..."}`. `status` is `posted` or `duplicate` (then `expense_id` is the purchase it matches and nothing posted). `amount` is a number, `category` is the catalog label, and `payment_method` is null when the receipt shows none. `thread_id` is the thread the receipt became the active receipt of (a new one unless the upload named one), or null if that failed after the purchase posted.
+- `error`: `{"message": "..."}`, a neutral message.
+- `done`: `{}`, always the last event.
 
 **Kept for compatibility:** `/api/rag` (POST, RAG-based Q&A) and `/api/upload-receipt` (POST, receipt upload without SSE) still work. New code should use the `/api/v1/assistant` routes.
 

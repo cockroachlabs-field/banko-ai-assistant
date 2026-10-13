@@ -214,6 +214,22 @@ def test_a_long_session_sheds_its_oldest_turns_before_the_cookie_outgrows_a_brow
     assert kept[-1] == asked[-1] and asked[0] not in kept
 
 
+def test_one_long_pasted_message_still_fits_the_cookie(client):
+    """Shedding old turns cannot help when the newest turn alone is too big.
+    The page shows it shortened; the thread's checkpoint keeps it whole."""
+    import secrets
+
+    pasted = f"tell me about {secrets.token_hex(4000)}"
+    resp = client.post("/banko", data={"user_input": pasted})
+    cookie = resp.headers.get("Set-Cookie", "")
+    assert 0 < len(cookie) < 4093
+    with client.session_transaction() as s:
+        tid = s["thread_id"]
+        shown = [m["text"] for m in s["chat"] if m["class"] == "User"][-1]
+    assert tid and shown.endswith("…") and len(shown) < len(pasted) and pasted.startswith(shown[:-1])
+    assert G.thread_messages(tid)[-2]["content"] == pasted[:4000]
+
+
 def _thread_count(uid: str) -> int:
     with get_engine().connect() as c:
         return c.execute(text("SELECT count(*) FROM chat_threads WHERE user_id = CAST(:u AS UUID)"),

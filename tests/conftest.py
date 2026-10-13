@@ -29,6 +29,9 @@ _guard_database_url()
 os.environ.setdefault("BANKO_SKIP_AUTOSETUP", "1")
 # No background integrity sweeps; tests call check_integrity directly.
 os.environ.setdefault("INTEGRITY_INTERVAL_SECONDS", "0")
+# The shell profile turns Kafka on for the live demo, and any app a test
+# builds would join that consumer group. A test that wants it sets it itself.
+os.environ["COACH_KAFKA_ENABLED"] = "false"
 
 # Normalize the scheme once for every test module: postgresql:// works for
 # the app (it normalizes internally), so it should work for the suite too.
