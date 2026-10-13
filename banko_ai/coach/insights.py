@@ -17,15 +17,15 @@ from __future__ import annotations
 import calendar
 import statistics
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 
 def _engine(database_url: str):
-    return create_engine(database_url, poolclass=NullPool)
+    from ..db.engine import get_engine
+    return get_engine(database_url)
 
 
 def get_monthly_summary(user_id: str, year: int, month: int,
@@ -48,7 +48,6 @@ def get_monthly_summary(user_id: str, year: int, month: int,
               AND expense_date >= :start
               AND expense_date <= :end
         """), {"u": user_id, "start": first_day, "end": last_day}).fetchall()
-    eng.dispose()
 
     if not rows:
         return {
@@ -108,7 +107,6 @@ def get_spending_velocity(user_id: str, category: str,
               AND expense_date <= :today
         """), {"u": user_id, "c": category, "start": first_day,
                "today": today}).fetchone()
-    eng.dispose()
 
     spent = float(row[0])
     txn_count = int(row[1])
@@ -167,7 +165,6 @@ def get_top_merchants(user_id: str, database_url: str,
                 ORDER BY total DESC
                 LIMIT :k
             """), {"u": user_id, "cutoff": cutoff, "k": k}).fetchall()
-    eng.dispose()
     return [{
         "merchant": r[0],
         "total": round(float(r[1]), 2),
@@ -199,7 +196,6 @@ def detect_subscriptions(user_id: str, database_url: str,
               AND merchant IS NOT NULL
             ORDER BY merchant, expense_date
         """), {"u": user_id, "cutoff": cutoff}).fetchall()
-    eng.dispose()
 
     by_merchant: dict[str, list[tuple[date, float]]] = defaultdict(list)
     for merch, d, amt in rows:

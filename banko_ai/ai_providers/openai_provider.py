@@ -5,19 +5,16 @@ This module provides OpenAI integration for vector search and RAG responses.
 """
 
 import json
-import os
 from typing import Any
 
-import numpy as np
-import psycopg2
 from openai import OpenAI
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy import text
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
-from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
+from .base import AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
 
 
@@ -28,14 +25,15 @@ class OpenAIProvider(AIProvider):
         """Initialize OpenAI provider."""
         # Store cache manager
         self.cache_manager = cache_manager
-        
+
         # Support both config and environment variables
-        raw_key = config.get("api_key") or os.getenv("OPENAI_API_KEY")
+        cfg = get_config()
+        raw_key = config.get("api_key") or cfg.openai_api_key
         self.api_key = raw_key.strip().replace('\n', '').replace(' ', '') if raw_key else None
-        
+
         # Set the model in config so base class picks it up
         if "model" not in config:
-            config["model"] = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            config["model"] = cfg.openai_model
         
         self.client = None
         self.embedding_model = None
@@ -57,7 +55,7 @@ class OpenAIProvider(AIProvider):
         
         # Initialize OpenAI client
         try:
-            base_url = self.config.get("base_url") or os.getenv("OPENAI_BASE_URL")
+            base_url = self.config.get("base_url") or get_config().openai_base_url
             # Any OpenAI-compatible endpoint works here: a local ollama or
             # vLLM server, LM Studio, or a hosted vendor.
             self.client = (OpenAI(api_key=self.api_key, base_url=base_url)
@@ -73,7 +71,7 @@ class OpenAIProvider(AIProvider):
     
     def get_available_models(self) -> list[str]:
         """Get available OpenAI models. Override with OPENAI_MODELS env var or auto-discover from API."""
-        extra = os.getenv("OPENAI_MODELS", "")
+        extra = get_config().openai_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
         
@@ -96,7 +94,7 @@ class OpenAIProvider(AIProvider):
         if self.embedding_model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.embedding_model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 raise AIConnectionError(f"Failed to load embedding model: {str(e)}")
@@ -131,7 +129,7 @@ class OpenAIProvider(AIProvider):
                 print("2. Embedding generated (with cache support)")
                 
                 # Check vector_search_cache for cached results
-                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit)
+                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit, scope=str(user_id or ''))
                 if cached_results:
                     print(f"3. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
                     # Convert cached dict results to SearchResult objects
@@ -233,7 +231,7 @@ class OpenAIProvider(AIProvider):
                         'shopping_type': r.metadata.get('shopping_type') if r.metadata else 'Unknown',
                         'payment_method': r.metadata.get('payment_method') if r.metadata else 'Unknown'
                     })
-                self.cache_manager.cache_vector_search_results(query_embedding, cache_results)
+                self.cache_manager.cache_vector_search_results(query_embedding, cache_results, scope=str(user_id or ''))
             
             return results
             
@@ -392,7 +390,9 @@ class OpenAIProvider(AIProvider):
                     else:
                         ai_response = "I apologize, but I couldn't generate a response at this time."
                 else:
-                    ai_response = "No OpenAI client available."
+                    from .display import NEUTRAL_UNAVAILABLE
+                    print("No OpenAI client available.")
+                    ai_response = NEUTRAL_UNAVAILABLE
                     
             except Exception as e:
                 # Fallback to structured response if API call fails (following gemini/watsonx pattern)
@@ -494,8 +494,10 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
             
         except Exception as e:
             # Return a structured error response like gemini/watsonx does
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties with OpenAI. Error: {str(e)}")
             return RAGResponse(
-                response=f"Sorry, I'm experiencing technical difficulties with OpenAI. Error: {str(e)}",
+                response=NEUTRAL_UNAVAILABLE,
                 sources=context,
                 metadata={
                     'provider': 'openai',
@@ -599,7 +601,9 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
             return False
         
         try:
-            self.client.models.list()
+            # Short and single-shot: a health check must not sit through the
+            # SDK's default 10 minute timeout and two retries.
+            self.client.with_options(timeout=5, max_retries=0).models.list()
             return True
         except Exception:
             return False

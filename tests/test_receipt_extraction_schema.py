@@ -16,7 +16,7 @@ def test_valid_extraction_parses():
         merchant="Whole Foods Market",
         amount=42.17,
         date=datetime.date(2026, 5, 21),
-        category="food",
+        category="Groceries",
         items=["organic bananas", "almond milk"],
         payment_method="credit card",
     )
@@ -31,7 +31,7 @@ def test_valid_extraction_with_iso_date_string():
         merchant="Trader Joes",
         amount=15.42,
         date="2026-05-21",
-        category="food",
+        category="Groceries",
         items=["bread"],
         payment_method="debit card",
     )
@@ -45,7 +45,7 @@ def test_placeholder_date_string_rejected():
             merchant="Real Merchant",
             amount=10.0,
             date="YYYY-MM-DD",
-            category="food",
+            category="Groceries",
             items=["item"],
             payment_method="credit card",
         )
@@ -58,7 +58,7 @@ def test_zero_amount_rejected():
             merchant="Real Merchant",
             amount=0.0,
             date=datetime.date(2026, 5, 21),
-            category="food",
+            category="Groceries",
             items=["item"],
             payment_method="credit card",
         )
@@ -70,7 +70,7 @@ def test_placeholder_merchant_rejected():
             merchant="store name",
             amount=10.0,
             date=datetime.date(2026, 5, 21),
-            category="food",
+            category="Groceries",
             items=["item"],
             payment_method="credit card",
         )
@@ -88,7 +88,7 @@ def test_empty_items_accepted_when_other_fields_real():
         merchant="FL-POINTE ORLANDO - PBR",
         amount=96.82,
         date=datetime.date(2025, 10, 6),
-        category="services",
+        category="Transport",
         items=[],
         payment_method="credit card",
     )
@@ -104,7 +104,7 @@ def test_items_field_defaults_to_empty_list_when_omitted():
         merchant="Quick Stop",
         amount=5.00,
         date=datetime.date(2026, 5, 22),
-        category="food",
+        category="Groceries",
         payment_method="cash",
     )
     assert rx.items == []
@@ -121,7 +121,7 @@ def test_items_null_coerced_to_empty_list():
         merchant="FL-POINTE ORLANDO - PBR",
         amount=96.82,
         date=datetime.date(2025, 10, 6),
-        category="entertainment",
+        category="Entertainment",
         items=None,
         payment_method="credit card",
     )
@@ -147,7 +147,7 @@ def test_is_placeholder_payload_real_receipt_not_flagged():
         "merchant": "Whole Foods",
         "amount": 42.17,
         "date": "2026-05-21",
-        "category": "food",
+        "category": "Groceries",
         "items": ["organic bananas", "almond milk"],
         "payment_method": "credit card",
     }
@@ -161,8 +161,39 @@ def test_is_placeholder_payload_single_hit_not_flagged():
         "merchant": "Real Store",
         "amount": 15.42,
         "date": "YYYY-MM-DD",  # only this is a placeholder
-        "category": "food",
+        "category": "Groceries",
         "items": ["bread"],
         "payment_method": "credit card",
     }
     assert is_placeholder_payload(payload) is False
+
+
+def test_is_placeholder_payload_catches_the_catalog_template_echo():
+    """The prompt now lists the catalog's labels; a model that echoes the
+    template back gives that list as the category."""
+    from banko_ai.config.catalog import get_catalog
+    labels = ", ".join(get_catalog().spending_labels())
+    payload = {
+        "merchant": "store name",
+        "amount": 0.0,
+        "date": "YYYY-MM-DD",
+        "category": f"one of: {labels}",
+        "items": ["item1", "item2"],
+        "payment_method": "credit card or debit card or cash or other",
+    }
+    assert is_placeholder_payload(payload) is True
+    # The category list alone is one signal; with the item placeholders it is two.
+    assert is_placeholder_payload({"merchant": "Real Store", "amount": 9.5, "date": "2026-10-01",
+                                   "category": labels, "items": ["item1"], "payment_method": "cash"}) is True
+    assert is_placeholder_payload({"merchant": "Real Store", "amount": 9.5, "date": "2026-10-01",
+                                   "category": labels, "items": ["bread"], "payment_method": "cash"}) is False
+
+
+def test_a_missing_date_or_payment_method_is_filled_in():
+    """Receipts often print no payment method, and the prompt asks for null
+    when a field is not found; neither may fail the receipt."""
+    for extra in ({}, {"date": None, "payment_method": None}, {"date": "", "payment_method": "  "}):
+        rx = ReceiptExtraction(merchant="Corner Bakery", amount=6.4, category="Restaurant", **extra)
+        assert rx.date == datetime.date.today() and rx.payment_method is None
+    with pytest.raises(ValidationError, match="placeholder"):
+        ReceiptExtraction(merchant="Corner Bakery", amount=6.4, category="Restaurant", date="YYYY-MM-DD")

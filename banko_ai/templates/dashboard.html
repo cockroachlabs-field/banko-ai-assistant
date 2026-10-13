@@ -459,7 +459,7 @@
                 if (this.refreshButton) {
                     this.refreshButton.addEventListener('click', () => {
                         this.loadModels();
-                        this.loadSystemStatus();
+                        this.loadSystemStatus(true);
                     });
                 }
             }
@@ -502,7 +502,7 @@
                     
                     if (data.success) {
                         this.showNotification(data.message, 'success');
-                        this.loadSystemStatus();
+                        this.loadSystemStatus(true);
                     } else {
                         this.showNotification('Error: ' + data.error, 'error');
                     }
@@ -511,9 +511,11 @@
                 }
             }
             
-            async loadSystemStatus() {
+            async loadSystemStatus(refresh = false) {
                 try {
-                    const response = await fetch('/api/health');
+                    // refresh=1 re-tests the provider now instead of
+                    // reporting the warm-up result from boot.
+                    const response = await fetch(refresh ? '/api/health?refresh=1' : '/api/health');
                     const data = await response.json();
                     
                     if (this.systemStatus) {

@@ -8,8 +8,7 @@ Banko AI Assistant.
 from typing import Any
 
 from flask import session
-from sqlalchemy import create_engine, text
-from sqlalchemy.pool import NullPool
+from sqlalchemy import text
 
 from ..utils.db_retry import get_database_url
 
@@ -30,14 +29,14 @@ def resolve_user_region(user_id: str, database_url: str | None = None) -> str | 
         user_id: User UUID
         database_url: Database connection string (defaults to env DATABASE_URL)
     """
-    from ..utils.db_retry import create_resilient_engine
+    from ..db.engine import get_engine
 
     url = get_database_url(database_url)
     key = (user_id, url)
     if key in _user_region_cache:
         return _user_region_cache[key]
 
-    engine = create_resilient_engine(url)
+    engine = get_engine(url)
     try:
         with engine.connect() as conn:
             result = conn.execute(
@@ -56,8 +55,6 @@ def resolve_user_region(user_id: str, database_url: str | None = None) -> str | 
             return region
     except Exception:
         return None
-    finally:
-        engine.dispose()
 
 
 resolve_user_region.cache_clear = _user_region_cache.clear  # type: ignore[attr-defined]
@@ -69,14 +66,12 @@ class UserManager:
     def __init__(self, database_url: str | None = None):
         """Initialize user manager with database connection."""
         self.database_url = get_database_url(database_url)
-        self._engine = None
 
     @property
     def engine(self):
         """Lazy engine initialization."""
-        if self._engine is None:
-            self._engine = create_engine(self.database_url, poolclass=NullPool)
-        return self._engine
+        from ..db.engine import get_engine
+        return get_engine(self.database_url)
 
     def ensure_schema(self) -> None:
         """Ensure users table exists (delegates to migration)."""
@@ -169,29 +164,6 @@ class UserManager:
             )
             conn.commit()
 
-    def backfill_personas(self) -> None:
-        """UPSERT the three legacy demo personas (idempotent)."""
-        personas = [
-            ("00000000-0000-0000-0000-0000000000a1", "maya", "diner"),
-            ("00000000-0000-0000-0000-0000000000a2", "sam", "subscriber"),
-            ("00000000-0000-0000-0000-0000000000a3", "riley", "saver"),
-        ]
-        with self.engine.connect() as conn:
-            for user_id, username, spending_style in personas:
-                conn.execute(
-                    text("""
-                        INSERT INTO users (user_id, username, spending_style, demo_user)
-                        VALUES (:user_id, :username, :spending_style, true)
-                        ON CONFLICT (username) DO NOTHING
-                    """),
-                    {
-                        "user_id": user_id,
-                        "username": username,
-                        "spending_style": spending_style,
-                    }
-                )
-            conn.commit()
-
     def get_current_user(self) -> dict[str, Any] | None:
         """Get current user from Flask session."""
         user_id = session.get('user_id')
@@ -223,10 +195,9 @@ class UserManager:
 def clear_demo_users(database_url: str) -> dict[str, int]:
     """Delete all demo users and their dependent data, preserving the three
     legacy personas. Returns per-table deletion counts."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
+    from ..db.engine import get_engine
 
-    engine = create_engine(get_database_url(database_url), poolclass=NullPool)
+    engine = get_engine(get_database_url(database_url))
     counts = {}
 
     legacy_persona_ids = [
@@ -235,63 +206,59 @@ def clear_demo_users(database_url: str) -> dict[str, int]:
         "00000000-0000-0000-0000-0000000000a3",
     ]
 
-    try:
-        with engine.connect() as conn:
-            demo_user_ids_result = conn.execute(
-                text("""
-                    SELECT user_id FROM users
-                    WHERE demo_user = true
-                    AND user_id NOT IN (:p1, :p2, :p3)
-                """),
-                {"p1": legacy_persona_ids[0], "p2": legacy_persona_ids[1], "p3": legacy_persona_ids[2]}
-            )
-            demo_user_ids = [str(row[0]) for row in demo_user_ids_result]
+    with engine.connect() as conn:
+        demo_user_ids_result = conn.execute(
+            text("""
+                SELECT user_id FROM users
+                WHERE demo_user = true
+                AND user_id NOT IN (:p1, :p2, :p3)
+            """),
+            {"p1": legacy_persona_ids[0], "p2": legacy_persona_ids[1], "p3": legacy_persona_ids[2]}
+        )
+        demo_user_ids = [str(row[0]) for row in demo_user_ids_result]
 
-            if not demo_user_ids:
-                return {"users": 0, "expenses": 0, "user_budgets": 0, "spending_signals": 0, "coach_nudges": 0}
+        if not demo_user_ids:
+            return {"users": 0, "expenses": 0, "user_budgets": 0, "spending_signals": 0, "coach_nudges": 0}
 
-            placeholders = ", ".join([f":uid{i}" for i in range(len(demo_user_ids))])
-            uid_params = {f"uid{i}": uid for i, uid in enumerate(demo_user_ids)}
+        placeholders = ", ".join([f":uid{i}" for i in range(len(demo_user_ids))])
+        uid_params = {f"uid{i}": uid for i, uid in enumerate(demo_user_ids)}
 
-            result = conn.execute(
-                text(f"""
-                    DELETE FROM coach_nudges
-                    WHERE signal_id IN (
-                        SELECT signal_id FROM spending_signals
-                        WHERE user_id IN ({placeholders})
-                    )
-                """),
-                uid_params
-            )
-            counts["coach_nudges"] = result.rowcount
+        result = conn.execute(
+            text(f"""
+                DELETE FROM coach_nudges
+                WHERE signal_id IN (
+                    SELECT signal_id FROM spending_signals
+                    WHERE user_id IN ({placeholders})
+                )
+            """),
+            uid_params
+        )
+        counts["coach_nudges"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM spending_signals WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["spending_signals"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM spending_signals WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["spending_signals"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM user_budgets WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["user_budgets"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM user_budgets WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["user_budgets"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM expenses WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["expenses"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM expenses WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["expenses"] = result.rowcount
 
-            result = conn.execute(
-                text(f"DELETE FROM users WHERE user_id IN ({placeholders})"),
-                uid_params
-            )
-            counts["users"] = result.rowcount
+        result = conn.execute(
+            text(f"DELETE FROM users WHERE user_id IN ({placeholders})"),
+            uid_params
+        )
+        counts["users"] = result.rowcount
 
-            conn.commit()
-
-    finally:
-        engine.dispose()
+        conn.commit()
 
     return counts

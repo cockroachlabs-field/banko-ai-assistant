@@ -13,8 +13,6 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
-from langchain_core.tools import Tool
-
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
 
@@ -103,9 +101,8 @@ Be helpful and non-judgmental. Focus on solutions, not problems."""
         """
         self.update_status("thinking", {"action": "check_budget", "user_id": user_id})
         
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         result = {
             'user_id': user_id,
             'budget': monthly_budget,
@@ -257,10 +254,12 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
             # If approaching limit, check if we need to create tasks for other agents
             if result['alert'] and result['alert_level'] in ['warning', 'critical']:
                 # Get fraud agent ID to create escalation task
-                from sqlalchemy import create_engine, text
-                from sqlalchemy.pool import NullPool
-                
-                engine = create_engine(self.database_url, poolclass=NullPool)
+                from sqlalchemy import text
+                                
+                from ..db.engine import get_engine
+
+                                
+                engine = get_engine(self.database_url)
                 with engine.connect() as conn:
                     # Freshest fraud agent wherever it runs; region labels
                     # are real localities now, not fixed AWS names.
@@ -285,9 +284,6 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
                             priority=8 if result['alert_level'] == 'critical' else 5
                         )
                         result['task_created'] = task_id
-                
-                engine.dispose()
-            
         except Exception as e:
             result['error'] = str(e)
         

@@ -1,87 +1,60 @@
-"""
-AI Provider Factory for creating provider instances.
+"""AI provider factory.
 
-This module provides a factory pattern for creating AI provider instances
-based on configuration.
+Provider modules are imported only when that provider is created. Importing
+all five pulled in google-genai, openai, boto3 and the IBM SDK on every boot,
+about a second of import time for SDKs that one run never uses.
 """
 
+from __future__ import annotations
+
+import importlib
+import inspect
 from typing import Any
 
-from .aws_provider import AWSProvider
 from .base import AIProvider, AIProviderError
-from .gemini_provider import GeminiProvider
-from .ollama_provider import OllamaProvider
-from .openai_provider import OpenAIProvider
-from .watsonx_provider import WatsonxProvider
+
+_BUILTIN: dict[str, str] = {
+    "openai": "banko_ai.ai_providers.openai_provider:OpenAIProvider",
+    "aws": "banko_ai.ai_providers.aws_provider:AWSProvider",
+    "watsonx": "banko_ai.ai_providers.watsonx_provider:WatsonxProvider",
+    "gemini": "banko_ai.ai_providers.gemini_provider:GeminiProvider",
+    "ollama": "banko_ai.ai_providers.ollama_provider:OllamaProvider",
+}
 
 
 class AIProviderFactory:
     """Factory for creating AI provider instances."""
-    
-    _providers: dict[str, type[AIProvider]] = {
-        "openai": OpenAIProvider,
-        "aws": AWSProvider,
-        "watsonx": WatsonxProvider,
-        "gemini": GeminiProvider,
-        "ollama": OllamaProvider,
-    }
-    
+
+    _registered: dict[str, type[AIProvider]] = {}
+
+    @classmethod
+    def _resolve(cls, name: str) -> type[AIProvider]:
+        if name in cls._registered:
+            return cls._registered[name]
+        module_name, _, class_name = _BUILTIN[name].partition(":")
+        return getattr(importlib.import_module(module_name), class_name)
+
     @classmethod
     def create_provider(cls, service_name: str, config: dict[str, Any], cache_manager=None) -> AIProvider:
-        """
-        Create an AI provider instance.
-        
-        Args:
-            service_name: Name of the AI service (openai, aws, watsonx, gemini)
-            config: Configuration dictionary for the provider
-            cache_manager: Optional cache manager instance
-            
-        Returns:
-            AIProvider instance
-            
-        Raises:
-            AIProviderError: If the service is not supported
-        """
         service_name = service_name.lower()
-        
-        if service_name not in cls._providers:
-            available = ", ".join(cls._providers.keys())
-            raise AIProviderError(
-                f"Unsupported AI service: {service_name}. "
-                f"Available services: {available}"
-            )
-        
-        provider_class = cls._providers[service_name]
-        
+        available = cls.get_available_providers()
+        if service_name not in available:
+            raise AIProviderError(f"Unsupported AI service: {service_name}. Available services: {', '.join(available)}")
         try:
-            # Pass cache_manager to all providers that support it
-            if hasattr(provider_class, '__init__'):
-                # Check if the provider's __init__ method accepts cache_manager parameter
-                import inspect
-                sig = inspect.signature(provider_class.__init__)
-                if 'cache_manager' in sig.parameters:
-                    return provider_class(config, cache_manager)
-                else:
-                    return provider_class(config)
-            else:
-                return provider_class(config)
+            provider_class = cls._resolve(service_name)
+        except ImportError as e:
+            raise AIProviderError(f"{service_name} provider is unavailable: {e}")
+        try:
+            if "cache_manager" in inspect.signature(provider_class.__init__).parameters:
+                return provider_class(config, cache_manager)
+            return provider_class(config)
         except Exception as e:
-            raise AIProviderError(
-                f"Failed to create {service_name} provider: {str(e)}"
-            )
-    
+            raise AIProviderError(f"Failed to create {service_name} provider: {e}")
+
     @classmethod
     def get_available_providers(cls) -> list[str]:
-        """Get list of available AI providers."""
-        return list(cls._providers.keys())
-    
+        return list(_BUILTIN) + [name for name in cls._registered if name not in _BUILTIN]
+
     @classmethod
     def register_provider(cls, name: str, provider_class: type[AIProvider]) -> None:
-        """
-        Register a new AI provider.
-        
-        Args:
-            name: Name of the provider
-            provider_class: Provider class that implements AIProvider
-        """
-        cls._providers[name.lower()] = provider_class
+        cls._registered[name.lower()] = provider_class

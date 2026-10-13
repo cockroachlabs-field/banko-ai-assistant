@@ -8,7 +8,6 @@ whole app runs with the network cable unplugged.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import requests
@@ -28,14 +27,16 @@ class OllamaProvider(AIProvider):
 
     def __init__(self, config: dict[str, Any] = None, cache_manager=None):
         config = config or {}
-        self.host = (config.get("host") or os.getenv("OLLAMA_HOST")
-                     or "http://localhost:11434").rstrip("/")
-        self.current_model = (config.get("model") or os.getenv("OLLAMA_MODEL")
-                              or "granite3.3:8b")
+        cfg = get_config()
+        self.host = (config.get("host") or cfg.ollama_host).rstrip("/")
+        self.current_model = config.get("model") or cfg.ollama_model
         self.cache_manager = cache_manager
-        self.embedding_model_name = os.getenv("EMBEDDING_MODEL",
-                                              "all-MiniLM-L6-v2")
-        self.timeout = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
+        self.embedding_model_name = cfg.embedding_model
+        self.timeout = cfg.ollama_timeout_seconds
+        # Same values the agent path (llm_factory) sends, so Ollama never
+        # reloads the model when traffic switches between the two.
+        self.num_ctx = cfg.ollama_num_ctx
+        self.keep_alive = cfg.ollama_keep_alive_value
         super().__init__(config)
 
     def _validate_config(self) -> None:
@@ -56,7 +57,9 @@ class OllamaProvider(AIProvider):
             resp = requests.post(
                 f"{self.host}/api/chat",
                 json={"model": self.current_model, "messages": messages,
-                      "stream": False},
+                      "stream": False,
+                      "options": {"num_ctx": self.num_ctx},
+                      "keep_alive": self.keep_alive},
                 timeout=self.timeout)
         except requests.exceptions.ConnectionError as e:
             raise AIConnectionError(
@@ -82,11 +85,19 @@ class OllamaProvider(AIProvider):
         return True
 
     def test_connection(self) -> bool:
+        """The daemon answers and the configured model is pulled."""
         try:
-            return requests.get(f"{self.host}/api/tags",
-                                timeout=5).status_code == 200
-        except requests.exceptions.RequestException:
+            resp = requests.get(f"{self.host}/api/tags", timeout=(2, 5))
+            if resp.status_code != 200:
+                return False
+            names = {m.get("name", "") for m in resp.json().get("models", [])}
+        except (requests.exceptions.RequestException, ValueError):
             return False
+
+        def bare(name: str) -> str:
+            return name[:-len(":latest")] if name.endswith(":latest") else name
+
+        return bare(self.current_model) in {bare(n) for n in names}
 
     # ── embeddings (local, same as every provider) ─────────────────────
 

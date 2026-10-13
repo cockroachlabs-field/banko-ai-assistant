@@ -5,7 +5,6 @@ Provides LangChain-compatible LLM instances based on configured AI provider.
 This centralizes LLM creation logic for all agents (receipt, fraud, budget).
 """
 
-import os
 from typing import Any
 
 from banko_ai.config.settings import get_config
@@ -31,7 +30,7 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
     if config.ai_service == 'openai':
         try:
             from langchain_openai import ChatOpenAI
-            api_key = os.getenv('OPENAI_API_KEY') or getattr(config, 'openai_api_key', None)
+            api_key = config.openai_api_key
             if api_key:
                 api_key = api_key.strip().replace('\n', '').replace(' ', '')
             else:
@@ -39,7 +38,7 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
             return ChatOpenAI(
                 model=model_override or config.openai_model,
                 api_key=api_key,
-                base_url=os.getenv('OPENAI_BASE_URL') or None,
+                base_url=config.openai_base_url or None,
                 temperature=temperature
             )
         except ImportError:
@@ -53,7 +52,7 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
             from langchain_aws import ChatBedrock
             return ChatBedrock(
                 model_id=model_override or config.aws_model,
-                region_name=os.getenv('AWS_REGION', 'us-east-1'),
+                region_name=config.aws_region,
                 model_kwargs={'temperature': temperature}
             )
         except ImportError:
@@ -71,24 +70,13 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
 
             # Get Watsonx base URL (not the full endpoint path)
             # langchain_ibm expects base URL like: https://us-south.ml.cloud.ibm.com
-            watsonx_url = os.getenv('WATSONX_API_URL') or os.getenv('WATSONX_URL')
-
-            # If not set, use default base URL (US South region)
-            if not watsonx_url:
-                watsonx_url = 'https://us-south.ml.cloud.ibm.com'
-
-            # Strip off any path/query parameters if present (langchain_ibm adds them)
-            if '/ml/v1' in watsonx_url or '?' in watsonx_url:
-                # Extract just the base URL
-                from urllib.parse import urlparse
-                parsed = urlparse(watsonx_url)
-                watsonx_url = f"{parsed.scheme}://{parsed.netloc}"
+            watsonx_url = config.watsonx_base_url
 
             return ChatWatsonx(
                 model_id=model_override or config.watsonx_model,
                 url=watsonx_url,
-                api_key=config.watsonx_api_key or os.getenv('WATSONX_API_KEY'),
-                project_id=config.watsonx_project_id or os.getenv('WATSONX_PROJECT_ID'),
+                api_key=config.watsonx_api_key,
+                project_id=config.watsonx_project_id,
                 temperature=temperature,
                 max_tokens=2000,
             )
@@ -99,22 +87,24 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
             )
     
     elif config.ai_service == 'ollama':
-        from langchain_openai import ChatOpenAI
-        host = os.getenv('OLLAMA_HOST', 'http://localhost:11434').rstrip('/')
-        # Ollama serves an OpenAI-compatible endpoint at /v1; the key is a
-        # required-but-ignored placeholder.
-        return ChatOpenAI(
+        # The native API, not the OpenAI-compatible /v1: /v1 ignores
+        # num_ctx, so the daemon would load the model at its own default
+        # and reload it every time traffic switched between this path and
+        # the provider's /api/chat calls.
+        from langchain_ollama import ChatOllama
+        return ChatOllama(
             model=model_override or config.ollama_model,
-            api_key='ollama',
-            base_url=f"{host}/v1",
+            base_url=config.ollama_host.rstrip('/'),
+            num_ctx=config.ollama_num_ctx,
+            keep_alive=config.ollama_keep_alive_value,
             temperature=temperature,
         )
 
     elif config.ai_service == 'gemini':
         # Try Vertex AI first (service account), then fall back to Generative AI API (API key)
-        google_api_key = os.getenv('GOOGLE_API_KEY') or os.getenv('GEMINI_API_KEY')
-        google_creds = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
-        google_project = os.getenv('GOOGLE_PROJECT_ID')
+        google_api_key = config.google_api_key
+        google_creds = config.google_application_credentials
+        google_project = config.google_project_id
         
         if google_creds and google_project:
             try:
@@ -129,7 +119,7 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
                     model=selected_model,
                     credentials=credentials,
                     project=google_project,
-                    location=os.getenv('GOOGLE_LOCATION', 'us-central1'),
+                    location=config.google_location,
                     vertexai=True,
                     temperature=temperature
                 )
@@ -173,4 +163,4 @@ def get_embedding_model():
         SentenceTransformer instance
     """
     from banko_ai.utils.embeddings import load_embedding_model
-    return load_embedding_model('all-MiniLM-L6-v2')
+    return load_embedding_model()

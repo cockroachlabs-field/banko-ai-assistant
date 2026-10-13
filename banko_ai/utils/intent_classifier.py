@@ -130,7 +130,7 @@ def _lexical_or_fuzzy_financial_hit(query: str) -> bool:
 def _get_model():
     global _model
     if _model is None:
-        _model = load_embedding_model("all-MiniLM-L6-v2")
+        _model = load_embedding_model()
     return _model
 
 
@@ -222,6 +222,12 @@ _WINDOW_PATTERNS = [
     (re.compile(r"since\s+([a-z]+)"), "since_month"),
 ]
 
+# "for this month", "at all", "on average per month": a window or emphasis
+# after the preposition, not a category, so the question covers everything.
+_NOT_A_SUBJECT = frozenset(
+    "the this that last past next my a an each every per day days week weeks weekend month months quarter "
+    "year years time period today now all everything total average overall so far".split())
+
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
      "august", "september", "october", "november", "december"], start=1)}
@@ -285,5 +291,7 @@ def classify_aggregation(query: str,
         window = (end - timedelta(days=90), end)
     m = _SUBJECT_RE.search(q) or _SUBJECT_INLINE_RE.search(q)
     subject = m.group(1).strip() if m else None
+    if subject and all(w in _NOT_A_SUBJECT for w in subject.split()):
+        subject = None
     return AggregationIntent(operation=op, subject=subject,
                              window_start=window[0], window_end=window[1])

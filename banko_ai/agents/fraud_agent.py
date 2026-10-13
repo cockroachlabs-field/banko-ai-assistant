@@ -11,10 +11,8 @@ This agent:
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
-
-from langchain_core.tools import Tool
 
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
@@ -130,10 +128,11 @@ Be thorough but not overly cautious. False positives are costly."""
             expense['date'] = expense.get('date') or expense.get('expense_date', '')
             
             # Signal 1: Check for duplicates within the configured window
-            from sqlalchemy import create_engine, text
-            from sqlalchemy.pool import NullPool
             try:
-                dup_engine = create_engine(self.database_url, poolclass=NullPool)
+                from sqlalchemy import text
+
+                from ..db.engine import get_engine
+                dup_engine = get_engine(self.database_url)
                 with dup_engine.connect() as conn:
                     dup_result = conn.execute(text("""
                         SELECT expense_id::TEXT, merchant, expense_amount, expense_date
@@ -151,8 +150,7 @@ Be thorough but not overly cautious. False positives are costly."""
                         'expense_id': expense_id,
                     })
                     dup_rows = dup_result.fetchall()
-                dup_engine.dispose()
-                
+
                 if dup_rows:
                     result['signals'].append({
                         'type': 'duplicate',
@@ -324,9 +322,8 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         """
         self.update_status("acting", {"action": "scan_recent", "hours": hours})
         
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         results = {
             'scanned': 0,
             'flagged': 0,
@@ -336,7 +333,9 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         
         try:
             # Get recent expenses
-            engine = create_engine(self.database_url, poolclass=NullPool)
+            from ..db.engine import get_engine
+
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 from datetime import datetime, timedelta
@@ -350,9 +349,6 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
                 """), {'cutoff': cutoff_date, 'limit': limit})
                 
                 expense_ids = [row[0] for row in result.fetchall()]
-            
-            engine.dispose()
-            
             # Analyze each expense
             for expense_id in expense_ids:
                 results['scanned'] += 1
@@ -394,11 +390,12 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
         """
         self.update_status("thinking", {"action": "learn_from_feedback", "decision_id": decision_id})
         
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         try:
-            engine = create_engine(self.database_url, poolclass=NullPool)
+            from ..db.engine import get_engine
+
+            engine = get_engine(self.database_url)
             
             with engine.connect() as conn:
                 # Update decision with feedback
@@ -424,9 +421,6 @@ Provide a concise explanation of why this is or isn't fraud. Be specific about t
                 """), {'decision_id': decision_id})
                 
                 row = result.fetchone()
-            
-            engine.dispose()
-            
             if not row:
                 return {'success': False, 'error': 'Decision not found'}
             

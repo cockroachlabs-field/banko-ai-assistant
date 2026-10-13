@@ -129,6 +129,8 @@ jobs:
         env:
           AI_SERVICE: openai
           DATABASE_URL: "cockroachdb://root@localhost:26257/defaultdb?sslmode=disable"
+          # The CI node is throwaway; tests/conftest.py refuses 26257 without this.
+          BANKO_ALLOW_CHAOS_TESTS: "1"
 
   build:
     name: Build Package

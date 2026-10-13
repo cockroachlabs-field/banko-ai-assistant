@@ -65,4 +65,7 @@ def test_search_expenses_explain_mentions_expenses():
     assert isinstance(results, list)
     assert isinstance(explain_text, str)
     assert len(explain_text) > 0
+    # The fallback text also names the table, so rule it out explicitly.
+    assert "explain unavailable" not in explain_text
+    assert "execution time" in explain_text.lower()
     assert "expenses" in explain_text.lower()

@@ -425,7 +425,6 @@
             </button>
         </div>
                 <div id="db-operations" class="space-y-3 text-sm">
-            <!-- Operations will be displayed here -->
         </div>
     </div>
 
@@ -433,7 +432,7 @@
             <section id="chat-container" class="flex-1 overflow-y-auto p-6 space-y-6 chat-container">
         {% for message in chat %}
             {% if message.class == 'Assistant' %}
-                        <div class="message-container message-enter" data-read-aloud="{{ message.text }}">
+                        <div class="message-container message-enter" data-role="assistant" data-trace='{{ (message.meta.trace if message.meta and message.meta.trace else []) | tojson }}' data-read-aloud="{{ message.text }}">
                             <div class="flex items-start space-x-4">
                                 <div class="w-10 h-10 rounded-full bg-cockroach-primary flex items-center justify-center flex-shrink-0 shadow-md">
                                     <i class="fas fa-robot text-white text-sm"></i>
@@ -442,12 +441,15 @@
                                     <div class="markdown-content text-cockroach-text leading-relaxed" data-raw-content="{{ message.text }}">
                                         <!-- Markdown content will be rendered here -->
                             </div>
-                            {% if message.meta %}
+                            {% if message.meta and (message.meta.explain or message.meta.trace) %}
                             <div class="text-xs text-gray-400 mt-2">
-                                {% if message.meta.region %}{{ message.meta.region }} · {% endif %}{{ message.meta.db_ms }}ms
+                                {% if message.meta.db_ms is defined %}{% if message.meta.region %}{{ message.meta.region }} · {% endif %}{{ message.meta.db_ms }}ms{% endif %}
                                 <button class="ml-2 text-blue-500 hover:text-blue-600" onclick="toggleExplain(this)">how was this answered</button>
                             </div>
-                            <pre class="explain-panel hidden mt-2 p-2 bg-gray-50 text-gray-700 text-xs font-mono overflow-x-auto rounded border border-gray-200">{{ message.meta.explain | e }}</pre>
+                            <div class="explain-panel hidden">
+                                {% if message.meta.trace %}<div class="trace-steps mt-2 space-y-2 text-xs"></div>{% endif %}
+                                {% if message.meta.explain %}<pre class="mt-2 p-2 bg-gray-50 text-gray-700 text-xs font-mono overflow-x-auto rounded border border-gray-200">{{ message.meta.explain | e }}</pre>{% endif %}
+                            </div>
                             {% endif %}
                         </div>
                     </div>
@@ -610,11 +612,77 @@ marked.setOptions({
             });
         }
 
+        // One row of the DB Ops trace. Built with textContent only: step
+        // text can carry the user's own words.
+        function buildOperationRow(step, description, type = 'info', stamp = null) {
+            let bgColor, textColor, borderColor;
+            if (type === 'success') {
+                bgColor = 'bg-green-50';
+                textColor = 'text-green-800';
+                borderColor = 'border-l-4 border-green-500';
+            } else if (type === 'warning') {
+                bgColor = 'bg-orange-50';
+                textColor = 'text-orange-800';
+                borderColor = 'border-l-4 border-orange-500';
+            } else if (type === 'error') {
+                bgColor = 'bg-red-50';
+                textColor = 'text-red-800';
+                borderColor = 'border-l-4 border-red-500';
+            } else {
+                bgColor = 'bg-blue-50';
+                textColor = 'text-blue-800';
+                borderColor = 'border-l-4 border-blue-500';
+            }
+            const row = document.createElement('div');
+            row.className = `flex items-center space-x-3 p-4 rounded-lg ${bgColor} ${textColor} ${borderColor} transition-all duration-300`;
+            const time = document.createElement('span');
+            time.className = 'text-xs text-gray-500 font-mono';
+            time.textContent = stamp || new Date().toLocaleTimeString();
+            const label = document.createElement('span');
+            label.className = 'font-semibold';
+            label.textContent = step;
+            const desc = document.createElement('span');
+            desc.className = 'flex-1';
+            desc.textContent = description;
+            row.append(time, label, desc);
+            return row;
+        }
+
+        // Trace status to row color: hit green, miss orange, error red,
+        // everything else blue.
+        const TRACE_COLORS = { hit: 'success', miss: 'warning', error: 'error' };
+
+        function traceRows(steps) {
+            return (steps || []).map(s => {
+                const parts = [];
+                if (s.detail) parts.push(s.detail);
+                if (s.ms !== null && s.ms !== undefined) parts.push(`${s.ms} ms`);
+                const stamp = (s.t !== null && s.t !== undefined) ? `+${Math.round(s.t)}ms` : '';
+                return buildOperationRow(s.label || '', parts.join(' · '), TRACE_COLORS[s.status] || 'info', stamp);
+            });
+        }
+
+        function readTrace(container) {
+            try {
+                const steps = JSON.parse(container?.getAttribute('data-trace') || '[]');
+                return Array.isArray(steps) ? steps : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function renderMessageTraces() {
+            document.querySelectorAll('.message-container[data-role="assistant"]').forEach(container => {
+                const target = container.querySelector('.trace-steps');
+                if (target) target.replaceChildren(...traceRows(readTrace(container)));
+            });
+        }
+
         function toggleExplain(button) {
             const panel = button.closest('.message-bubble').querySelector('.explain-panel');
             if (panel.classList.contains('hidden')) {
                 panel.classList.remove('hidden');
-                button.textContent = 'hide plan';
+                button.textContent = 'hide';
             } else {
                 panel.classList.add('hidden');
                 button.textContent = 'how was this answered';
@@ -1116,6 +1184,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             init() {
                 document.getElementById('db-toggle')?.addEventListener('click', () => this.toggle());
                 document.getElementById('close-db-panel')?.addEventListener('click', () => this.hide());
+                this.renderLatest();
             }
             
             toggle() {
@@ -1127,6 +1196,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
             }
             
             show() {
+                this.renderLatest();
                 document.getElementById('db-panel').classList.remove('hidden');
                 this.isVisible = true;
                 this.scrollToPanel();
@@ -1138,57 +1208,35 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                 this.scrollToBottom();
             }
             
-            addOperation(step, description, type = 'info') {
-    const operationsDiv = document.getElementById('db-operations');
-    const timestamp = new Date().toLocaleTimeString();
-    
-    const operationDiv = document.createElement('div');
-    
-    let bgColor, textColor, borderColor = '';
-    if (type === 'success') {
-        bgColor = 'bg-green-50';
-        textColor = 'text-green-800';
-                    borderColor = 'border-l-4 border-green-500';
-    } else if (type === 'warning') {
-        bgColor = 'bg-orange-50'; 
-        textColor = 'text-orange-800';
-                    borderColor = 'border-l-4 border-orange-500';
-    } else if (type === 'error') {
-        bgColor = 'bg-red-50';
-        textColor = 'text-red-800'; 
-                    borderColor = 'border-l-4 border-red-500';
-    } else {
-        bgColor = 'bg-blue-50';
-        textColor = 'text-blue-800';
-                    borderColor = 'border-l-4 border-blue-500';
-    }
-    
-                operationDiv.className = `flex items-center space-x-3 p-4 rounded-lg ${bgColor} ${textColor} ${borderColor} transition-all duration-300`;
-    
-    const isCacheOperation = description.includes('CACHE HIT') || description.includes('CACHE MISS');
-    const cacheIcon = description.includes('CACHE HIT') ? '🎯' : 
-                     description.includes('CACHE MISS') ? '⚡' : '';
-    
-    operationDiv.innerHTML = `
-        <span class="text-xs text-gray-500 font-mono">${timestamp}</span>
-        <span class="font-semibold">${step}</span>
-        ${cacheIcon ? `<span class="text-lg">${cacheIcon}</span>` : ''}
-        <span class="flex-1 ${isCacheOperation ? 'font-medium' : ''}">${description}</span>
-    `;
-    
-    operationsDiv.appendChild(operationDiv);
-    operationsDiv.scrollTop = operationsDiv.scrollHeight;
-    
-    if (isCacheOperation) {
-        operationDiv.style.transform = 'scale(0.95)';
-        setTimeout(() => {
-            operationDiv.style.transform = 'scale(1)';
-        }, 100);
-                }
+            addOperation(step, description, type = 'info', stamp = null) {
+                const operationsDiv = document.getElementById('db-operations');
+                operationsDiv.appendChild(buildOperationRow(step, description, type, stamp));
+                operationsDiv.scrollTop = operationsDiv.scrollHeight;
             }
-            
+
+            // The panel shows how the latest answer was produced. Every
+            // answer is a fresh page, so this runs on load whether the
+            // panel is open or not, and again whenever it opens.
+            renderLatest() {
+                const operationsDiv = document.getElementById('db-operations');
+                if (!operationsDiv) return;
+                this.clearOperations();
+                const answers = document.querySelectorAll('.message-container[data-role="assistant"]');
+                const steps = answers.length ? readTrace(answers[answers.length - 1]) : [];
+                if (!steps.length) {
+                    const empty = document.createElement('p');
+                    empty.className = 'text-cockroach-text-secondary';
+                    empty.textContent = answers.length
+                        ? 'No trace was kept for the latest answer.'
+                        : 'Ask a question to see how Banko answers it.';
+                    operationsDiv.appendChild(empty);
+                    return;
+                }
+                traceRows(steps).forEach(row => operationsDiv.appendChild(row));
+            }
+
             clearOperations() {
-                document.getElementById('db-operations').innerHTML = '';
+                document.getElementById('db-operations').replaceChildren();
             }
             
             scrollToPanel() {
@@ -1255,12 +1303,6 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                     console.log('Showing loading animation...');
                     chatManager.showLoadingAnimation();
                     
-                    // Show database operations if enabled
-                    if (window.dbManager && window.dbManager.isVisible) {
-                        console.log('Simulating database operations...');
-                        chatManager.simulateDatabaseOperations(message);
-                    }
-                    
                     // Clear the input field AFTER a short delay to ensure form submission
                     setTimeout(() => {
                         messageInput.value = '';
@@ -1296,11 +1338,6 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                             if (window.chatManager) {
                                 window.chatManager.showLoadingAnimation();
                                 
-                                // Show database operations if enabled
-                                if (window.dbManager && window.dbManager.isVisible) {
-                                    console.log('Simulating database operations...');
-                                    window.chatManager.simulateDatabaseOperations(message);
-                                }
                             }
                             
                             // Clear the input field AFTER a short delay to ensure form submission
@@ -1398,108 +1435,6 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
                     loadingMessage.style.display = 'none';
                     console.log('Loading animation hidden');
                 }
-            }
-            
-            simulateDatabaseOperations(message) {
-                window.dbManager.clearOperations();
-                window.dbManager.addOperation('📤 Query', `Processing: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`, 'info');
-                
-        const cacheScenarios = [
-                    { embedding: 'miss', vectorSearch: 'miss', response: 'miss', probability: 0.4 },
-                    { embedding: 'hit', vectorSearch: 'miss', response: 'miss', probability: 0.3 },
-                    { embedding: 'hit', vectorSearch: 'hit', response: 'miss', probability: 0.2 },
-                    { embedding: 'hit', vectorSearch: 'hit', response: 'hit', probability: 0.1 }
-                ];
-                
-        const random = Math.random();
-        let cumulative = 0;
-        let selectedScenario = cacheScenarios[0];
-        for (const scenario of cacheScenarios) {
-            cumulative += scenario.probability;
-            if (random <= cumulative) {
-                selectedScenario = scenario;
-                break;
-            }
-        }
-        
-        setTimeout(() => {
-            if (selectedScenario.embedding === 'hit') {
-                window.dbManager.addOperation('💾 Cache', 'Embedding Cache: ✓ HIT', 'success');
-            } else {
-                window.dbManager.addOperation('💾 Cache', 'Embedding Cache: ✗ MISS', 'info');
-                window.dbManager.addOperation('🧮 Embedding', 'Generated 384-dim vector (23ms)', 'success');
-            }
-        }, 300);
-        
-        setTimeout(() => {
-            if (selectedScenario.vectorSearch === 'hit') {
-                window.dbManager.addOperation('💾 Cache', 'Vector Search Cache: ✓ HIT', 'success');
-            } else {
-                window.dbManager.addOperation('💾 Cache', 'Vector Search Cache: ✗ MISS', 'info');
-                window.dbManager.addOperation('🔍 Vector Search', 'Found 10 relevant expenses (45ms)', 'success');
-            }
-        }, 600);
-        
-        setTimeout(() => {
-            if (selectedScenario.response === 'hit') {
-                window.dbManager.addOperation('💾 Cache', 'Response Cache: ✓ HIT', 'success');
-                window.dbManager.addOperation('✅ Complete', 'Served from cache (0 tokens used)', 'success');
-            } else {
-                window.dbManager.addOperation('💾 Cache', 'Response Cache: ✗ MISS', 'info');
-                window.dbManager.addOperation('🤖 AI Call', 'OpenAI/gpt-4o-mini (1,234ms)', 'success');
-                window.dbManager.addOperation('✅ Complete', 'Response generated', 'success');
-            }
-        }, 900);
-            }
-            
-            simulateDatabaseOperations(message) {
-                window.dbManager.clearOperations();
-                window.dbManager.addOperation('📤 Query', `Processing: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`, 'info');
-                
-        const cacheScenarios = [
-                    { embedding: 'miss', vectorSearch: 'miss', response: 'miss', probability: 0.4 },
-                    { embedding: 'hit', vectorSearch: 'miss', response: 'miss', probability: 0.3 },
-                    { embedding: 'hit', vectorSearch: 'hit', response: 'miss', probability: 0.2 },
-                    { embedding: 'hit', vectorSearch: 'hit', response: 'hit', probability: 0.1 }
-                ];
-                
-        const random = Math.random();
-        let cumulative = 0;
-        let selectedScenario = cacheScenarios[0];
-        for (const scenario of cacheScenarios) {
-            cumulative += scenario.probability;
-            if (random <= cumulative) {
-                selectedScenario = scenario;
-                break;
-            }
-        }
-        
-        setTimeout(() => {
-            const embeddingStatus = selectedScenario.embedding === 'hit' ? '✅ CACHE HIT' : '❌ CACHE MISS';
-            const embeddingType = selectedScenario.embedding === 'hit' ? 'success' : 'warning';
-                    window.dbManager.addOperation('🔍 Embedding', `${embeddingStatus} - ${selectedScenario.embedding === 'hit' ? 'Using cached embedding' : 'Generating new embedding with SentenceTransformer'}`, embeddingType);
-        }, 500);
-        
-        setTimeout(() => {
-            const vectorStatus = selectedScenario.vectorSearch === 'hit' ? '✅ CACHE HIT' : '❌ CACHE MISS';
-            const vectorType = selectedScenario.vectorSearch === 'hit' ? 'success' : 'warning';
-                    window.dbManager.addOperation('🗄️ Vector Search', `${vectorStatus} - ${selectedScenario.vectorSearch === 'hit' ? 'Retrieved from cache' : 'Querying CockroachDB with vector similarity'}`, vectorType);
-        }, 1000);
-        
-                setTimeout(() => window.dbManager.addOperation('📊 Analysis', 'Analyzing spending patterns and categories', 'info'), 1500);
-        
-        setTimeout(() => {
-            const responseStatus = selectedScenario.response === 'hit' ? '✅ CACHE HIT' : '❌ CACHE MISS';
-            const responseType = selectedScenario.response === 'hit' ? 'success' : 'warning';
-            const aiProvider = window.bankoConfig?.aiProvider || 'AI Provider';
-                    window.dbManager.addOperation('🤖 AI Processing', `${responseStatus} - ${selectedScenario.response === 'hit' ? 'Using cached response' : `Generating new response with ${aiProvider}`}`, responseType);
-        }, 2000);
-        
-        setTimeout(() => {
-            const totalHits = [selectedScenario.embedding, selectedScenario.vectorSearch, selectedScenario.response].filter(s => s === 'hit').length;
-            const efficiency = Math.round((totalHits / 3) * 100);
-                    window.dbManager.addOperation('✅ Complete', `Response ready! Cache efficiency: ${efficiency}% (${totalHits}/3 cache hits) 🚀`, 'success');
-        }, 2500);
             }
             
             setupKeyboardShortcuts() {
@@ -1621,6 +1556,7 @@ document.addEventListener('DOMContentLoaded', function() {
             console.log('Initializing Banko AI Assistant...');
             window.sidebarManager = new SidebarManager();
             window.voiceManager = new VoiceManager();
+            renderMessageTraces();
             window.dbManager = new DatabaseManager();
             window.chatManager = new ChatManager();
             console.log('Voice manager initialized:', window.voiceManager);

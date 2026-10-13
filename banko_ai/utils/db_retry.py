@@ -7,35 +7,57 @@ resets, or network issues.
 """
 
 import functools
-import os
 import time
 from collections.abc import Callable
 
-import psycopg2
+import psycopg
 from sqlalchemy.exc import DBAPIError, OperationalError
+
+from ..config.settings import get_config
+
+# Spellings people already have in env files and compose files. All of them
+# land on the CockroachDB dialect with the psycopg 3 driver.
+_DRIVER_PREFIXES = (
+    "postgresql+psycopg2://",
+    "postgres+psycopg2://",
+    "cockroachdb+psycopg2://",
+    "postgresql+psycopg://",
+    "cockroachdb://",
+    "postgresql://",
+    "postgres://",
+)
+_SQLALCHEMY_PREFIX = "cockroachdb+psycopg://"
 
 
 def normalize_db_url(url: str) -> str:
-    """Normalize postgresql:// or postgres:// to cockroachdb:// so the
-    sqlalchemy-cockroachdb dialect handles CockroachDB version strings."""
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "cockroachdb://", 1)
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "cockroachdb://", 1)
+    """Return the SQLAlchemy URL banko uses everywhere: the CockroachDB
+    dialect on psycopg 3. Already-normalized and asyncpg URLs pass through."""
+    for prefix in _DRIVER_PREFIXES:
+        if url.startswith(prefix):
+            return _SQLALCHEMY_PREFIX + url[len(prefix):]
     return url
+
+
+def to_libpq_url(url: str) -> str:
+    """A plain postgresql:// URL, for libraries that open psycopg
+    connections themselves (the LangGraph checkpointer)."""
+    normalized = normalize_db_url(url)
+    if normalized.startswith(_SQLALCHEMY_PREFIX):
+        return "postgresql://" + normalized[len(_SQLALCHEMY_PREFIX):]
+    return normalized
 
 
 def get_database_url(url: str | None = None) -> str:
     """Get and normalize the database URL from argument or DATABASE_URL env var."""
-    raw = url or os.getenv("DATABASE_URL", "cockroachdb://root@localhost:26257/defaultdb?sslmode=disable")
+    raw = url or get_config().database_url
     return normalize_db_url(raw)
 
 
 # Transient errors that should trigger a retry
 TRANSIENT_ERRORS = (
     OperationalError,
-    psycopg2.OperationalError,
-    psycopg2.InterfaceError,
+    psycopg.OperationalError,
+    psycopg.InterfaceError,
     DBAPIError,
 )
 
@@ -178,66 +200,8 @@ def db_retry_context(max_attempts: int = 3, initial_delay: float = 0.5):
 
 
 def create_resilient_engine(database_url: str, **kwargs):
-    """
-    Create a SQLAlchemy engine with resilience settings for CockroachDB/HAProxy.
-    
-    Configures connection pooling and health checks to handle transient failures.
-    All settings can be configured via environment variables or kwargs.
-    
-    Environment Variables (with defaults):
-    - DB_POOL_SIZE: Connection pool size (default: 100)
-    - DB_MAX_OVERFLOW: Max overflow connections (default: 100) 
-    - DB_POOL_TIMEOUT: Pool checkout timeout in seconds (default: 30)
-    - DB_POOL_RECYCLE: Recycle connections after N seconds (default: 3600)
-    - DB_POOL_PRE_PING: Test connections before use (default: true)
-    - DB_CONNECT_TIMEOUT: Database connection timeout (default: 10)
-    
-    CockroachDB Recommendations:
-    - Set pool size based on your workload (100-1000 for high throughput)
-    - Use pool_pre_ping to detect stale connections
-    - Set pool_recycle to handle long-running connections (3600s = 1 hour)
-    - For 14 QPS+, pool_size of 100+ recommended
-    - Each connection can handle ~50-100 requests/sec
-    
-    Args:
-        database_url: Database connection URL
-        **kwargs: Additional engine parameters (override env vars)
-        
-    Returns:
-        Configured SQLAlchemy engine
-    """
-    from sqlalchemy import create_engine
-    
-    database_url = normalize_db_url(database_url)
-    
-    # Get pool configuration from environment variables with sensible defaults
-    # CockroachDB docs recommend larger pools for production workloads
-    pool_size = int(os.getenv("DB_POOL_SIZE", "100"))  # Increased from 10
-    max_overflow = int(os.getenv("DB_MAX_OVERFLOW", "100"))  # Increased from 20
-    pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
-    pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))  # 1 hour (increased from 5 min)
-    pool_pre_ping = os.getenv("DB_POOL_PRE_PING", "true").lower() == "true"
-    connect_timeout = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))
-    
-    # Default resilience settings based on CockroachDB best practices
-    default_config = {
-        "pool_pre_ping": pool_pre_ping,  # Test connection before using
-        "pool_recycle": pool_recycle,     # Recycle connections to avoid stale connections
-        "pool_size": pool_size,           # Base connection pool size
-        "max_overflow": max_overflow,     # Additional connections during spikes
-        "pool_timeout": pool_timeout,     # Wait time for available connection
-        "echo_pool": False,               # Disable pool debug logging
-        "connect_args": {
-            "connect_timeout": connect_timeout,  # Connection timeout
-            "options": "-c default_transaction_isolation=serializable"
-        }
-    }
-    
-    # Merge with user-provided config (kwargs take precedence)
-    config = {**default_config, **kwargs}
-    
-    # Merge connect_args separately to avoid overwriting
-    if "connect_args" in kwargs:
-        config["connect_args"] = {**default_config["connect_args"], **kwargs["connect_args"]}
-    
-    return create_engine(database_url, **config)
+    """Older name for banko_ai.db.engine.get_engine. Pool settings come from
+    Settings; per-call overrides are ignored so every caller shares one pool."""
+    from ..db.engine import get_engine
+
+    return get_engine(database_url)

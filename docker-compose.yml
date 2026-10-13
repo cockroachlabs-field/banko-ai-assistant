@@ -96,7 +96,7 @@ services:
       # Embedding model
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health/live"]
       interval: 30s
       timeout: 10s
       retries: 3

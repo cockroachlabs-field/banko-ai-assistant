@@ -12,7 +12,8 @@ def client(monkeypatch):
     monkeypatch.setenv("FLASK_SECRET_KEY", "test")
     app = create_app()
     app.config["TESTING"] = True
-    return app.test_client()
+    yield app.test_client()
+    app.extensions["banko_warmup_stop"].set()
 
 
 def test_health_coach_returns_200_with_status_keys(client):
@@ -27,12 +28,16 @@ def test_health_coach_returns_200_with_status_keys(client):
 
 
 def test_health_coach_reports_webhook_secret_state(client, monkeypatch):
+    from banko_ai.config.settings import reset_config
+
     monkeypatch.setenv("CDC_WEBHOOK_HMAC_SECRET", "")
+    reset_config()  # Settings are cached; reset after changing env
     resp = client.get("/health/coach")
     data = resp.get_json()
     assert data["components"]["webhook_secret_configured"] is False
 
     monkeypatch.setenv("CDC_WEBHOOK_HMAC_SECRET", "real-secret")
+    reset_config()  # Settings are cached; reset after changing env
     resp = client.get("/health/coach")
     data = resp.get_json()
     assert data["components"]["webhook_secret_configured"] is True

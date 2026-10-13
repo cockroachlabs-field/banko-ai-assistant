@@ -13,25 +13,24 @@ Uses CockroachDB for persistent caching with TTL support.
 import decimal
 import hashlib
 import json
-import os
 import time
 import uuid
 from datetime import datetime, timedelta
-from typing import Any
 
 import numpy as np
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, create_engine, text
-from sqlalchemy import Text as TextColumn
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import text
 
-from banko_ai.utils.embeddings import load_embedding_model
+from banko_ai.utils.embeddings import ModelWarmingUp, load_embedding_model
 
-from .db_retry import create_resilient_engine, db_retry, get_database_url
+from ..config.settings import get_config
+from .db_retry import db_retry
+from .request_scope import current_user_scope
+from .request_trace import trace_step
 
-# Database configuration
-DB_URI = get_database_url()
 
-engine = create_resilient_engine(DB_URI)
+def _engine():
+    from ..db.engine import get_engine
+    return get_engine()
 
 class CustomJSONEncoder(json.JSONEncoder):
     """Custom JSON encoder to handle Decimal and UUID objects"""
@@ -64,118 +63,48 @@ class BankoCacheManager:
     def __init__(self, similarity_threshold=None, cache_ttl_hours=None, strict_mode=None):
         """
         Initialize the cache manager.
-        
+
         Args:
             similarity_threshold: Minimum similarity score (default: from env or 0.75)
             cache_ttl_hours: Time-to-live for cached responses (default: from env or 24)
             strict_mode: Require exact expense data match (default: from env or True)
         """
         # Load from environment variables with fallbacks
+        cfg = get_config()
         self.similarity_threshold = (
-            similarity_threshold if similarity_threshold is not None 
-            else float(os.getenv('CACHE_SIMILARITY_THRESHOLD', '0.75'))
+            similarity_threshold if similarity_threshold is not None
+            else cfg.cache_similarity_threshold
         )
         self.cache_ttl_hours = (
             cache_ttl_hours if cache_ttl_hours is not None
-            else int(os.getenv('CACHE_TTL_HOURS', '24'))
+            else cfg.cache_ttl_hours
         )
         self.strict_mode = (
             strict_mode if strict_mode is not None
-            else os.getenv('CACHE_STRICT_MODE', 'true').lower() == 'true'
+            else cfg.cache_strict_mode
         )
         
         print("📦 Cache Manager initialized:")
         print(f"   - Similarity threshold: {self.similarity_threshold}")
         print(f"   - TTL: {self.cache_ttl_hours} hours")
         print(f"   - Strict mode: {self.strict_mode}")
-        
+
         self.model = None  # Lazy load the model
-        self._ensure_cache_tables()
     
     def _get_model(self):
         """Lazy load the SentenceTransformer model."""
         if self.model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.model = load_embedding_model(embedding_model_name)
+            except ModelWarmingUp:
+                raise  # the request gets a 503 warming_up, not a silent miss
             except Exception as e:
                 print(f"Warning: Could not load SentenceTransformer model: {e}")
                 print("Cache functionality will be limited.")
                 return None
         return self.model
-    
-    def _ensure_cache_tables(self):
-        """Create cache tables if they don't exist."""
-        create_tables_sql = text("""
-            -- Query cache for similar questions and responses
-            CREATE TABLE IF NOT EXISTS query_cache (
-                cache_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                query_hash STRING NOT NULL,
-                query_text STRING NOT NULL,
-                query_embedding VECTOR(384),
-                response_text TEXT NOT NULL,
-                response_tokens INTEGER DEFAULT 0,
-                prompt_tokens INTEGER DEFAULT 0,
-                ai_service STRING NOT NULL,
-                language STRING NOT NULL DEFAULT 'en',
-                expense_data_hash STRING,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                hit_count INTEGER DEFAULT 0,
-                last_accessed TIMESTAMPTZ DEFAULT now(),
-                UNIQUE (query_hash, ai_service, language),
-                INDEX idx_query_hash (query_hash),
-                INDEX idx_expires_at (expires_at),
-                INDEX idx_ai_service (ai_service),
-                INDEX idx_expense_hash (expense_data_hash)
-            );
-            
-            -- Embedding cache to avoid regenerating embeddings
-            CREATE TABLE IF NOT EXISTS embedding_cache (
-                embedding_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                text_hash STRING NOT NULL,
-                text_content STRING NOT NULL,
-                embedding VECTOR(384) NOT NULL,
-                model_name STRING NOT NULL DEFAULT 'all-MiniLM-L6-v2',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                access_count INTEGER DEFAULT 0,
-                UNIQUE (text_hash, model_name),
-                INDEX idx_text_hash (text_hash)
-            );
-            
-            -- Vector search results cache
-            CREATE TABLE IF NOT EXISTS vector_search_cache (
-                search_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                query_embedding_hash STRING UNIQUE NOT NULL,
-                search_results JSONB NOT NULL,
-                result_count INTEGER,
-                similarity_threshold FLOAT,
-                created_at TIMESTAMPTZ DEFAULT now(),
-                expires_at TIMESTAMPTZ,
-                access_count INTEGER DEFAULT 0,
-                INDEX idx_embedding_hash (query_embedding_hash),
-                INDEX idx_expires_at (expires_at)
-            );
-            
-            -- Cache statistics for monitoring
-            CREATE TABLE IF NOT EXISTS cache_stats (
-                stat_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                cache_type STRING NOT NULL,
-                operation STRING NOT NULL, -- 'hit', 'miss', 'write'
-                tokens_saved INTEGER DEFAULT 0,
-                timestamp TIMESTAMPTZ DEFAULT now(),
-                details JSONB
-            );
-        """)
-        
-        try:
-            with engine.connect() as conn:
-                conn.execute(create_tables_sql)
-                conn.commit()
-                print("✅ Cache tables initialized successfully")
-        except Exception as e:
-            print(f"⚠️ Error creating cache tables: {e}")
     
     def _generate_hash(self, content: str) -> str:
         """Generate a consistent hash for content."""
@@ -234,15 +163,16 @@ class BankoCacheManager:
     def _get_embedding_with_cache(self, input_text: str) -> np.ndarray:
         """Get embedding for text, using cache when possible."""
         text_hash = self._generate_hash(input_text)
-        
+
         # Try to get from cache first
-        model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model_name = get_config().embedding_model
+        lookup_start = time.perf_counter()
         cache_query = text("""
             SELECT embedding, access_count
             FROM embedding_cache 
             WHERE text_hash = :text_hash AND model_name = :model_name
         """)
-        with engine.connect() as conn:
+        with _engine().connect() as conn:
             result = conn.execute(cache_query, {'text_hash': text_hash, 'model_name': model_name})
             row = result.fetchone()
             
@@ -256,17 +186,23 @@ class BankoCacheManager:
                 conn.commit()
                 
                 self._log_cache_stat('embedding', 'hit', tokens_saved=10)
+                trace_step("cache", "Embedding cache", "Hit: reused the stored embedding",
+                           ms=(time.perf_counter() - lookup_start) * 1000, status="hit")
                 return np.array(json.loads(row.embedding))
         
         # Cache miss - generate embedding and store
         model = self._get_model()
         if model is None:
             return None
+        encode_start = time.perf_counter()
         embedding = model.encode(input_text)
+        trace_step("cache", "Embedding cache",
+                   f"Miss: embedded locally with {model_name} ({len(embedding)} dims)",
+                   ms=(time.perf_counter() - encode_start) * 1000, status="miss")
         embedding_json = json.dumps(embedding.tolist())
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO embedding_cache (text_hash, text_content, embedding, model_name, access_count)
                     VALUES (:text_hash, :text_content, :embedding, :model_name, 1)
@@ -290,17 +226,19 @@ class BankoCacheManager:
     def get_cached_response(self, query: str, expense_data: list[dict], ai_service: str, language: str = "en") -> str | None:
         """
         Check if we have a cached response for a similar query.
-        
+
         Args:
             query: User query text
             expense_data: Current expense data context
             ai_service: AI service being used (watsonx, bedrock)
             language: Response language code or name
-        
+
         Returns:
             Cached response text if found, None otherwise
         """
+        scope = current_user_scope()
         query_embedding = self._get_embedding_with_cache(query)
+        lookup_start = time.perf_counter()
         # Use normalized expense data for consistent hashing
         expense_hash = self._generate_hash(self._normalize_expense_data_for_cache(expense_data))
         
@@ -317,8 +255,8 @@ class BankoCacheManager:
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN expense_data_hash = :expense_hash THEN 1 ELSE 0 END) as hash_match,
                    SUM(CASE WHEN expires_at > now() THEN 1 ELSE 0 END) as not_expired
-            FROM query_cache 
-            WHERE ai_service = :ai_service
+            FROM query_cache
+            WHERE ai_service = :ai_service AND scope = :scope
         """)
         
         # Find similar cached queries
@@ -332,9 +270,11 @@ class BankoCacheManager:
                        expense_data_hash,
                        expires_at > now() as not_expired,
                        now() as current_time
-                FROM query_cache 
-                WHERE ai_service = :ai_service 
+                FROM query_cache
+                WHERE ai_service = :ai_service
                   AND language = :language
+                  AND scope = :scope
+                  AND scope != ''
                   AND expense_data_hash = :expense_hash
                   AND expires_at > now()
                   AND query_embedding IS NOT NULL
@@ -349,9 +289,11 @@ class BankoCacheManager:
                        expense_data_hash,
                        expires_at > now() as not_expired,
                        now() as current_time
-                FROM query_cache 
-                WHERE ai_service = :ai_service 
+                FROM query_cache
+                WHERE ai_service = :ai_service
                   AND language = :language
+                  AND scope = :scope
+                  AND scope != ''
                   AND expires_at > now()
                   AND query_embedding IS NOT NULL
                 ORDER BY query_embedding <=> :query_embedding
@@ -359,21 +301,23 @@ class BankoCacheManager:
             """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 # First check counts for debugging
                 count_result = conn.execute(count_query, {
                     'ai_service': ai_service,
+                    'scope': scope,
                     'expense_hash': expense_hash
                 })
                 count_row = count_result.fetchone()
                 print(f"      - Total entries for '{ai_service}': {count_row.total}")
                 print(f"      - Entries with matching hash: {count_row.hash_match}")
                 print(f"      - Non-expired entries: {count_row.not_expired}")
-                
+
                 result = conn.execute(similarity_query, {
                     'query_embedding': json.dumps(query_embedding.tolist()),
                     'ai_service': ai_service,
                     'language': language,
+                    'scope': scope,
                     'expense_hash': expense_hash
                 })
                 
@@ -432,6 +376,10 @@ class BankoCacheManager:
                         print(f"   Original: '{row.query_text[:50]}...'")
                         print(f"   Current:  '{query[:50]}...'")
                         print(f"   Mode: {'STRICT (exact data match)' if self.strict_mode else 'LENIENT (similarity only)'}")
+                        trace_step("cache", "Response cache",
+                                   f"Hit: similarity {similarity_score:.3f} ({confidence.lower()} confidence), "
+                                   f"est. {tokens_saved} tokens saved",
+                                   ms=(time.perf_counter() - lookup_start) * 1000, status="hit")
                         
                         return row.response_text
                 
@@ -439,14 +387,16 @@ class BankoCacheManager:
             print(f"⚠️ Error checking query cache: {e}")
         
         self._log_cache_stat('query', 'miss')
+        trace_step("cache", "Response cache", "Miss: no similar answer cached",
+                   ms=(time.perf_counter() - lookup_start) * 1000, status="miss")
         return None
     
-    def cache_response(self, query: str, response: str, expense_data: list[dict], 
+    def cache_response(self, query: str, response: str, expense_data: list[dict],
                       ai_service: str, prompt_tokens: int = 0, response_tokens: int = 0,
                       language: str = "en"):
         """
         Cache a query response for future use.
-        
+
         Args:
             query: Original user query
             response: AI response
@@ -456,23 +406,25 @@ class BankoCacheManager:
             response_tokens: Number of response tokens generated
             language: Response language code or name
         """
-        query_hash = self._generate_hash(query)
+        scope = current_user_scope()
+        query_hash = self._generate_hash(f"{scope}|{query}")
         query_embedding = self._get_embedding_with_cache(query)
         # Use normalized expense data for consistent hashing
         expense_hash = self._generate_hash(self._normalize_expense_data_for_cache(expense_data))
         expires_at = datetime.utcnow() + timedelta(hours=self.cache_ttl_hours)
+        write_start = time.perf_counter()
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO query_cache (
                         query_hash, query_text, query_embedding, response_text,
                         response_tokens, prompt_tokens, ai_service, language,
-                        expense_data_hash, expires_at
+                        expense_data_hash, scope, expires_at
                     ) VALUES (
                         :query_hash, :query_text, :query_embedding, :response_text,
                         :response_tokens, :prompt_tokens, :ai_service, :language,
-                        :expense_hash, :expires_at
+                        :expense_hash, :scope, :expires_at
                     )
                     ON CONFLICT (query_hash, ai_service, language) DO UPDATE SET
                         response_text = EXCLUDED.response_text,
@@ -484,7 +436,7 @@ class BankoCacheManager:
                         hit_count = 0,
                         last_accessed = now()
                 """)
-                
+
                 conn.execute(insert_query, {
                     'query_hash': query_hash,
                     'query_text': query,
@@ -495,10 +447,14 @@ class BankoCacheManager:
                     'ai_service': ai_service,
                     'language': language,
                     'expense_hash': expense_hash,
+                    'scope': scope,
                     'expires_at': expires_at
                 })
                 conn.commit()
                 print("   💾 Stored in query_cache:")
+                trace_step("cache", "Response cache write",
+                           f"Stored for {self.cache_ttl_hours}h",
+                           ms=(time.perf_counter() - write_start) * 1000, status="success")
                 print(f"      - query: '{query[:60]}...'")
                 print(f"      - ai_service: '{ai_service}'")
                 print(f"      - expense_hash: {expense_hash}")
@@ -534,11 +490,14 @@ class BankoCacheManager:
                 
         except Exception as e:
             print(f"⚠️ Error caching response: {e}")
+            trace_step("cache", "Response cache write", "Not stored this time",
+                       ms=(time.perf_counter() - write_start) * 1000, status="warning")
     
     @db_retry(max_attempts=3, initial_delay=0.5)
-    def get_cached_vector_search(self, query_embedding: np.ndarray, limit: int = 5) -> list[dict] | None:
+    def get_cached_vector_search(self, query_embedding: np.ndarray, limit: int = 5, scope: str | None = None) -> list[dict] | None:
         """Get cached vector search results."""
-        embedding_hash = self._generate_hash(json.dumps(query_embedding.tolist()))
+        scope_key = scope if scope is not None else current_user_scope()
+        embedding_hash = self._generate_hash(f"{scope_key}|{json.dumps(query_embedding.tolist())}")
         
         cache_query = text("""
             SELECT search_results, access_count
@@ -551,7 +510,7 @@ class BankoCacheManager:
         """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 result = conn.execute(cache_query, {
                     'embedding_hash': embedding_hash,
                     'limit': limit
@@ -582,13 +541,14 @@ class BankoCacheManager:
         self._log_cache_stat('vector_search', 'miss')
         return None
     
-    def cache_vector_search_results(self, query_embedding: np.ndarray, results: list[dict]):
+    def cache_vector_search_results(self, query_embedding: np.ndarray, results: list[dict], scope: str | None = None):
         """Cache vector search results."""
-        embedding_hash = self._generate_hash(json.dumps(query_embedding.tolist()))
+        scope_key = scope if scope is not None else current_user_scope()
+        embedding_hash = self._generate_hash(f"{scope_key}|{json.dumps(query_embedding.tolist())}")
         expires_at = datetime.utcnow() + timedelta(hours=self.cache_ttl_hours)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO vector_search_cache (
                         query_embedding_hash, search_results, result_count, 
@@ -622,7 +582,7 @@ class BankoCacheManager:
     def _log_cache_stat(self, cache_type: str, operation: str, tokens_saved: int = 0, details: dict = None):
         """Log cache statistics for monitoring."""
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 insert_query = text("""
                     INSERT INTO cache_stats (cache_type, operation, tokens_saved, details)
                     VALUES (:cache_type, :operation, :tokens_saved, :details)
@@ -662,7 +622,7 @@ class BankoCacheManager:
         """)
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 result = conn.execute(stats_query, {'hours': hours})
                 stats = {}
                 total_tokens_saved = 0
@@ -693,13 +653,10 @@ class BankoCacheManager:
         ]
         
         try:
-            with engine.connect() as conn:
+            with _engine().connect() as conn:
                 for query in cleanup_queries:
                     result = conn.execute(text(query))
                     print(f"🧹 Cleaned up {result.rowcount} expired cache entries")
                 conn.commit()
         except Exception as e:
             print(f"⚠️ Error cleaning up cache: {e}")
-
-# Global cache manager instance
-cache_manager = BankoCacheManager()

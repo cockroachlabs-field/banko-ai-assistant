@@ -11,7 +11,6 @@ Provides WebSocket-based updates for:
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, render_template
-from flask_socketio import emit
 from sqlalchemy import text
 
 agent_dashboard = Blueprint('agent_dashboard', __name__)
@@ -26,13 +25,11 @@ def dashboard():
 @agent_dashboard.route('/api/agents/status')
 def get_all_agent_status():
     """Get status of all registered agents"""
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
-
     from ..config.settings import get_config
+    from ..db.engine import get_engine
     
     config = get_config()
-    engine = create_engine(config.database_url, poolclass=NullPool)
+    engine = get_engine(config.database_url)
     
     try:
         with engine.connect() as conn:
@@ -60,15 +57,12 @@ def get_all_agent_status():
                     'last_heartbeat': row[5].isoformat() if row[5] else None,
                     'created_at': row[6].isoformat() if row[6] else None
                 })
-        
-        engine.dispose()
-        
         return jsonify({
             'success': True,
             'agents': agents,
             'count': len(agents)
         })
-    
+
     except Exception as e:
         return jsonify({
             'success': False,
@@ -79,13 +73,12 @@ def get_all_agent_status():
 @agent_dashboard.route('/api/agents/activity')
 def get_recent_activity():
     """Get recent agent decisions and activity (last 10 minutes only)"""
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
 
     from ..config.settings import get_config
     
     config = get_config()
-    engine = create_engine(config.database_url, poolclass=NullPool)
+    from ..db.engine import get_engine
+    engine = get_engine(config.database_url)
     
     try:
         with engine.connect() as conn:
@@ -119,9 +112,6 @@ def get_recent_activity():
                     'created_at': row[6].isoformat() if row[6] else None,
                     'reasoning': row[7][:200] if row[7] else None  # First 200 chars
                 })
-        
-        engine.dispose()
-        
         return jsonify({
             'success': True,
             'activities': activities,
@@ -138,13 +128,12 @@ def get_recent_activity():
 @agent_dashboard.route('/api/agents/stats')
 def get_agent_stats():
     """Get agent memory and task statistics"""
-    from sqlalchemy import create_engine
-    from sqlalchemy.pool import NullPool
 
     from ..config.settings import get_config
     
     config = get_config()
-    engine = create_engine(config.database_url, poolclass=NullPool)
+    from ..db.engine import get_engine
+    engine = get_engine(config.database_url)
     
     try:
         with engine.connect() as conn:
@@ -200,9 +189,6 @@ def get_agent_stats():
                     'pending_tasks': tasks['pending_tasks'],
                     'completed_tasks': tasks['completed_tasks']
                 })
-        
-        engine.dispose()
-        
         # Overall stats
         total_memory = sum(a['memory_count'] for a in agent_stats)
         total_pending = sum(a['pending_tasks'] for a in agent_stats)
@@ -245,13 +231,12 @@ def emit_agent_decision(agent_id, decision_type, confidence, reasoning):
     """Emit agent decision via WebSocket"""
     try:
         # Get agent info from database
-        from sqlalchemy import create_engine
-        from sqlalchemy.pool import NullPool
 
         from ..config.settings import get_config
         
         config = get_config()
-        engine = create_engine(config.database_url, poolclass=NullPool)
+        from ..db.engine import get_engine
+        engine = get_engine(config.database_url)
         
         with engine.connect() as conn:
             result = conn.execute(text("""
@@ -267,10 +252,7 @@ def emit_agent_decision(agent_id, decision_type, confidence, reasoning):
             else:
                 agent_type = 'unknown'
                 region = 'unknown'
-        
-        engine.dispose()
-        
-        # Emit via WebSocket
+# Emit via WebSocket
         from flask import current_app
         if hasattr(current_app, 'socketio'):
             current_app.socketio.emit('agent_decision', {

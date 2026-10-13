@@ -44,6 +44,15 @@ def test_no_window_defaults_to_90_days():
     assert (intent.window_end - intent.window_start).days == 90
 
 
+def test_a_window_or_filler_after_for_or_at_is_not_a_subject():
+    """"for this month" is the window and "at all" is emphasis: both mean
+    every category, never a category called "this month"."""
+    for q in ("how much did I spend for this month?", "how much did I spend at all last month",
+              "how much did I spend on average per month?", "how much did I spend for the year"):
+        assert classify_aggregation(q, today=TODAY).subject is None, q
+    assert classify_aggregation("how much did I spend on dining last month", today=TODAY).subject == "dining"
+
+
 def test_non_aggregation_returns_none():
     assert classify_aggregation("show me my recent coffee purchases",
                                 today=TODAY) is None

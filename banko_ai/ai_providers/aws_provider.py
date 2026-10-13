@@ -5,18 +5,16 @@ This module provides AWS Bedrock integration for vector search and RAG responses
 """
 
 import json
-import os
 from typing import Any
 
 import boto3
-import psycopg2
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy import text
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
-from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
+from .base import AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
 
 
@@ -26,11 +24,12 @@ class AWSProvider(AIProvider):
     def __init__(self, config: dict[str, Any], cache_manager=None):
         """Initialize AWS provider."""
         # Support both config and environment variables with defaults
-        self.access_key_id = config.get("access_key_id") or os.getenv("AWS_ACCESS_KEY_ID")
-        self.secret_access_key = config.get("secret_access_key") or os.getenv("AWS_SECRET_ACCESS_KEY")
-        self.region = config.get("region") or os.getenv("AWS_REGION", "us-east-1")
-        self.profile_name = config.get("profile_name") or os.getenv("AWS_PROFILE")
-        self.model_id = config.get("model") or os.getenv("AWS_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        cfg = get_config()
+        self.access_key_id = config.get("access_key_id") or cfg.aws_access_key_id
+        self.secret_access_key = config.get("secret_access_key") or cfg.aws_secret_access_key
+        self.region = config.get("region") or cfg.aws_region
+        self.profile_name = config.get("profile_name") or cfg.aws_profile
+        self.model_id = config.get("model") or cfg.aws_model
         
         self.bedrock_client = None
         self.embedding_model = None
@@ -70,14 +69,7 @@ class AWSProvider(AIProvider):
             # Create Bedrock client from session
             self.bedrock_client = self.session.client('bedrock-runtime')
             print(f"✅ AWS Bedrock client created (region: {self.region}, model: {self.model_id})")
-            
-            # Verify credentials by getting caller identity
-            print("🔍 Verifying AWS credentials...")
-            sts = self.session.client('sts')
-            identity = sts.get_caller_identity()
-            print(f"✅ AWS Identity verified: {identity['Arn']}")
-            print(f"   Account: {identity['Account']}")
-            
+
         except Exception as e:
             error_msg = str(e)
             print("\n⚠️ AWS Bedrock initialization failed!")
@@ -88,18 +80,18 @@ class AWSProvider(AIProvider):
                 print("\n❌ Your AWS credentials have EXPIRED")
                 print("\n💡 To fix:")
                 print("   1. Get fresh credentials from AWS Console")
-                print("   2. Or run: aws sso login --profile CRLRevenue-337380398238")
+                print("   2. Or run: aws sso login --profile <your-profile>")
             elif 'NoCredentials' in error_msg or 'Unable to locate credentials' in error_msg:
                 print("\n❌ No AWS credentials found")
                 print("\n💡 Set credentials via:")
-                print("   - export AWS_PROFILE=CRLRevenue-337380398238")
+                print("   - export AWS_PROFILE=<your-profile>")
                 print("   - export AWS_ACCESS_KEY_ID=...")
                 print("   - export AWS_SECRET_ACCESS_KEY=...")
                 print("   - Or configure ~/.aws/credentials")
             elif 'InvalidClientTokenId' in error_msg:
                 print("\n❌ Invalid AWS credentials")
                 print("\n💡 If using SSO, try:")
-                print("   - export AWS_PROFILE=CRLRevenue-337380398238")
+                print("   - export AWS_PROFILE=<your-profile>")
                 print("   - Then restart the application")
             
             self.bedrock_client = None
@@ -128,7 +120,7 @@ class AWSProvider(AIProvider):
         via the AWS_MODELS env var (comma-separated), which short-circuits
         discovery entirely.
         """
-        extra = os.getenv("AWS_MODELS", "")
+        extra = get_config().aws_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
 
@@ -157,7 +149,7 @@ class AWSProvider(AIProvider):
             print(f"⚠️  Could not list Bedrock models: {e}")
 
         # Fallback: known-good current Claude 4.x inference profiles. Refreshed
-        # 2026-05-22 against a CRLRevenue Bedrock account; pick Haiku as the
+        # 2026-05-22 against a Bedrock account; pick Haiku as the
         # demo default to keep token cost low.
         return [
             "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -179,7 +171,7 @@ class AWSProvider(AIProvider):
         if self.embedding_model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.embedding_model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 raise AIConnectionError(f"Failed to load embedding model: {str(e)}")
@@ -214,7 +206,7 @@ class AWSProvider(AIProvider):
                 print("2. Embedding generated (with cache support)")
                 
                 # Check vector_search_cache for cached results
-                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit)
+                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit, scope=str(user_id or ''))
                 if cached_results:
                     print(f"3. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
                     # Convert cached dict results to SearchResult objects
@@ -327,7 +319,7 @@ class AWSProvider(AIProvider):
                         'shopping_type': r.metadata.get('shopping_type') if r.metadata else 'Unknown',
                         'payment_method': r.metadata.get('payment_method') if r.metadata else 'Unknown'
                     })
-                self.cache_manager.cache_vector_search_results(query_embedding, cache_results)
+                self.cache_manager.cache_vector_search_results(query_embedding, cache_results, scope=str(user_id or ''))
                 print(f"5. ✅ Cached {len(cache_results)} results in vector_search_cache")
             
             return results
@@ -621,10 +613,20 @@ class AWSProvider(AIProvider):
             raise AIConnectionError(f"Embedding generation failed: {str(e)}")
     
     def test_connection(self) -> bool:
-        """Test AWS Bedrock connection by verifying credentials (no tokens consumed)."""
-        try:
-            sts = boto3.client('sts', region_name=self.region)
-            sts.get_caller_identity()
-            return True
-        except Exception:
+        """Credentials resolve and are current. get_frozen_credentials forces
+        an SSO refresh, so an expired token shows up here instead of on the
+        first chat. Never logs the identity behind the credentials."""
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        if self.session is None:
             return False
+        try:
+            creds = self.session.get_credentials()
+            if creds is None:
+                return False
+            creds.get_frozen_credentials()
+        except (BotoCoreError, ClientError):
+            # TokenRetrievalError, UnauthorizedSSOTokenError and
+            # NoCredentialsError are all BotoCoreError subclasses.
+            return False
+        return True

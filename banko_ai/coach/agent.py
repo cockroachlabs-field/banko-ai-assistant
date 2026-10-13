@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -298,11 +298,8 @@ def build_checkpointer(database_url: str):
                     "disabled: %s", e)
         return None
 
-    pg_url = database_url
-    if pg_url.startswith("cockroachdb://"):
-        pg_url = "postgresql://" + pg_url[len("cockroachdb://"):]
-    if pg_url.startswith("postgresql+psycopg2://"):
-        pg_url = "postgresql://" + pg_url[len("postgresql+psycopg2://"):]
+    from ..utils.db_retry import to_libpq_url
+    pg_url = to_libpq_url(database_url)
 
     try:
         conn = Connection.connect(

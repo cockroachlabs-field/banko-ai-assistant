@@ -43,11 +43,15 @@ def _clean_test_signals():
 
 @pytest.fixture
 def client(monkeypatch):
+    from banko_ai.config.settings import reset_config
+
     monkeypatch.setenv("CDC_WEBHOOK_HMAC_SECRET", SECRET)
     monkeypatch.setenv("FLASK_SECRET_KEY", "test-flask-secret")
+    reset_config()  # Settings are cached; reset after changing env
     app = create_app()
     app.config["TESTING"] = True
-    return app.test_client()
+    yield app.test_client()
+    app.extensions["banko_warmup_stop"].set()
 
 
 def _sign(body: bytes) -> str:

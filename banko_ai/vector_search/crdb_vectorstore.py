@@ -4,11 +4,9 @@ Provides a LangChain-compatible VectorStore backed by CockroachDB's native
 VECTOR type with C-SPANN indexes, replacing hand-rolled SQL queries.
 """
 
-import os
 from typing import Any
 
 from langchain_cockroachdb import (
-    CockroachDBEngine,
     CockroachDBVectorStore,
     CSPANNIndex,
     DistanceStrategy,
@@ -17,13 +15,14 @@ from langchain_core.embeddings import Embeddings
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from ..config.settings import get_config
 from ..utils.crdb_engine import get_crdb_engine
 
 
 class _SentenceTransformerEmbeddings(Embeddings):
     """Wraps SentenceTransformer as a LangChain Embeddings object."""
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str | None = None):
         self._model = load_embedding_model(model_name)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -53,7 +52,7 @@ def get_embeddings() -> _SentenceTransformerEmbeddings:
     """Return the shared embeddings model."""
     global _embeddings
     if _embeddings is None:
-        model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model_name = get_config().embedding_model
         _embeddings = _SentenceTransformerEmbeddings(model_name)
     return _embeddings
 

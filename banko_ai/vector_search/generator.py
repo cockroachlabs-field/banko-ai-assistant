@@ -5,7 +5,6 @@ This module generates realistic expense data with enriched descriptions
 for improved vector search accuracy.
 """
 
-import os
 import random
 import uuid
 from datetime import datetime, timedelta
@@ -13,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from ..utils.db_retry import create_resilient_engine, get_database_url
+from ..utils.db_retry import get_database_url
 from .enrichment import DataEnricher
 
 
@@ -23,31 +22,29 @@ class EnhancedExpenseGenerator:
     def __init__(self, database_url: str | None = None):
         """Initialize the enhanced expense generator."""
         self.database_url = get_database_url(database_url)
-        self._engine = None
         self.enricher = DataEnricher()
         self._embedding_model = None
         self._merchants = None
         self._categories = None
         self._payment_methods = None
         self._user_ids = None
-    
+
     @property
     def engine(self):
         """Get SQLAlchemy engine with resilience settings (lazy import)."""
-        if self._engine is None:
-            # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-            self._engine = create_resilient_engine(self.database_url)
-        return self._engine
+        from ..db.engine import get_engine
+        return get_engine(self.database_url)
     
     @property
     def embedding_model(self):
         """Get embedding model (lazy import)."""
         if self._embedding_model is None:
-            import os
-
             from banko_ai.utils.embeddings import load_embedding_model
+
+            from ..config.settings import get_config
+
             # Use configurable embedding model from environment or default
-            embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+            embedding_model_name = get_config().embedding_model
             self._embedding_model = load_embedding_model(embedding_model_name)
         return self._embedding_model
     
@@ -304,8 +301,8 @@ class EnhancedExpenseGenerator:
         import pandas as pd
         from sqlalchemy.exc import DBAPIError, OperationalError
 
+        from ..db.regions import regional_tables_ready
         from ..utils.db_retry import is_transient_error
-        from ..utils.migration import regional_tables_ready
         from ..web.auth import resolve_user_region
 
         is_regional = regional_tables_ready(self.database_url)
@@ -334,7 +331,9 @@ class EnhancedExpenseGenerator:
         
         # Insert in smaller batches to reduce transaction conflicts
         # Use environment variable or default to 50
-        batch_size = int(os.getenv('DATA_GEN_BATCH_SIZE', '50'))
+        from ..config.settings import get_config
+
+        batch_size = get_config().data_gen_batch_size
         total_inserted = 0
         total_batches = (len(data_to_insert) + batch_size - 1) // batch_size
         
@@ -342,17 +341,33 @@ class EnhancedExpenseGenerator:
         
         for i in range(0, len(data_to_insert), batch_size):
             batch = data_to_insert[i:i + batch_size]
-            
+
             # Retry logic for CockroachDB transaction conflicts and multi-region failover
             max_retries = 10  # Increased for multi-region scenarios
             retry_count = 0
-            
+
             while retry_count < max_retries:
                 try:
                     with self.engine.begin() as conn:
                         # Use pandas to insert the batch
                         df = pd.DataFrame(batch)
-                        df.to_sql('expenses', conn, if_exists='append', index=False, method='multi')
+                        # Specify dtypes for all columns to avoid psycopg3 type casting issues
+                        from sqlalchemy import ARRAY, Boolean, Date, Numeric, Text
+                        from sqlalchemy.dialects.postgresql import UUID
+                        dtype = {
+                            'expense_id': UUID(as_uuid=True),
+                            'user_id': UUID(as_uuid=True),
+                            'expense_date': Date(),
+                            'expense_amount': Numeric(precision=10, scale=2),
+                            'shopping_type': Text(),
+                            'description': Text(),
+                            'merchant': Text(),
+                            'payment_method': Text(),
+                            'recurring': Boolean(),
+                            'tags': ARRAY(Text()),
+                            'embedding': ARRAY(Numeric(precision=18, scale=15)),
+                        }
+                        df.to_sql('expenses', conn, if_exists='append', index=False, method='multi', dtype=dtype)
                         # Transaction is automatically committed when exiting the context
                         
                     # Only increment counter after successful transaction
@@ -400,22 +415,31 @@ class EnhancedExpenseGenerator:
         return total_inserted
     
     def clear_expenses(self) -> bool:
-        """Clear all expenses from the database with retry logic."""
+        """Clear the sample expenses, with retry logic. Persona expenses stay:
+        their ledger entries point at them, and deleting one half of a
+        persona's history would leave the other half dangling."""
         import random
         import time
 
         from sqlalchemy import text
         from sqlalchemy.exc import DBAPIError, OperationalError
 
+        from ..config.catalog import CatalogError, get_catalog
         from ..utils.db_retry import is_transient_error
-        
+
+        try:
+            personas = [p.user_id for p in get_catalog().personas]
+        except CatalogError:
+            personas = []
         max_retries = 10  # Increased for multi-region scenarios
         retry_count = 0
         
         while retry_count < max_retries:
             try:
                 with self.engine.begin() as conn:
-                    conn.execute(text("DELETE FROM expenses"))
+                    conn.execute(text("DELETE FROM expenses WHERE user_id IS NULL "
+                                      "OR user_id <> ALL(CAST(:personas AS UUID[]))"),
+                                 {"personas": personas})
                     # Transaction is automatically committed when exiting the context
                     return True
                     
@@ -532,133 +556,6 @@ class EnhancedExpenseGenerator:
         saved = self.save_expenses_to_database(expenses)
         return saved
 
-    def _style_row(self, user_id: str, days_ago: int, amount: float,
-                   category: str, merchant: str,
-                   payment: str = "Credit Card",
-                   recurring: bool = False) -> dict[str, Any]:
-        desc = (f"Spent ${amount:.2f} on {category.lower()} at {merchant} "
-                f"using {payment}.")
-        return {
-            "expense_id": str(uuid.uuid4()),
-            "user_id": user_id,
-            "expense_date": (datetime.now() - timedelta(days=days_ago)).date(),
-            "expense_amount": amount,
-            "shopping_type": category,
-            "description": desc,
-            "merchant": merchant,
-            "payment_method": payment,
-            "recurring": recurring,
-            "tags": [category.lower(), merchant.lower().replace(" ", "_")],
-            "embedding": None,
-            "searchable_text": desc,
-        }
-
-    def _style_rows(self, user_id: str, style: str, rng: random.Random) -> list[dict[str, Any]]:
-        """Build deterministic expense rows based on spending style."""
-        rows: list[dict[str, Any]] = []
-        if style == "diner":
-            for _ in range(36):
-                rows.append(self._style_row(
-                    user_id, rng.randint(0, 118),
-                    round(rng.uniform(18.0, 85.0), 2), "Restaurant",
-                    rng.choice(["Pizza Hut", "Italian Bistro", "Domino's",
-                                "Thai Garden"])))
-            for _ in range(40):
-                rows.append(self._style_row(
-                    user_id, rng.randint(0, 118),
-                    round(rng.uniform(8.0, 140.0), 2),
-                    rng.choice(["Groceries", "Coffee", "Transport"]),
-                    rng.choice(["Whole Foods", "Starbucks", "Uber",
-                                "Local Market"])))
-        elif style == "subscriber":
-            for months_ago in range(4, 2, -1):
-                rows.append(self._style_row(
-                    user_id, months_ago * 30, 15.99, "Subscription",
-                    "Netflix", recurring=True))
-            for months_ago in range(2, 0, -1):
-                rows.append(self._style_row(
-                    user_id, months_ago * 30, 22.99, "Subscription",
-                    "Netflix", recurring=True))
-            for months_ago in range(4, 0, -1):
-                rows.append(self._style_row(
-                    user_id, months_ago * 30 + 3,
-                    round(rng.uniform(95.0, 110.0), 2), "Utilities",
-                    "Electric Company", recurring=True))
-                rows.append(self._style_row(
-                    user_id, months_ago * 30 + 7, 79.99, "Utilities",
-                    "Internet Provider", recurring=True))
-            for _ in range(40):
-                rows.append(self._style_row(
-                    user_id, rng.randint(0, 118),
-                    round(rng.uniform(10.0, 120.0), 2),
-                    rng.choice(["Groceries", "Restaurant", "Shopping"]),
-                    rng.choice(["Whole Foods", "Italian Bistro", "Amazon",
-                                "Target"])))
-        elif style == "saver":
-            for _ in range(22):
-                rows.append(self._style_row(
-                    user_id, rng.randint(0, 118),
-                    round(rng.uniform(5.0, 60.0), 2),
-                    rng.choice(["Groceries", "Transport"]),
-                    rng.choice(["Local Market", "Metro Transit"])))
-        elif style == "balanced":
-            categories = ["Groceries", "Restaurant", "Transport", "Shopping", "Subscription"]
-            for _ in range(60):
-                category = rng.choice(categories)
-                if category == "Groceries":
-                    merchant = rng.choice(["Whole Foods", "Local Market", "Costco", "Target"])
-                    amount = round(rng.uniform(10.0, 120.0), 2)
-                elif category == "Restaurant":
-                    merchant = rng.choice(["Pizza Hut", "Italian Bistro", "Chipotle", "Subway"])
-                    amount = round(rng.uniform(15.0, 90.0), 2)
-                elif category == "Transport":
-                    merchant = rng.choice(["Uber", "Lyft", "Metro Transit"])
-                    amount = round(rng.uniform(5.0, 80.0), 2)
-                elif category == "Shopping":
-                    merchant = rng.choice(["Amazon", "Target", "Walmart", "IKEA"])
-                    amount = round(rng.uniform(15.0, 180.0), 2)
-                else:  # Subscription
-                    merchant = rng.choice(["Netflix", "Spotify", "Planet Fitness"])
-                    amount = round(rng.uniform(10.0, 45.0), 2)
-                rows.append(self._style_row(
-                    user_id, rng.randint(0, 118),
-                    amount, category, merchant,
-                    recurring=(category == "Subscription")))
-        else:
-            raise ValueError(f"Unknown style '{style}'; allowed: diner, subscriber, saver, balanced")
-        return rows
-
-    def seed_user_history(self, user_id: str, style: str, months: int = 4) -> int:
-        """Seed a user's expense history with style-driven data.
-
-        Idempotent: if the user already has expense rows, returns 0.
-        Otherwise builds deterministic rows (with embeddings) and inserts them.
-
-        Args:
-            user_id: User UUID
-            style: Spending pattern (diner, subscriber, saver, balanced)
-            months: Months of history to generate (default 4)
-
-        Returns:
-            Number of rows inserted (0 if user already had data)
-        """
-        from sqlalchemy import text
-        with self.engine.connect() as conn:
-            existing = conn.execute(
-                text("SELECT count(*) FROM expenses WHERE user_id = :u"),
-                {"u": user_id}).scalar()
-        if existing:
-            return 0
-
-        rng = random.Random(user_id)
-        rows = self._style_rows(user_id, style, rng)
-        texts = [r["searchable_text"] for r in rows]
-        vectors = self.embedding_model.encode(texts)
-        for row, vec in zip(rows, vectors):
-            row["embedding"] = vec.tolist()
-        self.save_expenses_to_database(rows)
-        return len(rows)
-    
     def create_user_specific_indexes(self) -> bool:
         """Create user-specific vector indexes for CockroachDB."""
         try:

@@ -190,9 +190,6 @@
         }
 
         .connection-status {
-            position: fixed;
-            top: 20px;
-            right: 20px;
             padding: 10px 20px;
             border-radius: 20px;
             background: white;
@@ -222,21 +219,20 @@
     </style>
 </head>
 <body>
-    {% if current_username %}
-    <div style="position:fixed;top:12px;right:16px;z-index:40;">{% include "_identity.html" %}</div>
-    {% endif %}
     <div class="container">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 20px;">
             <h1 style="margin: 0;">🤖 Agent Dashboard</h1>
-            <a href="/" style="color: white; text-decoration: none; background: rgba(255,255,255,0.2); padding: 10px 20px; border-radius: 10px; display: inline-flex; align-items: center; gap: 8px; transition: all 0.2s;">
-                <i class="fas fa-arrow-left"></i>
-                <span>Back to Banko</span>
-            </a>
-        </div>
-        
-        <div class="connection-status">
-            <div class="status-dot" id="statusDot"></div>
-            <span id="connectionText">Connected</span>
+            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 12px;">
+                <div class="connection-status">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span id="connectionText">Connected</span>
+                </div>
+                <a href="/" style="color: white; text-decoration: none; background: rgba(255,255,255,0.2); padding: 10px 20px; border-radius: 10px; display: inline-flex; align-items: center; gap: 8px; transition: all 0.2s;">
+                    <i class="fas fa-arrow-left"></i>
+                    <span>Back to Banko</span>
+                </a>
+                {% if current_username %}{% include "_identity.html" %}{% endif %}
+            </div>
         </div>
 
         <div class="dashboard" id="agentDashboard">

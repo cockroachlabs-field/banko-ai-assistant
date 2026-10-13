@@ -7,7 +7,6 @@ State is persisted via CockroachDBSaver so the workflow survives
 restarts and can be inspected / replayed.
 """
 
-import os
 import uuid
 from datetime import datetime
 from typing import Any, TypedDict
@@ -54,7 +53,7 @@ def receipt_node(state: ReceiptWorkflowState) -> dict:
     llm = get_llm_for_agent(temperature=0.7)
     embedding_model = get_embedding_model()
 
-    from banko_ai.utils.migration import agent_home_region
+    from banko_ai.db.regions import agent_home_region
 
     agent = ReceiptAgent(
         region=agent_home_region(state.get("database_url", "")),
@@ -100,7 +99,7 @@ def fraud_node(state: ReceiptWorkflowState) -> dict:
     llm = get_llm_for_agent(temperature=0.7)
     embedding_model = get_embedding_model()
 
-    from banko_ai.utils.migration import agent_home_region
+    from banko_ai.db.regions import agent_home_region
 
     agent = FraudAgent(
         region=agent_home_region(state.get("database_url", "")),

@@ -10,11 +10,7 @@ This agent:
 """
 
 import json
-import uuid
-from datetime import datetime
 from typing import Any
-
-from langchain_core.tools import Tool
 
 from .base_agent import BaseAgent
 
@@ -410,14 +406,15 @@ Be conversational and helpful."""
         Returns:
             Dictionary with agent statuses
         """
-        from sqlalchemy import create_engine, text
-        from sqlalchemy.pool import NullPool
-        
+        from sqlalchemy import text
+                
         statuses = {}
         
         try:
-            engine = create_engine(self.database_url, poolclass=NullPool)
-            
+            from ..db.engine import get_engine
+
+            engine = get_engine(self.database_url)
+
             with engine.connect() as conn:
                 result = conn.execute(text("""
                     SELECT agent_id, agent_type, region, status, last_heartbeat
@@ -434,9 +431,6 @@ Be conversational and helpful."""
                         'status': row[3],
                         'last_heartbeat': row[4].isoformat() if row[4] else None
                     }
-            
-            engine.dispose()
-        
         except Exception as e:
             statuses['error'] = str(e)
         
