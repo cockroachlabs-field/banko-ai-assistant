@@ -117,7 +117,7 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
                             alert_threshold=0.8)
         status = agent.check_budget_status(user_id=user_id,
                                            monthly_budget=get_config().monthly_budget_default).get("status")
-        return {"over_budget": "Over budget", "on_pace_to_exceed": "On pace to exceed"}.get(status, "Within budget")
+        return {"over_budget": "Over budget", "on_pace_to_exceed": "On pace to exceed"}.get(str(status or ""), "Within budget")
 
     return ReceiptHooks(ocr=ocr, extract=extract, fraud=fraud, budget=budget)
 
@@ -195,7 +195,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
 
     def end(status: str, detail: str = "") -> dict:
         return {"type": "step", "step": state["step"], "status": status, "detail": detail,
-                "ms": round((time.perf_counter() - state["t0"]) * 1000, 1)}
+                "ms": round((time.perf_counter() - float(state["t0"])) * 1000, 1)}
 
     def fail(message: str, ocr_text: str | None = None) -> Iterator[dict]:
         narration.receipt_failed(message)
@@ -256,7 +256,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             _finish(doc, user_id, url, status="duplicate", extracted=extracted, ocr_text=ocr_text[:20000],
                     expense_id=dupes[0]["expense_id"], embedding=qvec)
             state["terminal"] = "duplicate"
-            yield {"type": "receipt", **get_receipt(user_id, doc, url=url)}
+            yield {"type": "receipt", **(get_receipt(user_id, doc, url=url) or {})}
             return
         yield end("done", "no duplicate")
 
@@ -309,7 +309,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             yield end("done", result)
 
         try:
-            yield {"type": "receipt", **get_receipt(user_id, doc, url=url)}
+            yield {"type": "receipt", **(get_receipt(user_id, doc, url=url) or {})}
         except Exception:
             log.warning("get_receipt failed after posting, building from known fields", exc_info=True)
             yield {"type": "receipt", **jsonable(state["posted_data"])}

@@ -404,8 +404,8 @@ def run_turn(user_id: str, thread_id: str, message: str, *, language_code: str |
              context: dict | None = None, chat=None, url: str | None = None, on_event=None, graph=None) -> dict:
     graph = graph or get_graph()
     deps = TurnDeps(chat=chat or ProviderChat(), url=url)
-    inputs = {"user_id": user_id, "thread_id": thread_id, "message": message[:4000],
-              "language": answers.language_name(language_code)}
+    inputs: dict[str, Any] = {"user_id": user_id, "thread_id": thread_id, "message": message[:4000],
+                              "language": answers.language_name(language_code)}
     if context is not None:  # otherwise the thread keeps the context it was opened with
         inputs["context"] = context
     final: dict = {}

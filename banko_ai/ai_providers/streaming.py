@@ -30,7 +30,7 @@ def chunk_text(chunk: Any) -> str:
 def _lc(messages: list[dict]) -> list:
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     kinds = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
-    return [kinds.get(m.get("role"), HumanMessage)(content=m.get("content", "")) for m in messages]
+    return [kinds.get(str(m.get("role", "")), HumanMessage)(content=m.get("content", "")) for m in messages]
 
 
 class ProviderChat:
