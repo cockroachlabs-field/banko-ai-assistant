@@ -111,3 +111,10 @@ def test_cashflow_and_budget_pages(monkeypatch, member):
     assert_page(client.get("/cashflow"), "cashflow")
     html = assert_page(client.get("/budget"), "budget")
     assert "projected" in html.lower()
+
+
+def test_recurring_and_goals_pages(monkeypatch, member):
+    client = signed_in(monkeypatch, member)
+    assert_page(client.get("/recurring"), "recurring")
+    html = assert_page(client.get("/goals"), "goals")
+    assert "Contribute" in html

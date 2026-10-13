@@ -39,3 +39,13 @@ def cashflow():
 @pages.get("/budget")
 def budget():
     return render_template("pages/budget.html")
+
+
+@pages.get("/recurring")
+def recurring():
+    return render_template("pages/recurring.html")
+
+
+@pages.get("/goals")
+def goals():
+    return render_template("pages/goals.html")
