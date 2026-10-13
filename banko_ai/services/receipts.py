@@ -85,7 +85,7 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
     import json as _json
 
     from ..agents.llm_factory import get_embedding_model, get_llm_for_agent
-    from ..agents.tools.document_tools import create_document_tools
+    from ..agents.tools.document_tools import create_document_tools, parse_receipt_fields
     from ..db.regions import agent_home_region
     db_url = url or get_config().database_url
     tools = {t.name: t for t in create_document_tools(db_url, get_embedding_model())}
@@ -97,8 +97,7 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
         return out.get("text", "") if out.get("success") else ""
 
     def extract(text_value: str) -> dict:
-        out = _json.loads(tools["parse_receipt_fields"].func(text=text_value,
-                                                             llm=get_llm_for_agent(0.1, model_override=model)))
+        out = parse_receipt_fields(text_value, get_llm_for_agent(0.1, model_override=model))
         return out.get("fields", {}) if out.get("success") else {}
 
     def fraud(user_id: str, expense_id: str) -> str:
@@ -186,7 +185,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
     cfg = get_config()
     mime = ALLOWED_TYPES.get(Path(filename).suffix.lower(), "application/octet-stream")
     doc = _insert(user_id, filename, mime, _thumbnail(path), url)
-    state = {"step": "ocr", "t0": 0.0}
+    state = {"step": "ocr", "t0": 0.0, "terminal": None, "posted_data": None}
 
     def start(step: str) -> dict:
         state.update(step=step, t0=time.perf_counter())
@@ -198,8 +197,18 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
 
     def fail(message: str, ocr_text: str | None = None) -> Iterator[dict]:
         yield end("failed", message)
-        _finish(doc, user_id, url, status="failed", error=message,
-                **({"ocr_text": ocr_text[:20000]} if ocr_text else {}))
+        try:
+            _finish(doc, user_id, url, status="failed", error=message,
+                    **({"ocr_text": ocr_text[:20000]} if ocr_text else {}))
+            state["terminal"] = "failed"
+        except Exception:
+            log.warning("_finish for failed status raised, retrying once", exc_info=True)
+            try:
+                _finish(doc, user_id, url, status="failed", error=message,
+                        **({"ocr_text": ocr_text[:20000]} if ocr_text else {}))
+                state["terminal"] = "failed"
+            except Exception:
+                log.error("_finish retry failed, row may stay processing", exc_info=True)
         yield {"type": "error", "message": message}
 
     try:
@@ -241,6 +250,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
                    "ms": None}
             _finish(doc, user_id, url, status="duplicate", extracted=extracted, ocr_text=ocr_text[:20000],
                     expense_id=dupes[0]["expense_id"], embedding=qvec)
+            state["terminal"] = "duplicate"
             yield {"type": "receipt", **get_receipt(user_id, doc, url=url)}
             return
         yield end("done", "no duplicate")
@@ -256,8 +266,26 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
         except ledger.InsufficientFunds:
             yield from fail(NO_FUNDS, ocr_text)
             return
-        _finish(doc, user_id, url, status="posted", extracted=extracted, ocr_text=ocr_text[:20000],
-                expense_id=expense_id, embedding=qvec)
+
+        state["posted_data"] = {"document_id": doc, "status": "posted", "merchant": valid.merchant,
+                                "amount": extracted["amount"], "date": extracted["date"], "category": category,
+                                "items": extracted["items"], "payment_method": extracted["payment_method"],
+                                "expense_id": expense_id, "created_at": datetime.now(timezone.utc)}
+
+        try:
+            _finish(doc, user_id, url, status="posted", extracted=extracted, ocr_text=ocr_text[:20000],
+                    expense_id=expense_id, embedding=qvec)
+            state["terminal"] = "posted"
+        except Exception:
+            log.warning("_finish for posted status raised, retrying once", exc_info=True)
+            try:
+                _finish(doc, user_id, url, status="posted", extracted=extracted, ocr_text=ocr_text[:20000],
+                        expense_id=expense_id, embedding=qvec)
+                state["terminal"] = "posted"
+            except Exception:
+                log.error("_finish retry failed after posting, but money moved", exc_info=True)
+                state["terminal"] = "posted"
+
         yield end("done", f"${valid.amount:,.2f} on {category}")
 
         for step, check in (("fraud", lambda: hooks.fraud(user_id, expense_id)),
@@ -268,7 +296,26 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             except Exception:
                 log.warning("receipt %s check failed", step, exc_info=True)
                 yield end("failed", "check failed")
-        yield {"type": "receipt", **get_receipt(user_id, doc, url=url)}
+
+        try:
+            yield {"type": "receipt", **get_receipt(user_id, doc, url=url)}
+        except Exception:
+            log.warning("get_receipt failed after posting, building from known fields", exc_info=True)
+            yield {"type": "receipt", **jsonable(state["posted_data"])}
     except Exception:
-        log.warning("receipt pipeline failed at %s", state["step"], exc_info=True)
-        yield from fail(FAILED)
+        if state.get("posted_data"):
+            log.error("exception after posting, money moved, reporting success", exc_info=True)
+            try:
+                yield {"type": "receipt", **jsonable(state["posted_data"])}
+            except Exception:
+                log.error("failed to yield posted receipt data", exc_info=True)
+        else:
+            log.warning("receipt pipeline failed at %s", state["step"], exc_info=True)
+            yield from fail(FAILED)
+    finally:
+        if state["terminal"] is None:
+            log.warning("receipt row %s left processing, marking failed", doc)
+            try:
+                _finish(doc, user_id, url, status="failed", error=FAILED)
+            except Exception:
+                log.error("finally cleanup failed, row may stay processing", exc_info=True)

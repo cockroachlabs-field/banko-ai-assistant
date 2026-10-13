@@ -28,6 +28,115 @@ except ImportError:
     print("⚠️  OCR libraries not available. Install: pip install pytesseract pdf2image Pillow pypdf")
 
 
+def parse_receipt_fields(text: str, llm: Any) -> dict:
+    """
+    Parse receipt text using LLM to extract structured fields.
+
+    Args:
+        text: Raw text from OCR
+        llm: LangChain LLM instance
+
+    Returns:
+        dict with 'success' (bool), 'fields' (dict if success), 'error' (str if failed)
+    """
+    try:
+        prompt = f"""You are a JSON extraction bot. Your ONLY job is to output valid JSON, nothing else.
+
+Extract these fields from the receipt text below and return ONLY the JSON object:
+
+Receipt Text:
+{text}
+
+Required JSON format (do not include any text before or after the JSON):
+{{
+  "merchant": "store name",
+  "amount": 0.00,
+  "date": "YYYY-MM-DD",
+  "category": "food or transportation or entertainment or shopping or services or other",
+  "items": ["item1", "item2"],
+  "payment_method": "credit card or debit card or cash or other"
+}}
+
+IMPORTANT:
+- Return ONLY the JSON object, no explanation, no text before or after
+- If a field is not found, use null
+- Amount must be a number, not a string
+- Date must be in YYYY-MM-DD format
+
+JSON:"""
+
+        response = llm.invoke(prompt)
+
+        if hasattr(response, 'content'):
+            response_text = response.content
+        elif hasattr(response, 'text'):
+            response_text = response.text
+        elif isinstance(response, str):
+            response_text = response
+        else:
+            response_text = str(response)
+
+        cleaned = response_text.strip()
+
+        if not cleaned:
+            raise ValueError("LLM returned empty response")
+
+        if cleaned.startswith('```json'):
+            cleaned = cleaned.replace('```json', '').replace('```', '').strip()
+        elif cleaned.startswith('```'):
+            cleaned = cleaned.replace('```', '').strip()
+
+        if not cleaned.startswith('{'):
+            first_brace = cleaned.find('{')
+            if first_brace == -1:
+                raise ValueError(f"LLM did not return valid JSON. Response: {cleaned[:200]}")
+
+            brace_count = 0
+            in_string = False
+            escape = False
+            end_pos = first_brace
+
+            for i in range(first_brace, len(cleaned)):
+                char = cleaned[i]
+
+                if char == '"' and not escape:
+                    in_string = not in_string
+                elif char == '\\' and in_string:
+                    escape = not escape
+                    continue
+
+                if not in_string:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            end_pos = i + 1
+                            break
+
+                escape = False
+
+            if brace_count == 0 and end_pos > first_brace:
+                cleaned = cleaned[first_brace:end_pos]
+            else:
+                raise ValueError("Could not extract complete JSON object")
+
+        parsed = json.loads(cleaned)
+
+        return {
+            'success': True,
+            'fields': parsed,
+            'raw_response': response_text
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'raw_response': response_text if 'response_text' in locals() else None
+        }
+
+
 def create_document_tools(database_url: str, embedding_model) -> list[Tool]:
     """
     Create document processing tools.

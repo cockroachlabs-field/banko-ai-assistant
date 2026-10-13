@@ -15,7 +15,7 @@ from typing import Any
 from langchain_core.tools import Tool
 
 from .base_agent import BaseAgent
-from .tools.document_tools import create_document_tools
+from .tools.document_tools import create_document_tools, parse_receipt_fields
 
 
 class ReceiptAgent(BaseAgent):
@@ -97,125 +97,15 @@ Be thorough and accurate. If information is unclear, say so."""
     def _parse_receipt_fields(self, text: str) -> str:
         """
         Parse receipt text using LLM.
-        
+
         Args:
             text: Raw text from OCR
-        
+
         Returns:
             JSON string with extracted fields
         """
-        try:
-            prompt = f"""You are a JSON extraction bot. Your ONLY job is to output valid JSON, nothing else.
-
-Extract these fields from the receipt text below and return ONLY the JSON object:
-
-Receipt Text:
-{text}
-
-Required JSON format (do not include any text before or after the JSON):
-{{
-  "merchant": "store name",
-  "amount": 0.00,
-  "date": "YYYY-MM-DD",
-  "category": "food or transportation or entertainment or shopping or services or other",
-  "items": ["item1", "item2"],
-  "payment_method": "credit card or debit card or cash or other"
-}}
-
-IMPORTANT: 
-- Return ONLY the JSON object, no explanation, no text before or after
-- If a field is not found, use null
-- Amount must be a number, not a string
-- Date must be in YYYY-MM-DD format
-
-JSON:"""
-
-            # Get LLM response
-            response = self.llm.invoke(prompt)
-            
-            # Extract text from response (handle different LLM response formats)
-            if hasattr(response, 'content'):
-                response_text = response.content
-            elif hasattr(response, 'text'):
-                response_text = response.text
-            elif isinstance(response, str):
-                response_text = response
-            else:
-                response_text = str(response)
-            
-            # Debug: Log the raw response
-            print(f"🤖 LLM Raw Response: {response_text[:200]}...")
-            
-            # Clean up response (remove markdown code blocks if present)
-            cleaned = response_text.strip()
-            
-            if not cleaned:
-                raise ValueError("LLM returned empty response")
-            
-            # Remove markdown code blocks
-            if cleaned.startswith('```json'):
-                cleaned = cleaned.replace('```json', '').replace('```', '').strip()
-            elif cleaned.startswith('```'):
-                cleaned = cleaned.replace('```', '').strip()
-            
-            # Try to extract JSON if LLM wrapped it in text (common with some models)
-            if not cleaned.startswith('{'):
-                # Look for JSON object in the response
-                first_brace = cleaned.find('{')
-                if first_brace == -1:
-                    print(f"⚠️  No JSON found in response: {cleaned[:500]}")
-                    raise ValueError(f"LLM did not return valid JSON. Response: {cleaned[:200]}")
-                
-                # Try to find the complete JSON object by counting braces
-                brace_count = 0
-                in_string = False
-                escape = False
-                end_pos = first_brace
-                
-                for i in range(first_brace, len(cleaned)):
-                    char = cleaned[i]
-                    
-                    # Handle string content (ignore braces inside strings)
-                    if char == '"' and not escape:
-                        in_string = not in_string
-                    elif char == '\\' and in_string:
-                        escape = not escape
-                        continue
-                    
-                    if not in_string:
-                        if char == '{':
-                            brace_count += 1
-                        elif char == '}':
-                            brace_count -= 1
-                            if brace_count == 0:
-                                end_pos = i + 1
-                                break
-                    
-                    escape = False
-                
-                if brace_count == 0 and end_pos > first_brace:
-                    cleaned = cleaned[first_brace:end_pos]
-                    print(f"📝 Extracted JSON from text: {cleaned[:200]}...")
-                else:
-                    print(f"⚠️  Incomplete JSON in response: {cleaned[:500]}")
-                    raise ValueError("Could not extract complete JSON object")
-            
-            # Try to parse as JSON
-            print(f"📝 Attempting to parse JSON ({len(cleaned)} chars)...")
-            parsed = json.loads(cleaned)
-            
-            return json.dumps({
-                'success': True,
-                'fields': parsed,
-                'raw_response': response_text
-            }, indent=2)
-        
-        except Exception as e:
-            return json.dumps({
-                'success': False,
-                'error': str(e),
-                'raw_response': response_text if 'response_text' in locals() else None
-            })
+        result = parse_receipt_fields(text, self.llm)
+        return json.dumps(result, indent=2)
     
     def process_document(
         self,

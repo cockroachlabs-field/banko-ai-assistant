@@ -120,3 +120,101 @@ def test_failed_side_checks_do_not_undo_the_purchase(member, image):
 
 def test_vector_floats_is_the_inverse_of_vector_text():
     assert vector_floats(vector_text([0.5, 0.25])) == [0.5, 0.25]
+
+
+def test_default_hooks_extract_reaches_the_llm():
+    """Issue #1: default_hooks().extract must work with a real LLM (monkeypatched here)."""
+    from unittest.mock import MagicMock
+    from banko_ai.agents import llm_factory
+
+    class StubMessage:
+        def __init__(self, text):
+            self.content = text
+
+    stub_llm = MagicMock()
+    stub_llm.invoke.return_value = StubMessage('{"merchant": "Test Cafe", "amount": 12.50, "date": "2026-10-13", '
+                                                '"category": "food", "items": ["coffee"], "payment_method": "cash"}')
+
+    original_get_llm = llm_factory.get_llm_for_agent
+    try:
+        llm_factory.get_llm_for_agent = lambda temp, model_override=None: stub_llm
+        hooks = receipts.default_hooks()
+        result = hooks.extract("CAFE RECEIPT TOTAL 12.50")
+        assert result["merchant"] == "Test Cafe"
+        assert result["amount"] == 12.50
+    finally:
+        llm_factory.get_llm_for_agent = original_get_llm
+
+
+def test_exception_after_posting_reports_success(member, image):
+    """Issue #2: an exception after ledger.post_purchase must not mark the row failed."""
+    from unittest.mock import patch
+
+    fields = dict(FIELDS, merchant="Post Then Fail", amount=19.99)
+    hooks = _hooks(fields)
+
+    original_get_receipt = receipts.get_receipt
+    call_count = {"get_receipt": 0}
+
+    def raise_on_final_call(user_id, document_id, url=None):
+        call_count["get_receipt"] += 1
+        if call_count["get_receipt"] == 1:
+            raise RuntimeError("simulated get_receipt failure after posting")
+        return original_get_receipt(user_id, document_id, url=url)
+
+    with patch("banko_ai.services.receipts.get_receipt", side_effect=raise_on_final_call):
+        events = _run(member, image, hooks)
+
+    final = events[-1]
+    assert final["type"] == "receipt" and final["status"] == "posted"
+    assert final["merchant"] == "Post Then Fail"
+
+    with get_engine().connect() as c:
+        entry = c.execute(text("SELECT amount FROM ledger_entries WHERE expense_id = CAST(:x AS UUID)"),
+                          {"x": final["expense_id"]}).scalar()
+    assert float(entry) == -19.99
+
+
+def test_generator_close_marks_row_failed(member, image):
+    """Issue #3: GeneratorExit (client disconnect) must mark the row failed."""
+    gen = receipts.process_receipt(member, image, "r.png", hooks=_hooks(dict(FIELDS, merchant="Closed Early", amount=5.00)))
+    events = []
+    for event in gen:
+        events.append(event)
+        if event.get("step") == "post" and event.get("status") == "start":
+            gen.close()
+            break
+
+    with get_engine().connect() as c:
+        status = c.execute(text("SELECT status FROM receipts WHERE user_id = CAST(:u AS UUID) "
+                                "ORDER BY created_at DESC LIMIT 1"), {"u": member}).scalar()
+        ledger_count = c.execute(text("SELECT count(*) FROM ledger_entries WHERE user_id = CAST(:u AS UUID) "
+                                      "AND description LIKE '%Closed Early%'"), {"u": member}).scalar()
+    assert status == "failed"
+    assert ledger_count == 0
+
+
+def test_fail_itself_raising_still_ends_cleanly(member, image):
+    """Issue #3 (optional): if _finish in fail() raises, the finally cleanup still runs."""
+    from unittest.mock import patch
+
+    fields = dict(FIELDS, merchant="Fail Raises", amount=3.00)
+    hooks = _hooks(fields, ocr_text="   ")
+
+    original_finish = receipts._finish
+    call_count = {"finish": 0}
+
+    def raise_twice_then_work(doc_id, user_id, url, **cols):
+        call_count["finish"] += 1
+        if call_count["finish"] <= 2:
+            raise RuntimeError("simulated _finish failure")
+        return original_finish(doc_id, user_id, url, **cols)
+
+    with patch("banko_ai.services.receipts._finish", side_effect=raise_twice_then_work):
+        events = _run(member, image, hooks)
+
+    assert events[-1]["type"] == "error"
+    with get_engine().connect() as c:
+        status = c.execute(text("SELECT status FROM receipts WHERE user_id = CAST(:u AS UUID) "
+                                "ORDER BY created_at DESC LIMIT 1"), {"u": member}).scalar()
+    assert status == "failed"
