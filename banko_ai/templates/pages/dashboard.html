@@ -32,8 +32,8 @@
     </div>
 
     <div class="b-card b-ins" x-show="data && data.insight">
-      <div class="b-lbl" x-text="'Coach · ' + Banko.fmt.relative(data.insight && data.insight.created_at)"></div>
-      <p x-text="data.insight && data.insight.message"></p>
+      <div class="b-lbl" x-text="data && data.insight && ('Coach · ' + Banko.fmt.relative(data.insight.created_at))"></div>
+      <p x-text="data && data.insight && data.insight.message"></p>
       <button type="button" @click="Banko.emit('banko:ask', { context: { kind: 'nudge', id: data.insight && data.insight.nudge_id } })">Ask {{ shell.brand.name }} about this →</button>
     </div>
     <div class="b-card b-empty" x-show="data && !data.insight">
