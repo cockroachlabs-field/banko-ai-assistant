@@ -53,3 +53,23 @@ def test_as_dict_is_json_safe():
     d = route("how much did I spend on groceries last month", today=TODAY).as_dict()
     json.dumps(d)
     assert d["kind"] == "aggregate" and d["intent"]["operation"] == "sum"
+
+
+def test_this_year_not_hijacked_by_receipt():
+    r = route("how much have I spent this year?", active_receipt=RECEIPT, today=TODAY)
+    assert r.kind == "aggregate"
+
+
+def test_this_month_not_hijacked_by_receipt():
+    r = route("is this month worse than last?", active_receipt=RECEIPT, today=TODAY)
+    assert r.kind == "plan"
+
+
+def test_item_words_in_idioms_not_hijacked():
+    r = route("what's the bread and butter of my spending?", active_receipt=RECEIPT, today=TODAY)
+    assert r.kind != "receipt"
+
+
+def test_remember_to_is_not_a_memory_command():
+    r = route("remember to pay rent on Friday")
+    assert r.kind != "remember"
