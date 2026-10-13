@@ -1415,7 +1415,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                 row = conn.execute(text(sql), params).fetchone()
             return row is not None
         except IntegrityError:
-            # PK collision on signal_id (or any other unique constraint) —
+            # PK collision on signal_id (or any other unique constraint):
             # the signal already exists, so this is a replay.
             return False
 
