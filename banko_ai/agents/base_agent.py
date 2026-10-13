@@ -420,10 +420,10 @@ Be concise but thorough in your responses."""
             from ..db.engine import get_engine
             engine = get_engine(self.database_url)
 
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 # Build query with optional memory_type filter
                 sql = """
-                    SELECT 
+                    SELECT
                         memory_id,
                         memory_type,
                         content,
@@ -433,23 +433,24 @@ Be concise but thorough in your responses."""
                     FROM agent_memory
                     WHERE user_id = :user_id
                 """
-                
+
                 params = {
                     'user_id': user_id,
                     'query_embedding': str(query_embedding)
                 }
-                
+
                 if memory_type:
                     sql += " AND memory_type = :memory_type"
                     params['memory_type'] = memory_type
-                
+
                 sql += " ORDER BY distance LIMIT :limit"
                 params['limit'] = limit
-                
+
                 result = conn.execute(text(sql), params)
-                
+
                 memories = []
-                for row in result.fetchall():
+                rows = result.fetchall()
+                for row in rows:
                     memories.append({
                         'memory_id': str(row[0]),
                         'memory_type': row[1],
@@ -458,6 +459,11 @@ Be concise but thorough in your responses."""
                         'created_at': row[4].isoformat() if row[4] else None,
                         'similarity': 1.0 - float(row[5])  # Convert distance to similarity
                     })
+                ids = [str(row[0]) for row in rows]
+                if ids:
+                    conn.execute(text(
+                        "UPDATE agent_memory SET access_count = access_count + 1, accessed_at = now() "
+                        "WHERE memory_id = ANY(CAST(:ids AS UUID[]))"), {"ids": ids})
             return memories
         
         except Exception as e:

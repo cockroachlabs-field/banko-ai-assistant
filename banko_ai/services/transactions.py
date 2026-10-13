@@ -13,10 +13,12 @@ from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.regions import regional_tables_ready
+from ..db.engine import run_transaction
+from ..db.regions import money_region, regional_tables_ready
 from ..db.rls import request_url
 from ..utils.request_trace import trace_step
 from ._sql import jsonable, read_session, valid_uuid, vector_text
+from .ledger import NotFound, bump_data_version
 
 log = logging.getLogger("banko.services")
 
@@ -285,3 +287,29 @@ def transaction_detail(user_id: str, txn_id: str, *, url: str | None = None) -> 
         "similar": similar,
         "residency": {"stored_in": row[8], "home_region": home} if regional else None,
     }))
+
+
+def recategorize(user_id: str, expense_id: str, category: str, *, url: str | None = None) -> dict:
+    """Move one of the user's expenses to another catalog category. Not a
+    money movement, but it changes what answers and caches should say, so
+    the data version moves with it."""
+    url = request_url(url)
+    labels = {c.label.lower(): c.label for c in get_catalog().categories}
+    label = labels.get((category or "").strip().lower())
+    if label is None:
+        raise ValueError("Pick one of the catalog categories")
+    if not valid_uuid(expense_id):
+        raise NotFound("That transaction was not found")
+
+    def fn(conn) -> dict:
+        row = conn.execute(text("""
+            UPDATE expenses SET shopping_type = :c
+            WHERE expense_id = CAST(:x AS UUID) AND user_id = CAST(:u AS UUID)
+            RETURNING expense_id
+        """), {"c": label, "x": expense_id, "u": user_id}).fetchone()
+        if row is None:
+            raise NotFound("That transaction was not found")
+        bump_data_version(conn, user_id, money_region(conn, user_id, url))
+        return {"expense_id": expense_id, "category": label}
+
+    return run_transaction(fn, url=url, user_id=user_id)
