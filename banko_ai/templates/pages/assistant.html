@@ -1,0 +1,54 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Assistant{% endblock %}
+{% block content %}
+<section class="b-assist-page" x-data="assistant('page')" x-init='startPage({{ thread_id|tojson }})'>
+  <div class="b-threads" x-data="threadList">
+    <button class="b-btn" type="button" style="margin-bottom:10px" @click="$dispatch('banko-new-thread')">{{ icon('plus') }}New conversation</button>
+    <template x-for="group in grouped()" :key="group.title">
+      <div>
+        <div class="b-muted" style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin:8px 6px 3px" x-text="group.title"></div>
+        <template x-for="t in group.items" :key="t.thread_id">
+          <div style="display:flex;align-items:center;gap:2px">
+            <template x-if="editing !== t.thread_id"><a class="b-th" :class="{ on: t.thread_id === current }" :href="'/assistant/' + t.thread_id" x-text="t.title"></a></template>
+            <template x-if="editing === t.thread_id"><form style="flex:1" @submit.prevent="saveName(t)"><input class="b-input" style="padding:5px 8px" x-model="name" @keydown.escape="editing = null" maxlength="120"></form></template>
+            <button class="b-iconbtn" style="width:26px;height:26px" type="button" @click="startRename(t)" aria-label="Rename">{{ icon('pencil') }}</button>
+            <button class="b-iconbtn" style="width:26px;height:26px" type="button" @click="remove(t)" aria-label="Delete">{{ icon('trash-2') }}</button>
+          </div>
+        </template>
+      </div>
+    </template>
+    <div class="b-muted" style="margin-top:auto;font-size:11px;padding:8px 6px">Conversations are LangGraph checkpoints in CockroachDB. Restart the app and they're still here.</div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;min-width:0" @banko-new-thread.window="newThread(null); history.replaceState(null, '', '/assistant')">
+    <div class="b-panel-h">
+      <div><div class="t" x-text="threadTitle || 'New conversation'"></div><div class="b-muted" x-text="messages.length + ' messages'"></div></div>
+      <span class="sp"></span>
+      {% if shell.user.region %}<span class="b-pill"><span class="b-dot"></span>{{ shell.user.region }}</span>{% endif %}
+      <span class="b-pill"><img src="{{ shell.provider.icon_url }}" alt="">{{ shell.provider.name }} · {{ shell.provider.model }}</span>
+    </div>
+    {% include "components/assistant_chat.html" %}
+  </div>
+
+  <aside class="b-trace" x-data="tracePanel">
+    <h3>How this was answered</h3>
+    <div class="b-muted" x-show="!message">Ask something and each step shows up here: the route, the index, the region and the timings.</div>
+    <template x-if="message">
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div class="b-tl">
+          <template x-for="(s, i) in steps()" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="(s.detail || '') + (s.ms ? ' · ' + Math.round(s.ms) + ' ms' : '')"></span></div></template>
+          <div x-show="message.ms && !(message.meta && message.meta.trace)"><b>Answer</b><span x-text="'{{ shell.provider.name }} · ' + (message.ms / 1000).toFixed(1) + ' s' + (message.cached ? ' · cache hit' : '')"></span></div>
+        </div>
+        <div class="b-muted" x-show="message.meta && message.meta.region" x-text="'Served from ' + (message.meta.region || '') + (message.meta.db_ms ? ' · ' + message.meta.db_ms + ' ms in the database' : '')"></div>
+        <div class="b-kv" x-show="message.meta && message.meta.explain" x-text="message.meta.explain"></div>
+      </div>
+    </template>
+    <div class="b-card" x-show="memories.length" style="padding:10px 12px">
+      <div class="b-lbl">{{ shell.brand.name }} remembers</div>
+      <template x-for="m in memories.slice(0, 4)" :key="m.memory_id"><div class="b-muted" style="margin-top:4px" x-text="m.content"></div></template>
+    </div>
+  </aside>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/assistant.js') }}"></script>{% endblock %}

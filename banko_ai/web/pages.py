@@ -5,6 +5,7 @@ app's before_request hook."""
 from flask import Blueprint, abort, render_template, session
 
 from ..services import accounts as accounts_service
+from ..services import threads as threads_service
 
 pages = Blueprint("pages", __name__)
 
@@ -49,3 +50,15 @@ def recurring():
 @pages.get("/goals")
 def goals():
     return render_template("pages/goals.html")
+
+
+@pages.get("/assistant")
+def assistant():
+    return render_template("pages/assistant.html", thread_id=None)
+
+
+@pages.get("/assistant/<thread_id>")
+def assistant_thread(thread_id: str):
+    if threads_service.get_thread(session["user_id"], thread_id) is None:
+        abort(404)
+    return render_template("pages/assistant.html", thread_id=thread_id)

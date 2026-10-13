@@ -118,3 +118,20 @@ def test_recurring_and_goals_pages(monkeypatch, member):
     assert_page(client.get("/recurring"), "recurring")
     html = assert_page(client.get("/goals"), "goals")
     assert "Contribute" in html
+
+
+def test_assistant_page(monkeypatch, member):
+    client = signed_in(monkeypatch, member)
+    html = assert_page(client.get("/assistant"), "assistant")
+    assert 'x-data="assistant(\'page\')"' in html
+    assert 'x-data="assistant(\'panel\')"' not in html
+    assert "x-init='startPage(null)'" in html
+    tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
+    html2 = assert_page(client.get(f"/assistant/{tid}"), "assistant")
+    assert f'x-init=\'startPage("{tid}")\'' in html2
+    other = make_user()
+    try:
+        c2 = signed_in(monkeypatch, other)
+        assert c2.get(f"/assistant/{tid}").status_code == 404
+    finally:
+        drop_user(other)

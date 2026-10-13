@@ -15,6 +15,10 @@ document.addEventListener("alpine:init", () => {
     streaming: false, controller: null,
     language: localStorage.getItem("banko.language") || (Banko.shell.languages[0] || { code: "en-US" }).code,
     languages: Banko.shell.languages,
+    voiceSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+    canSpeak: "speechSynthesis" in window,
+    listening: false, recognition: null,
+    autoRead: localStorage.getItem("banko.autoread") === "1",
 
     init() {
       if (this.mode === "panel") this.threadId = localStorage.getItem("banko.thread");
@@ -22,6 +26,53 @@ document.addEventListener("alpine:init", () => {
       window.addEventListener("banko:receipt", (e) => { this.show(); this.upload(e.detail.file); });
       window.addEventListener("banko:pick-receipt", () => { this.show(); this.$nextTick(() => this.$refs.file.click()); });
       this.$watch("language", (v) => localStorage.setItem("banko.language", v));
+      this.initVoice();
+    },
+
+    initVoice() {
+      this.$watch("autoRead", (v) => localStorage.setItem("banko.autoread", v ? "1" : "0"));
+      window.addEventListener("keydown", (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "m" && this.voiceSupported) {
+          if (this.mode === "panel" && document.querySelector('[x-data="assistant(\'page\')"]')) return;
+          e.preventDefault(); this.show(); this.toggleVoice();
+        }
+      });
+      window.addEventListener("banko:answered", (e) => {
+        if (this.autoRead && e.detail.thread === this.threadId && e.detail.bot.answer) this.speak(e.detail.bot.answer);
+      });
+    },
+
+    toggleVoice() {
+      if (!this.voiceSupported) return;
+      if (this.listening) { this.recognition && this.recognition.stop(); return; }
+      const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const rec = new Rec();
+      rec.lang = this.language; rec.interimResults = true; rec.maxAlternatives = 1;
+      let finalText = "";
+      rec.onresult = (ev) => {
+        let interim = "";
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          const r = ev.results[i];
+          if (r.isFinal) finalText += r[0].transcript; else interim += r[0].transcript;
+        }
+        this.draft = (finalText + interim).trim();
+      };
+      rec.onerror = () => { this.listening = false; };
+      rec.onend = () => { this.listening = false; if (finalText.trim()) this.send(finalText.trim()); };
+      this.recognition = rec; this.listening = true; rec.start();
+    },
+
+    speak(text) {
+      if (!this.canSpeak) return;
+      const plain = Banko.stripCitations(text).replace(/[*_`#>|]/g, " ");
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(plain);
+      u.lang = this.language;
+      const prefix = this.language.slice(0, 2);
+      const voice = window.speechSynthesis.getVoices().find((v) => v.lang === this.language) ||
+                    window.speechSynthesis.getVoices().find((v) => v.lang.startsWith(prefix));
+      if (voice) u.voice = voice;
+      window.speechSynthesis.speak(u);
     },
 
     show() {
@@ -168,6 +219,10 @@ document.addEventListener("alpine:init", () => {
     traceSteps(m) { return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps; },
     stepClass(s) { return s.status === "warning" || s.status === "error" ? "warn" : "ok"; },
     openCitation(c) { Banko.emit("banko:open-transaction", { id: c.expense_id }); },
+
+    async startPage(threadId) {
+      if (threadId) await this.loadThread(threadId);
+    },
 
     onKey(e) {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }

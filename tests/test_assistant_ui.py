@@ -89,3 +89,12 @@ def test_a_failed_turn_keeps_its_trace_and_names_nothing_internal(client, monkey
     labels = [s["label"] for s in failed["trace"]]
     assert labels[-2:] == ["Answer stopped", "Total request time"]
     assert any(s["kind"] == "llm" and s["status"] == "warning" for s in failed["trace"])
+
+
+def test_voice_controls_are_feature_detected():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "banko_ai"
+    js = (root / "static" / "js" / "assistant.js").read_text()
+    chat = (root / "templates" / "components" / "assistant_chat.html").read_text()
+    assert "SpeechRecognition" in js and "webkitSpeechRecognition" in js and "speechSynthesis" in js
+    assert 'x-show="voiceSupported"' in chat

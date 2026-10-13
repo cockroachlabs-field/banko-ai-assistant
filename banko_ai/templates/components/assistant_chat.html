@@ -56,6 +56,7 @@
             <span x-show="m.meta.region" x-text="'served from ' + m.meta.region + (m.meta.db_ms ? ' · ' + m.meta.db_ms + ' ms in the database' : '')"></span>
             <button type="button" class="link" @click="toggleTrace(m)">How this was answered</button>
             <button type="button" @click="copy(m.answer)">{{ icon('copy') }}copy</button>
+            <button type="button" x-show="canSpeak" @click="speak(m.answer)">{{ icon('volume-2') }}read aloud</button>
           </div>
           <div class="b-trace" style="border:1px solid var(--bd);border-radius:12px" x-show="m.showTrace && mode === 'panel'">
             <div class="b-tl">
@@ -74,7 +75,8 @@
   <div class="b-comp-tools">
     <input type="file" x-ref="file" accept="image/*,application/pdf" capture="environment" hidden @change="pickFile($event)">
     <button class="b-iconbtn" type="button" @click="$refs.file.click()" title="Add a receipt" aria-label="Add a receipt">{{ icon('paperclip') }}</button>
-    {% block voice_tools %}{% endblock %}
+    <button class="b-iconbtn" type="button" x-show="voiceSupported" @click="toggleVoice()" :style="listening ? 'color:var(--neg);border-color:var(--neg)' : ''" :title="listening ? 'Listening, click to stop' : 'Speak (Ctrl or Cmd+M)'" aria-label="Voice input">{{ icon('mic') }}</button>
+    <button class="b-iconbtn" type="button" x-show="canSpeak" @click="autoRead = !autoRead" :style="autoRead ? 'color:var(--ac);border-color:var(--ac)' : ''" :title="autoRead ? 'Reading answers aloud' : 'Read answers aloud'" aria-label="Read answers aloud">{{ icon('volume-2') }}</button>
     <select class="b-select" style="width:auto;padding:5px 8px" x-model="language" aria-label="Answer language">
       <template x-for="l in languages" :key="l.code"><option :value="l.code" x-text="l.name"></option></template>
     </select>
