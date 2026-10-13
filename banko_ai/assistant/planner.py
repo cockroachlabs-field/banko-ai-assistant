@@ -74,16 +74,21 @@ def plan_and_act(chat, message: str, ctx: ToolContext, *, history: list[dict], m
                  on_step: Callable[[dict], None] | None = None) -> list[dict]:
     budget = max_steps or get_config().assistant_max_steps
     tools = describe_tools()
-    plan = parse_plan(chat.complete(planner_messages(message, history=history, memories=memories,
-                                                     context_facts=context_facts, tools=tools), temperature=0))
-    if not plan.steps:
-        # Nothing usable: ground the answer in a semantic search instead of guessing.
-        plan = Plan(steps=[Step(tool="search_transactions", args={"query": message[:300]})])
-    results = execute(plan.steps, ctx, budget=budget, on_step=on_step)
+
+    def ask(results: list[dict] | None = None) -> Plan:
+        return parse_plan(chat.complete(planner_messages(message, history=history, memories=memories,
+                                                         context_facts=context_facts, tools=tools,
+                                                         results=results, max_steps=budget), temperature=0))
+
+    # Nothing usable, or nothing that worked: ground the answer in a semantic
+    # search of the question instead of letting the model guess.
+    grounding = Step(tool="search_transactions", args={"query": message[:300]})
+    plan = ask()
+    results = execute(plan.steps or [grounding], ctx, budget=budget, on_step=on_step)
+    if plan.steps and not any(r["ok"] for r in results):
+        results += execute([grounding], ctx, budget=1, on_step=on_step)
     remaining = budget - len(results)
     if remaining > 0:
-        more = parse_plan(chat.complete(planner_messages(message, history=history, memories=memories,
-                                                         context_facts=context_facts, tools=tools,
-                                                         results=results), temperature=0))
+        more = ask(results)
         results += execute(more.steps, ctx, budget=remaining, on_step=on_step)
     return results

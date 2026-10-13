@@ -21,13 +21,40 @@ def test_receipt_reference_beats_aggregation():
     r = route("how much was this receipt?", active_receipt=RECEIPT, today=TODAY)
     assert r.kind == "receipt"
     assert route("was the wine expensive?", active_receipt=RECEIPT).kind == "receipt"
-    assert route("is it a duplicate", active_receipt=RECEIPT).kind == "receipt"
+    assert route("is it a duplicate", active_receipt=RECEIPT, last_route="receipt").kind == "receipt"
     assert route("what did I buy at trader joe's", active_receipt=RECEIPT).kind == "receipt"
 
 
-def test_without_a_receipt_the_same_words_aggregate_or_plan():
+def test_without_a_receipt_the_same_words_aggregate_or_go_to_the_latest_receipt():
     assert route("how much did I spend on groceries last month", today=TODAY).kind == "aggregate"
-    assert route("how much was this receipt?", today=TODAY).kind in ("plan", "aggregate")
+    assert route("how much was this receipt?", today=TODAY).kind == "receipt"
+    assert route("what did I buy on that receipt", today=TODAY).kind == "receipt"
+
+
+def test_weak_references_give_way_to_a_real_aggregation():
+    """"the total" with a subject or a window is a new question, not the receipt."""
+    r = route("what's the total I spent on restaurants this month?", active_receipt=RECEIPT, today=TODAY)
+    assert r.kind == "aggregate" and r.intent.subject == "restaurants"
+    assert route("how much was the total?", active_receipt=RECEIPT, today=TODAY).kind == "receipt"
+    assert route("how much was this receipt in total this month?", active_receipt=RECEIPT,
+                 today=TODAY).kind == "receipt"
+
+
+def test_a_bare_pronoun_needs_the_receipt_to_be_the_topic():
+    unrelated = route("is it a good idea to save more?", active_receipt=RECEIPT, last_route="aggregate", today=TODAY)
+    assert unrelated.kind != "receipt"
+    assert route("is it a good idea to save more?", active_receipt=RECEIPT, last_route="receipt",
+                 today=TODAY).kind == "receipt"
+    assert route("is that expensive?", active_receipt=RECEIPT, last_route="receipt").kind == "receipt"
+    assert route("is that expensive?", active_receipt=RECEIPT, last_route="plan").kind != "receipt"
+
+
+def test_short_or_follow_up_messages_mid_conversation_reach_the_planner():
+    for message in ("which one was the biggest?", "tell me more", "thanks!", "what's the capital of France?"):
+        assert route(message, has_history=True, today=TODAY).kind == "plan", message
+    long_off_topic = "what is the boiling point of water at sea level in degrees celsius"
+    assert route(long_off_topic, has_history=True, today=TODAY).kind == "offtopic"
+    assert route("what's the capital of France?", today=TODAY).kind == "offtopic"
 
 
 def test_unrelated_question_with_a_receipt_is_not_hijacked():

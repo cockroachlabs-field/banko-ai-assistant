@@ -76,6 +76,94 @@ def test_receipt_follow_up_uses_the_active_receipt(g, member, thread):
     assert out2["route"]["kind"] == "receipt"
 
 
+def test_the_last_route_decides_what_a_bare_pronoun_means(g, member, thread):
+    doc = str(uuid.uuid4())
+    with get_engine().begin() as c:
+        c.execute(text("INSERT INTO receipts (document_id, user_id, status, extracted) VALUES "
+                       "(CAST(:d AS UUID), CAST(:u AS UUID), 'posted', CAST(:x AS JSONB))"),
+                  {"d": doc, "u": member, "x": json.dumps({"merchant": "Harbor Deli", "amount": 18.20,
+                                                           "items": ["Turkey club"], "date": "2026-10-11"})})
+    G.set_active_receipt(thread, {"document_id": doc, "merchant": "Harbor Deli", "items": ["Turkey club"],
+                                  "amount": 18.20}, graph=g)
+    assert G.thread_state(thread, graph=g)["last_route"] == "receipt"  # the upload is a turn about it
+    out, _ = _turn(g, member, thread, "is it a duplicate?", ScriptedChat("No, it isn't."))
+    assert out["route"]["kind"] == "receipt"
+    agg, _ = _turn(g, member, thread, "what's the total I spent on restaurants this month?",
+                   ScriptedChat("- steady"))
+    assert agg["route"]["kind"] == "aggregate"
+    assert G.thread_state(thread, graph=g)["last_route"] == "aggregate"
+    after, _ = _turn(g, member, thread, "is it a good idea to save more?",
+                     ScriptedChat('{"steps": []}', '{"steps": []}', "Saving more helps."))
+    assert after["route"]["kind"] != "receipt"
+
+
+def test_without_an_active_receipt_this_receipt_means_the_latest_one(g, member, thread):
+    doc = str(uuid.uuid4())
+    with get_engine().begin() as c:
+        c.execute(text("INSERT INTO receipts (document_id, user_id, status, extracted) VALUES "
+                       "(CAST(:d AS UUID), CAST(:u AS UUID), 'posted', CAST(:x AS JSONB))"),
+                  {"d": doc, "u": member, "x": json.dumps({"merchant": "Latest Lane Books", "amount": 31.40,
+                                                           "items": ["Atlas"], "date": "2026-10-12"})})
+    chat = ScriptedChat("That receipt from Latest Lane Books came to $31.40.")
+    out, events = _turn(g, member, thread, "how much was this receipt?", chat)
+    assert out["route"]["kind"] == "receipt" and "Latest Lane Books" in chat.prompts()[-1]
+    assert [e["detail"] for e in events if e["type"] == "step" and e["label"] == "Receipt details"] == [
+        "your latest receipt"]
+    assert G.thread_state(thread, graph=g)["active_receipt"]["document_id"] == doc
+
+
+def test_no_receipt_at_all_says_so_in_the_users_language(g):
+    uid = make_user()
+    tid = threads.create_thread(uid)["thread_id"]
+    try:
+        quiet = ScriptedChat("unused")
+        out, _ = _turn(g, uid, tid, "how much was this receipt?", quiet)
+        assert out["route"]["kind"] == "receipt"
+        assert out["answer"] == "I don't see a receipt in this conversation yet. Upload one and ask me about it."
+        assert quiet.calls == []
+        es = ScriptedChat("Todavía no veo un recibo en esta conversación. Sube uno y pregúntame.")
+        out, _ = _turn(g, uid, tid, "how much was this receipt?", es, language_code="es-ES")
+        assert out["answer"].startswith("Todavía no veo un recibo")
+        assert "I don't see a receipt in this conversation yet." in es.prompts()[-1]
+    finally:
+        threads.delete_thread(uid, tid)
+        drop_user(uid)
+
+
+def test_a_short_message_mid_conversation_is_not_off_topic(g, member, thread):
+    _turn(g, member, thread, "how much did I spend on groceries in the last 30 days", ScriptedChat("- steady"))
+    out, _ = _turn(g, member, thread, "thanks!", ScriptedChat('{"steps": []}', '{"steps": []}', "Any time."))
+    assert out["route"]["kind"] == "plan" and out["answer"] == "Any time."
+    more, _ = _turn(g, member, thread, "tell me more", ScriptedChat('{"steps": []}', '{"steps": []}', "Sure."))
+    assert more["route"]["kind"] == "plan"
+    # Only this conversation gives them a meaning, so their text never keys a cached answer.
+    assert _answer_rows(member, "thanks!") == 0 and _answer_rows(member, "tell me more") == 0
+
+
+def test_a_plan_whose_steps_all_fail_still_searches(g, member, thread):
+    """granite planned search_transactions without its required query."""
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"category": "dining out"}}]}',
+                        '{"steps": []}', "You eat out a few times a week.")
+    out, events = _turn(g, member, thread, "where could I cut back on dining out?", chat)
+    tools = [(e["label"], e["status"]) for e in events if e["type"] == "step" and e["label"].startswith("Tool ")]
+    assert tools == [("Tool search_transactions", "warning"), ("Tool search_transactions", "success")]
+    assert '"expense_id"' in chat.prompts()[-1]  # the answer is grounded in the fallback search
+
+
+def test_an_answer_without_one_successful_tool_is_not_cached(g, member, thread, monkeypatch):
+    from banko_ai.assistant import tools as T
+
+    def down(*args, **kwargs):
+        raise RuntimeError("search down")
+    monkeypatch.setattr(T.txns, "semantic_search", down)
+    q = "which weekend outings could I cut from my budget?"
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"category": "fun"}}]}',
+                        '{"steps": []}', "I couldn't look that up.")
+    out, _ = _turn(g, member, thread, q, chat)
+    assert out["route"]["kind"] == "plan" and out["answer"] == "I couldn't look that up."
+    assert _answer_rows(member, q) == 0
+
+
 def test_remember_and_forget(g, member, thread):
     out, _ = _turn(g, member, thread, "remember that I'm saving for a kayak", ScriptedChat("unused"))
     assert out["route"]["kind"] == "remember" and "kayak" in out["answer"]

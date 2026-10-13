@@ -231,7 +231,8 @@ def test_cookie_less_rag_calls_share_one_thread(member, monkeypatch, chat):
 
     bare = _cookieless(monkeypatch, member)
     before = _thread_count(member)
-    for q in ("what is the capital of France", "who painted the Mona Lisa"):
+    # The second is long on purpose: a short message mid-conversation goes to the planner.
+    for q in ("what is the capital of France", "who painted the famous portrait called the Mona Lisa in Florence"):
         body = bare.post("/api/rag", json={"query": q}).get_json()
         assert body["success"] and body["metadata"]["route"] == "offtopic"
     assert _thread_count(member) == before

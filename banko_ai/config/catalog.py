@@ -182,6 +182,16 @@ class Catalog(_Model):
         table = self._lookup()
         return table.get((label or "").strip().lower()) or table["other"]
 
+    def find(self, name: str | None) -> Category | None:
+        """The category a name means, by key, label or alias, ignoring case,
+        or None when it names none (unlike category_for, which says Other)."""
+        return self._lookup().get((name or "").strip().lower())
+
+    def spending_labels(self) -> list[str]:
+        """Labels of the categories people spend in (needs and wants), in
+        display order: what budgets, receipts and the planner may use."""
+        return [c.label for c in sorted(self.categories, key=lambda c: c.sort) if c.grp in ("needs", "wants")]
+
 
 _lock = threading.Lock()
 _cache: dict[tuple[str, str, str], Catalog] = {}

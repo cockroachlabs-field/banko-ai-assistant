@@ -164,6 +164,18 @@ def test_unresolved_merchant_raises_tool_error(ctx):
     assert not out["ok"] and "No merchant called 'NoSuchMerchant'" in out["error"]
 
 
+def test_spend_summary_refuses_a_backwards_window(ctx):
+    out = T.run_tool("spend_summary", {"date_from": "2026-10-10", "date_to": "2026-10-01"}, ctx)
+    assert not out["ok"] and "date_from" in out["error"]
+
+
+def test_describe_tools_marks_required_arguments():
+    described = T.describe_tools()
+    assert "search_transactions(query: str (required), category: str | None" in described
+    assert "propose_budget(category: str (required), amount: Decimal (required))" in described
+    assert "limit: int (required)" not in described
+
+
 def test_unresolved_category_raises_tool_error(ctx):
     out = T.run_tool("spend_summary", {"category": "NoSuchCategory"}, ctx)
     assert not out["ok"] and "No category called 'NoSuchCategory'" in out["error"]

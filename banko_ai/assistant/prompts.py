@@ -4,7 +4,9 @@ comes from BRAND_NAME."""
 from __future__ import annotations
 
 import json
+from datetime import date
 
+from ..config.catalog import get_catalog
 from ..config.settings import get_config
 
 
@@ -13,15 +15,20 @@ def _memories(memories: list[dict]) -> str:
 
 
 def planner_messages(message: str, *, history: list[dict], memories: list[dict], context_facts: str,
-                     tools: str, results: list[dict] | None = None) -> list[dict]:
-    brand = get_config().brand_name
+                     tools: str, results: list[dict] | None = None, max_steps: int | None = None,
+                     today: date | None = None) -> list[dict]:
+    cfg = get_config()
+    labels = ", ".join(get_catalog().spending_labels())
     system = (
-        f"You plan tool calls for {brand}, a banking assistant. Reply with JSON only, shaped like "
-        '{"steps": [{"tool": "<name>", "args": {...}}]}. Use only these tools:\n'
+        f"You plan tool calls for {cfg.brand_name}, a banking assistant. Today is "
+        f"{(today or date.today()).isoformat()}. Reply with JSON only, shaped like "
+        '{"steps": [{"tool": "<name>", "args": {...}}]}. Use only these tools, and always pass every '
+        "argument marked (required):\n"
         f"{tools}\n"
+        f"Spending categories: {labels}. A category argument must be one of these names.\n"
         "Rules: never do arithmetic yourself, use spend_summary for totals; dates are YYYY-MM-DD; "
-        "propose_* tools only when the user asks for a change; at most five steps; "
-        'return {"steps": []} when the results already answer the question.\n'
+        f"propose_* tools only when the user asks for a change; at most {max_steps or cfg.assistant_max_steps} "
+        'steps; return {"steps": []} when the results already answer the question.\n'
         f"What you know about the user:\n{_memories(memories)}")
     if context_facts:
         system += f"\nThe user opened this conversation from:\n{context_facts}"

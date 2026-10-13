@@ -135,6 +135,8 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
     from ..utils.aggregations import resolve_category, resolve_merchant, run_aggregation
     from ..utils.intent_classifier import AggregationIntent
     url = ctx.url or get_config().database_url
+    if a.date_from and a.date_to and a.date_from > a.date_to:
+        raise ToolError("date_from must be on or before date_to")
     end = (a.date_to or date.today()) + timedelta(days=1)
     start = a.date_from or (end - timedelta(days=31))
     if a.merchant:
@@ -220,9 +222,12 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
 
 
 def describe_tools() -> str:
+    """One line per tool for the planner; arguments a call must pass are
+    marked (required), since a plan that leaves one out fails validation."""
     lines = []
     for t in TOOLS.values():
         fields = ", ".join(f"{n}: {getattr(f.annotation, '__name__', str(f.annotation))}"
+                           f"{' (required)' if f.is_required() else ''}"
                            for n, f in t.args.model_fields.items())
         lines.append(f"- {t.name}({fields}): {t.description}")
     return "\n".join(lines)

@@ -15,7 +15,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Annotated, Any, TypedDict
 
@@ -27,7 +27,7 @@ from ..ai_providers.streaming import Chat, ProviderChat
 from ..config.settings import get_config
 from ..db.engine import get_engine
 from ..db.regions import money_region
-from ..services import caches, ledger, memories, reports, threads
+from ..services import caches, ledger, memories, receipts, reports, threads
 from ..services import transactions as txns
 from ..utils.request_trace import serving_regions, trace_step
 from . import answers, narration
@@ -57,6 +57,7 @@ class TurnState(TypedDict, total=False):
     memories: list[dict]
     context_facts: str
     route: dict
+    last_route: str | None  # the previous turn's route; "receipt" right after an upload
     results: list[dict]
     answer: str
     cached: bool
@@ -116,7 +117,8 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
 
 def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
-    r = decide(state["message"], active_receipt=state.get("active_receipt"), context=state.get("context"))
+    r = decide(state["message"], active_receipt=state.get("active_receipt"), context=state.get("context"),
+               last_route=state.get("last_route"), has_history=bool(state.get("messages")))
     _step("Intent routing", f"{r.kind}: {r.detail}", ms=(time.perf_counter() - t0) * 1000)
     return {"route": r.as_dict()}
 
@@ -174,11 +176,27 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
 
+RECEIPT_KEYS = ("document_id", "merchant", "amount", "date", "category", "items", "expense_id")
+NO_RECEIPT = "I don't see a receipt in this conversation yet. Upload one and ask me about it."
+
+
 def receipt(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
-    result = run_tool("receipt_details", {}, _ctx(state, runtime.context))
-    _step("Receipt details", "the active receipt" if result["ok"] and result.get("result") else "not found",
+    deps = runtime.context
+    ctx, adopted, which = _ctx(state, deps), None, "the active receipt"
+    if not (state.get("active_receipt") or {}).get("document_id"):
+        # "how much was this receipt?" in a thread without one: the user's latest.
+        t0 = time.perf_counter()
+        latest = receipts.latest_receipt(state["user_id"], url=deps.url)
+        if latest is None:
+            _step("Receipt details", "no receipt yet", ms=(time.perf_counter() - t0) * 1000, status="warning")
+            return {"answer": answers.translate(NO_RECEIPT, state.get("language") or "English", deps.chat)}
+        adopted, which = {k: latest.get(k) for k in RECEIPT_KEYS}, "your latest receipt"
+        ctx = replace(ctx, active_receipt=adopted)
+    result = run_tool("receipt_details", {}, ctx)
+    _step("Receipt details", which if result["ok"] and result.get("result") else "not found",
           ms=result["ms"], status="success" if result["ok"] else "warning")
-    return {"results": [result]}
+    # The latest receipt becomes this thread's receipt, so "was the wine on it?" works next.
+    return {"results": [result], **({"active_receipt": adopted} if adopted else {})}
 
 
 def memory(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -208,7 +226,9 @@ def _cacheable(state: TurnState) -> bool:
     turn before it, so its text alone must never key an answer."""
     if state.get("active_receipt") or state.get("context"):
         return False
-    return not (state.get("messages") and reads_as_follow_up(state["message"]))
+    if not state.get("messages"):
+        return True
+    return not (reads_as_follow_up(state["message"]) or (state.get("route") or {}).get("follow_up"))
 
 
 def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -373,8 +393,10 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         _emit({"type": "token", "text": f"\n\n{line}" if answer else line})
         answer = f"{answer}\n\n{line}" if answer else line
     # Only answers whose whole value is in the text are cached: a proposal
-    # card or an empty reply would replay wrong on a hit.
-    elif generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer:
+    # card or an empty reply would replay wrong on a hit, and an answer no
+    # tool grounded would keep a guess for every later ask.
+    elif (generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer
+          and any(r.get("ok") for r in results)):
         try:
             from ..services._vector import embed
             caches.put_answer(state["user_id"], version=ledger.data_version(state["user_id"], deps.url),
@@ -386,7 +408,7 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         _emit({"type": "citation", **c})
     for p in proposals:
         _emit(p)
-    return {"answer": answer, "citations": citations,
+    return {"answer": answer, "citations": citations, "last_route": state["route"].get("kind"),
             "messages": [{"role": "user", "content": state["message"]},
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
 
@@ -473,7 +495,10 @@ def run_turn(user_id: str, thread_id: str, message: str, *, language_code: str |
 
 
 def set_active_receipt(thread_id: str, receipt_info: dict, *, graph=None) -> None:
-    (graph or get_graph()).update_state(_config(thread_id), {"active_receipt": receipt_info}, as_node="learn")
+    """Make an upload the thread's receipt. The upload counts as a turn about
+    it, so "is it a duplicate?" right after still means the receipt."""
+    (graph or get_graph()).update_state(_config(thread_id), {"active_receipt": receipt_info, "last_route": "receipt"},
+                                        as_node="learn")
 
 
 def set_context(thread_id: str, context: dict, *, graph=None) -> None:

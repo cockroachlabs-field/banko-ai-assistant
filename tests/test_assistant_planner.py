@@ -55,6 +55,64 @@ def test_empty_plan_falls_back_to_search(monkeypatch):
     assert calls[0] == ("search_transactions", {"query": "late night food"})
 
 
+def _failing_search(calls):
+    """run_tool as the real one behaves on granite's bad plan: a search
+    without its required query fails validation, anything else works."""
+    def fake(name, args, ctx):
+        calls.append((name, args))
+        ok = not (name == "search_transactions" and not (args or {}).get("query"))
+        return {"tool": name, "ok": ok, "result": {"items": []} if ok else None,
+                "error": None if ok else "bad arguments", "ms": 1}
+    return fake
+
+
+def test_a_plan_with_no_successful_step_falls_back_to_search(monkeypatch):
+    calls = []
+    monkeypatch.setattr(P, "run_tool", _failing_search(calls))
+    bad = '{"steps": [{"tool": "search_transactions", "args": {"category": "dining out"}}]}'
+    out = P.plan_and_act(ScriptedChat(bad, '{"steps": []}'), "where could I cut back on dining out?",
+                         ToolContext(user_id="u"), history=[], memories=[])
+    assert calls == [("search_transactions", {"category": "dining out"}),
+                     ("search_transactions", {"query": "where could I cut back on dining out?"})]
+    assert [r["ok"] for r in out] == [False, True]
+
+
+def test_no_fallback_when_a_step_worked(monkeypatch):
+    calls = []
+    monkeypatch.setattr(P, "run_tool", _failing_search(calls))
+    plan = ('{"steps": [{"tool": "search_transactions", "args": {"category": "dining out"}}, '
+            '{"tool": "spend_summary", "args": {"category": "dining out"}}]}')
+    P.plan_and_act(ScriptedChat(plan, '{"steps": []}'), "q", ToolContext(user_id="u"), history=[], memories=[])
+    assert [name for name, _ in calls] == ["search_transactions", "spend_summary"]
+
+
+def test_a_failed_fallback_is_not_repeated(monkeypatch):
+    calls = []
+
+    def all_fail(name, args, ctx):
+        calls.append(name)
+        return {"tool": name, "ok": False, "result": None, "error": "failed", "ms": 1}
+    monkeypatch.setattr(P, "run_tool", all_fail)
+    P.plan_and_act(ScriptedChat("no plan", '{"steps": []}'), "q", ToolContext(user_id="u"), history=[], memories=[])
+    assert calls == ["search_transactions"]
+
+
+def test_planner_prompt_is_grounded(monkeypatch):
+    from datetime import date
+
+    from banko_ai.assistant.prompts import planner_messages
+    from banko_ai.assistant.tools import describe_tools
+    from banko_ai.config.settings import reset_config
+    monkeypatch.setenv("ASSISTANT_MAX_STEPS", "7")
+    reset_config()
+    system = planner_messages("q", history=[], memories=[], context_facts="", tools=describe_tools())[0]["content"]
+    assert date.today().isoformat() in system
+    assert "Groceries" in system and "Restaurant" in system and "Income" not in system
+    assert "at most 7 steps" in system and "five" not in system
+    assert "search_transactions(query: str (required), category: str | None" in system
+    assert "spend_summary(date_from: datetime.date | None" in system
+
+
 def test_planner_prompt_lists_tools_memories_and_context():
     from banko_ai.assistant.prompts import planner_messages
     msgs = planner_messages("q", history=[{"role": "user", "content": "earlier"}],
