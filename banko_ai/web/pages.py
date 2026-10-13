@@ -67,3 +67,8 @@ def assistant_thread(thread_id: str):
 @pages.get("/coach")
 def coach():
     return render_template("pages/coach.html")
+
+
+@pages.get("/agents")
+def agents():
+    return render_template("pages/agents.html")

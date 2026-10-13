@@ -16,12 +16,6 @@ from sqlalchemy import text
 agent_dashboard = Blueprint('agent_dashboard', __name__)
 
 
-@agent_dashboard.route('/agents')
-def dashboard():
-    """Render agent dashboard page"""
-    return render_template('agent_dashboard.html')
-
-
 @agent_dashboard.route('/api/agents/status')
 def get_all_agent_status():
     """Get status of all registered agents"""

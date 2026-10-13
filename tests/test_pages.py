@@ -153,3 +153,7 @@ def test_nav_highlights_correct_section(monkeypatch, member):
 def test_coach_page(monkeypatch, member):
     html = assert_page(signed_in(monkeypatch, member).get("/coach"), "coach")
     assert "Simulated" in html
+
+
+def test_agents_page(monkeypatch, member):
+    assert_page(signed_in(monkeypatch, member).get("/agents"), "agents")

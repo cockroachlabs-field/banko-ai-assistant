@@ -63,16 +63,16 @@ def _chat():
     return ProviderChat(model=current() if current else None)
 
 
-def _activity(agent_type: str, status: str, message: str) -> None:
+def _activity(agent_type: str, status: str, message: str, user_id: str) -> None:
     """One line on the Agents page. The page shows "agent (region)", so the
     region rides along the way every other agent_activity event sends it."""
     socketio = current_app.extensions.get("socketio")
     if socketio is None:
         return
     try:
-        socketio.emit("agent_activity", {"agent_type": agent_type,
+        socketio.emit("agent_activity", {"source": "activity", "agent_type": agent_type,
                                          "region": agent_home_region(get_config().database_url),
-                                         "status": status, "message": message,
+                                         "status": status, "message": message, "user_id": user_id,
                                          "timestamp": datetime.now().isoformat()})
     except Exception:
         log.debug("agent activity not sent", exc_info=True)
@@ -207,14 +207,14 @@ def post_message(thread_id: str):
         return jsonify({"error": "Type a message"}), 400
     user_id = _uid()
     language = body.get("language") if isinstance(body.get("language"), str) else None
-    _activity("assistant", "processing", "Thinking about a question")
+    _activity("assistant", "processing", "Thinking about a question", user_id)
 
     def relay() -> Iterator[str]:
         for chunk in _turn_stream(user_id, thread_id, message, language):
             if chunk.startswith("event: answer"):
-                _activity("assistant", "completed", "Answered a question")
+                _activity("assistant", "completed", "Answered a question", user_id)
             elif chunk.startswith("event: error"):
-                _activity("assistant", "failed", "Could not answer a question")
+                _activity("assistant", "failed", "Could not answer a question", user_id)
             yield chunk
 
     return Response(stream_with_context(relay()), mimetype="text/event-stream",
@@ -296,7 +296,7 @@ def upload_receipt():
                 if event["type"] == "step" and event["status"] != "start":
                     _activity(_AGENT_FOR_STEP.get(event["step"], "receipt"),
                               "completed" if event["status"] == "done" else event["status"],
-                              f"{event['step']}: {event['detail']}")
+                              f"{event['step']}: {event['detail']}", user_id)
                 if event["type"] == "receipt":
                     event = {**event, "thread_id": _attach_receipt(user_id, thread_id, event)}
                 kind = event.pop("type")

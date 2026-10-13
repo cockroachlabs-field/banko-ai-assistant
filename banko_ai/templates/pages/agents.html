@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% block title %}Agents{% endblock %}
+{% block content %}
+<section x-data="agentsPage" x-init="load()">
+  <div class="b-page-h"><h1>Agents</h1><span class="b-muted">What the receipt, fraud, budget, coach and assistant agents did for you</span>
+    <div class="sp"></div><span class="b-pill"><span class="b-dot" :style="live ? '' : 'background:var(--mu)'"></span><span x-text="live ? 'Live' : 'Connecting'"></span></span></div>
+  <div class="b-grid" style="margin-top:14px">
+    <div class="b-card">
+      <div class="b-lbl">Today</div>
+      <template x-for="a in agentNames" :key="a"><div class="b-row" style="padding:5px 0;border-top:1px solid var(--bd2)"><span x-text="a"></span><b x-text="(stats.today || {})[a] || 0"></b></div></template>
+    </div>
+    <div class="b-card b-s2">
+      <div class="b-lbl">Agents online</div>
+      <template x-for="a in (stats.agents || [])" :key="a.agent_type + a.region">
+        <div class="b-row" style="padding:5px 0;border-top:1px solid var(--bd2)"><span x-text="a.agent_type + ' · ' + a.region"></span><span class="b-muted" x-text="a.status + ' · ' + Banko.fmt.relative(a.last_heartbeat)"></span></div>
+      </template>
+      <div class="b-muted" x-show="!(stats.agents || []).length">No agent has registered yet. Upload a receipt to wake them up.</div>
+    </div>
+    <div class="b-card b-s3">
+      <div class="b-row"><div class="b-lbl">Activity</div>
+        <div class="b-filters"><template x-for="f in ['all'].concat(agentNames)" :key="f"><button type="button" class="b-f" :class="{ on: filter === f }" @click="filter = f" x-text="f"></button></template></div></div>
+      <template x-for="i in shown()" :key="i.id">
+        <div class="b-bill" style="padding:9px 0">
+          <span class="b-tag" x-text="i.agent"></span>
+          <span style="flex:1;min-width:0"><div class="b-name" x-text="i.title"></div><div class="b-muted" style="white-space:normal" x-text="i.detail"></div></span>
+          <span class="b-muted" x-show="i.confidence !== null" x-text="'confidence ' + Banko.fmt.pct(i.confidence)"></span>
+          <span class="b-muted" x-text="Banko.fmt.relative(i.at)"></span>
+        </div>
+      </template>
+      <div class="b-empty" x-show="loaded && !shown().length"><strong>No activity yet</strong><span>Upload a receipt or ask the assistant something, and the agents show up here as they work.</span></div>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/agents.js') }}"></script>{% endblock %}

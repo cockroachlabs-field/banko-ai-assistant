@@ -953,6 +953,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
                             'region': agent_region,
                             'status': 'completed' if event['status'] == 'done' else event['status'],
                             'message': f"{event['step']}: {event['detail']}",
+                            'user_id': current_demo_user(),
                             'timestamp': datetime.now().isoformat()})
                     except Exception:
                         pass
@@ -1707,6 +1708,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     app.register_blueprint(assistant_api)
     from .coach_api import coach_api
     app.register_blueprint(coach_api)
+    from .agents_api import agents_api
+    app.register_blueprint(agents_api)
     from .pages import pages
     app.register_blueprint(pages)
 
