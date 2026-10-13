@@ -11,7 +11,7 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..db.rls import request_url
 from . import accounts, budgets, recurring, transactions
-from ._sql import jsonable, month_labels, read_session
+from ._sql import jsonable, month_labels, read_session, valid_uuid
 
 
 def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: str | None = None) -> dict:
@@ -103,3 +103,18 @@ def dashboard(user_id: str, *, today: date | None = None, url: str | None = None
         "recent": transactions.list_transactions(user_id, limit=6, url=url)["items"],
         "insight": latest_insight(user_id, url=url),
     }
+
+
+def nudge_detail(user_id: str, nudge_id: str, *, url: str | None = None) -> dict | None:
+    """One of the user's coach nudges with the signal that raised it, for a
+    conversation opened from "Ask Banko about this"."""
+    if not valid_uuid(nudge_id):
+        return None
+    url = request_url(url)
+    with read_session(user_id, url=url) as conn:
+        r = conn.execute(text("""
+            SELECT n.nudge_id, n.message, n.created_at, s.signal_type
+            FROM coach_nudges AS n LEFT JOIN spending_signals AS s ON s.signal_id = n.signal_id
+            WHERE n.nudge_id = CAST(:n AS UUID) AND n.user_id = CAST(:u AS UUID)
+        """), {"n": nudge_id, "u": user_id}).fetchone()
+    return jsonable({"nudge_id": str(r[0]), "message": r[1], "created_at": r[2], "signal_type": r[3]}) if r else None
