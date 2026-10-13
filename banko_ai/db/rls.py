@@ -24,7 +24,7 @@ from ..utils.db_retry import normalize_db_url
 from .engine import _sqlstate, get_engine
 
 log = logging.getLogger("banko.rls")
-RLS_TABLES = ("accounts", "ledger_entries", "transfers", "goals", "user_budgets")
+RLS_TABLES = ("accounts", "ledger_entries", "transfers", "goals", "user_budgets", "chat_threads")
 APP_ROLE = "banko_app"
 POLICY = "banko_user_isolation"
 _USER = "NULLIF(current_setting('banko.user_id', true), '')::UUID"

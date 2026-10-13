@@ -39,6 +39,7 @@ GROUPS = {
     "cache": "Caching",
     "data": "Demo data",
     "coach": "Coach and CDC",
+    "assistant": "Assistant",
 }
 
 # Old names that still work, and the setting each one now feeds.
@@ -237,6 +238,28 @@ class Settings(BaseSettings):
     coach_signal_ttl_days: int = _field(30, group="coach", env="COACH_SIGNAL_TTL_DAYS", description="Row-level TTL for spending_signals, in days.")
     coach_nudge_ttl_days: int = _field(90, group="coach", env="COACH_NUDGE_TTL_DAYS", description="Row-level TTL for coach_nudges, in days.")
     checkpoint_ttl_days: int = _field(7, group="coach", env="CHECKPOINT_TTL_DAYS", description="Row-level TTL for LangGraph checkpoints, in days. 0 keeps them.")
+
+    # Assistant
+    brand_name: str = _field("Banko", group="assistant", env="BRAND_NAME",
+        description="The assistant's name in prompts and answers.")
+    assistant_max_steps: int = _field(5, group="assistant", env="ASSISTANT_MAX_STEPS",
+        description="Most tool calls the planner may run for one question.")
+    assistant_history_window: int = _field(12, group="assistant", env="ASSISTANT_HISTORY_WINDOW",
+        description="Messages of a thread the assistant keeps in its working context.")
+    assistant_implicit_memory: bool = _field(True, group="assistant", env="ASSISTANT_IMPLICIT_MEMORY",
+        description="Save durable facts the user mentions (saving for, my goal is, I prefer) without being asked.")
+    assistant_memory_recall_k: int = _field(5, group="assistant", env="ASSISTANT_MEMORY_RECALL_K",
+        description="Memories recalled into each turn.")
+    assistant_memory_max_distance: float = _field(0.6, group="assistant", env="ASSISTANT_MEMORY_MAX_DISTANCE",
+        description="Largest cosine distance at which a memory counts as relevant to a question.")
+    assistant_action_ttl_hours: int = _field(24, group="assistant", env="ASSISTANT_ACTION_TTL_HOURS",
+        description="Hours a proposed change waits for Confirm before it expires.")
+    search_cache_ttl_minutes: int = _field(10, group="assistant", env="SEARCH_CACHE_TTL_MINUTES",
+        description="Minutes a semantic search result stays cached for the same user and data version.")
+    receipt_default_card_limit: float = _field(5000.0, group="assistant", env="RECEIPT_DEFAULT_CARD_LIMIT",
+        description="Credit limit of the card opened for a user who uploads a receipt before having any account.")
+    receipt_duplicate_max_distance: float = _field(0.2, group="assistant", env="RECEIPT_DUPLICATE_MAX_DISTANCE",
+        description="Largest description distance at which a receipt with the same amount and a nearby date counts as a duplicate.")
 
     @field_validator("ai_service", "ai_display_provider", mode="before")
     @classmethod
