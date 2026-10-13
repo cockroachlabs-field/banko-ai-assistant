@@ -69,11 +69,11 @@ Schema for `expenses` table is **shared** between both repos — keep them in sy
 
 - **Python**: 3.10+ (3.12 recommended)
 - **CockroachDB**: 25.4.0+ (vector indexes are GA)
-- **Embeddings**: `all-MiniLM-L6-v2` via sentence-transformers 5.x (384-dim, local). The 3.x to 5.x jump landed July 2026 with embedding parity verified (identical vectors), so nothing stored in CRDB needed re-embedding.
+- **Embeddings**: `all-MiniLM-L6-v2` via sentence-transformers 6.x (384-dim, local). Each major jump (3 to 5 in July 2026, 5 to 6 in October 2026) landed only after `tests/test_embedding_parity.py` showed identical vectors, so nothing stored in CRDB needed re-embedding.
 - **Agent framework**: LangGraph 1.x
 - **Vector store / chat history / checkpointer**: `langchain-cockroachdb` 0.2.x
 - **Web**: Flask 3.1.3 + Flask-SocketIO + eventlet (prod) / threading (dev)
-- **Dep manager**: `uv` (lockfile is `uv.lock`, refreshed wholesale July 2026; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API)
+- **Dep manager**: `uv` (lockfile is `uv.lock`; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API). `make audit` checks the lock for known vulnerabilities; CI runs it on every PR, on pushes to main and weekly. Dependabot uses the uv ecosystem, so its PRs re-lock; they still get a local rebase and smoke before merge.
 - **Testing**: pytest, ruff, mypy (mypy is advisory, see Open bugs)
 - **Docker**: multi-arch (amd64/arm64), images on Docker Hub at `virag/banko-ai-assistant`
 

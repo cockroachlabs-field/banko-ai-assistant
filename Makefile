@@ -1,9 +1,10 @@
-.PHONY: test test-local lockcheck lint types fmt clean help
+.PHONY: test test-local lockcheck audit lint types fmt clean help
 
 help:
 	@echo "Targets:"
 	@echo "  make test            - run full pytest suite"
 	@echo "  make test-local      - lint + types + test (the gate before any push)"
+	@echo "  make audit           - known vulnerabilities in uv.lock (needs the network)"
 	@echo "  make lint            - ruff check"
 	@echo "  make types           - mypy"
 	@echo "  make fmt             - ruff format"
@@ -31,6 +32,15 @@ lockcheck:
 	@# next uv run rewrites it AFTER the push and the tree looks dirty
 	@# out of nowhere. Fail here, before anything gets committed.
 	uv lock --check
+
+audit:
+	@# Known vulnerabilities in every locked Python package, every extra and
+	@# dependency group included. It needs the network, so it is its own
+	@# target instead of part of test-local. Run it before any push.
+	@req=$$(mktemp) && \
+	uv export --frozen --format requirements-txt --all-extras --all-groups --no-hashes --no-emit-project -o $$req >/dev/null && \
+	uvx pip-audit -r $$req --no-deps --disable-pip --progress-spinner off; \
+	status=$$?; rm -f $$req; exit $$status
 
 lint:
 	uv run ruff check banko_ai/ tests/
