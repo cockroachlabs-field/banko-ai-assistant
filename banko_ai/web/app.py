@@ -230,6 +230,7 @@ def create_app() -> Flask:
         "models": lambda: (display_models(config, None) if config.ai_display_provider
                            else display_models(config, ai_provider.get_available_models() if ai_provider else [])),
         "switch_model": _switch_model,
+        "current_model": lambda: getattr(ai_provider, "current_model", None),
     }
 
     if config.ai_display_provider:
@@ -445,6 +446,17 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             return ", ".join(f"{name} +{n}" for name, n in written.items())
         finally:
             IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
+
+    def _assistant_step() -> str:
+        # Builds the checkpointer once: the checkpoint tables and their TTL on
+        # a first boot, a no-op afterwards, so the first question never pays for it.
+        if config.banko_skip_autosetup:
+            return "skipped (BANKO_SKIP_AUTOSETUP)"
+        if not readiness.wait_for("schema", timeout=600):
+            raise RuntimeError("the schema is not ready yet; the checkpointer builds on the first question")
+        from ..assistant.checkpoint import get_saver
+        get_saver()
+        return "checkpointer ready"
 
     def _emit_welcome_signal(user: dict) -> None:
         """Post a welcome signal matched to the user's spending style.
@@ -2419,6 +2431,8 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     app.register_blueprint(agent_dashboard)
     from .api_v1 import api_v1
     app.register_blueprint(api_v1)
+    from .assistant_api import assistant_api
+    app.register_blueprint(assistant_api)
 
     # Last, so every closure the steps call already exists.
     # Lane A needs no database. Lane B runs the gate (schema, personas)
@@ -2444,4 +2458,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
     readiness.mark_background("integrity")
     readiness.mark_background("rls")
     start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-warmup-seed")
+    # Lane D: the assistant's checkpointer, also background.
+    readiness.mark_background("assistant")
+    start_warmup(readiness, [("assistant", _assistant_step)], stop=warmup_stop, name="banko-warmup-assistant")
     return app

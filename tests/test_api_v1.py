@@ -10,38 +10,16 @@ import pytest
 from banko_ai.services.accounts import list_accounts
 from banko_ai.services.ledger import open_account
 from banko_ai.services.seeding import seed_user
+from tests._app import _apps, app_client, stop_apps
 from tests._money import drop_user, invariant_violations, make_user
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
-
-_apps = []
-
-
-def app_client(monkeypatch, **env):
-    """A test client on a real app, built the way test_provider_persona's
-    persona_client builds it: Ollama as the serving provider, whose init
-    never reaches for the network, so no live LLM is needed."""
-    from banko_ai.config.settings import reset_config
-    from banko_ai.web.app import create_app
-
-    monkeypatch.setenv("BANKO_SKIP_AUTOSETUP", "1")
-    env.setdefault("AI_SERVICE", "ollama")
-    for key, value in env.items():
-        monkeypatch.setenv(key, value)
-    reset_config()
-    app = create_app()
-    _apps.append(app)
-    readiness = app.extensions["banko_readiness"]
-    assert readiness.wait_for("schema", 60)
-    assert readiness.wait_for("personas", 60)
-    return app.test_client()
 
 
 @pytest.fixture(autouse=True)
 def _stop_warmup():
     yield
-    while _apps:
-        _apps.pop().extensions["banko_warmup_stop"].set()
+    stop_apps()
 
 
 @pytest.fixture(scope="module")
