@@ -109,6 +109,9 @@ def put_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
     def fn(conn) -> None:
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
+        conn.execute(text(
+            "DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID) AND data_version < :v"
+        ), {"u": user_id, "v": int(version)})
         conn.execute(text(f"""
             INSERT INTO answer_cache ({rcol}user_id, data_version, language, query_text, query_embedding,
                                       answer, tokens, expires_at)

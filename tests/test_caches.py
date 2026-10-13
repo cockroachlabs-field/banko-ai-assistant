@@ -93,3 +93,18 @@ def test_record_stat_feeds_cache_stats():
 def test_estimate_tokens():
     assert C.estimate_tokens("") == 0
     assert C.estimate_tokens("a" * 400) == 100
+
+
+def test_answer_cache_write_retires_older_versions(two):
+    a, _ = two
+    q = "coffee spend"
+    qv = embed(q)
+    C.put_answer(a, version=1, language="English", query=q, qvec=qv, answer="old answer", tokens=10)
+    C.put_answer(a, version=2, language="English", query=q, qvec=qv, answer="new answer", tokens=20)
+    with get_engine().connect() as c:
+        old_count = c.execute(text(
+            "SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID) AND data_version = 1"
+        ), {"u": a}).scalar()
+    assert old_count == 0
+    hit = C.get_answer(a, version=2, language="English", qvec=qv)
+    assert hit and hit["answer"] == "new answer"
