@@ -8,6 +8,7 @@ went out is raised: retrying would repeat half an answer."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from typing import Any, Protocol
 
@@ -62,3 +63,36 @@ class ProviderChat:
             text = chunk_text(llm.invoke(_lc(messages))).strip()
             if text:
                 yield text
+
+
+class TimedChat:
+    """A turn's model, counted and timed, so the trace names the model only
+    when the turn really called it."""
+
+    def __init__(self, chat: Chat):
+        self.chat = chat
+        self.calls = 0
+        self.failed = 0
+        self.ms = 0.0
+
+    def _ran(self, t0: float, ok: bool) -> None:
+        self.calls += 1
+        self.failed += 0 if ok else 1
+        self.ms += (time.perf_counter() - t0) * 1000
+
+    def complete(self, messages: list[dict], *, temperature: float = 0.3) -> str:
+        t0, ok = time.perf_counter(), False
+        try:
+            text_out = self.chat.complete(messages, temperature=temperature)
+            ok = True
+            return text_out
+        finally:
+            self._ran(t0, ok)
+
+    def stream(self, messages: list[dict], *, temperature: float = 0.3) -> Iterator[str]:
+        t0, ok = time.perf_counter(), False
+        try:
+            yield from self.chat.stream(messages, temperature=temperature)
+            ok = True
+        finally:
+            self._ran(t0, ok)

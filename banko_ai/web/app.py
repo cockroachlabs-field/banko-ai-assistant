@@ -42,6 +42,7 @@ from ..ai_providers.display import (
     ui_context,
 )
 from ..ai_providers.factory import AIProviderFactory
+from ..ai_providers.streaming import TimedChat
 from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.settings import get_config
@@ -95,39 +96,6 @@ def bounded_connection_test(provider, seconds: float = PROVIDER_CHECK_SECONDS) -
     worker.start()
     worker.join(seconds)
     return bool(result and result[0])
-
-
-class _TimedChat:
-    """A chat page turn's model, counted and timed, so its trace names the
-    model only when the turn really called it."""
-
-    def __init__(self, chat):
-        self.chat = chat
-        self.calls = 0
-        self.failed = 0
-        self.ms = 0.0
-
-    def _ran(self, t0: float, ok: bool) -> None:
-        self.calls += 1
-        self.failed += 0 if ok else 1
-        self.ms += (time.perf_counter() - t0) * 1000
-
-    def complete(self, messages, *, temperature: float = 0.3) -> str:
-        t0, ok = time.perf_counter(), False
-        try:
-            text_out = self.chat.complete(messages, temperature=temperature)
-            ok = True
-            return text_out
-        finally:
-            self._ran(t0, ok)
-
-    def stream(self, messages, *, temperature: float = 0.3):
-        t0, ok = time.perf_counter(), False
-        try:
-            yield from self.chat.stream(messages, temperature=temperature)
-            ok = True
-        finally:
-            self._ran(t0, ok)
 
 
 def auto_setup_data_if_needed(database_url: str) -> str:
@@ -1130,7 +1098,7 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
             from ..assistant import answers
             from ..assistant.graph import run_turn
             from .assistant_api import _chat
-            timed = _TimedChat(_chat())
+            timed = TimedChat(_chat())
             out = run_turn(current_demo_user(), _turn_thread(), user_message,
                            language_code=language, chat=timed)
             if timed.calls:

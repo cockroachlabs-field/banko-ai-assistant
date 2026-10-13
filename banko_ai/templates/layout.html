@@ -86,6 +86,7 @@
 </div>
 
 {% block overlays %}{% endblock %}
+{% if shell.page != 'assistant' %}{% include "components/assistant_panel.html" %}{% endif %}
 
 <script src="{{ url_for('static', filename='vendor/socket.io.min.js') }}"></script>
 <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
@@ -94,6 +95,7 @@
 <script src="{{ url_for('static', filename='js/core.js') }}"></script>
 <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
 <script src="{{ url_for('static', filename='js/shell.js') }}"></script>
+<script src="{{ url_for('static', filename='js/assistant.js') }}"></script>
 {% block page_scripts %}{% endblock %}
 <script defer src="{{ url_for('static', filename='vendor/alpine.min.js') }}"></script>
 </body>

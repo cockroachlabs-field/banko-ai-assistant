@@ -18,14 +18,14 @@ from pathlib import Path
 from flask import Blueprint, Response, current_app, jsonify, request, session, stream_with_context
 
 from ..ai_providers.display import NEUTRAL_FAILED
-from ..ai_providers.streaming import ProviderChat
+from ..ai_providers.streaming import ProviderChat, TimedChat
 from ..config.settings import get_config
 from ..db.regions import agent_home_region
 from ..services import actions, memories, receipts, threads
 from ..services._sql import jsonable, valid_uuid
 from ..services.ledger import NotFound
 from ..utils.embeddings import ModelWarmingUp
-from ..utils.request_trace import reset_trace, start_trace
+from ..utils.request_trace import current_trace, reset_trace, start_trace, trace_elapsed_ms, trace_step
 
 assistant_api = Blueprint("assistant_api", __name__, url_prefix="/api/v1")
 log = logging.getLogger("banko.assistant")
@@ -142,18 +142,37 @@ def delete_thread(thread_id: str):
     return "", 204
 
 
+def _close_trace(chat: TimedChat, shown, *, stopped: bool = False) -> None:
+    """End the turn's trace the way the old chat page did: the model step,
+    only when the model really ran, then the total."""
+    if chat.calls:
+        detail = f"{shown.name} · {shown.model}, {chat.calls} call{'s' if chat.calls > 1 else ''}"
+        trace_step("llm", "Model", detail + (f", {chat.failed} failed" if chat.failed else ""),
+                   ms=chat.ms, status="warning" if chat.failed else "success")
+    if stopped:
+        trace_step("error", "Answer stopped", "The answer failed here; details are in the server log",
+                   status="error")
+    trace_step("total", "Total request time", ms=trace_elapsed_ms())
+
+
 def _turn_stream(user_id: str, thread_id: str, message: str, language: str | None) -> Iterator[str]:
     """Run the turn on a worker thread and relay its events as they happen."""
     events: queue.Queue = queue.Queue()
-    chat = _chat()
+    chat = TimedChat(_chat())
+    # The persona as shown, read here: the worker thread has no app context.
+    shown = current_app.extensions["banko_ai"]["shown"]()
     done = object()
 
     def work() -> None:
         token = start_trace()
         try:
             out = _graph().run_turn(user_id, thread_id, message, language_code=language, chat=chat,
-                             on_event=events.put)
-            meta = {k: v for k, v in (out.get("meta") or {}).items() if k != "explain"}
+                                    on_event=events.put)
+            _close_trace(chat, shown)
+            meta = dict(out.get("meta") or {})
+            if meta.get("explain"):
+                meta["explain"] = str(meta["explain"])[:20000]
+            meta["trace"] = current_trace()
             # Shaped like the proposal events, which drop their "type" key on the way out.
             proposals = [{k: v for k, v in p.items() if k != "type"} for p in out["proposals"]]
             events.put({"type": "answer", "answer": out["answer"], "citations": out["citations"],
@@ -161,7 +180,8 @@ def _turn_stream(user_id: str, thread_id: str, message: str, language: str | Non
                         "route": (out.get("route") or {}).get("kind"), "meta": meta})
         except Exception as exc:
             log.warning("assistant turn failed", exc_info=True)
-            events.put({"type": "error", "message": _friendly(exc)})
+            _close_trace(chat, shown, stopped=True)
+            events.put({"type": "error", "message": _friendly(exc), "trace": current_trace()})
         finally:
             reset_trace(token)
             events.put(done)

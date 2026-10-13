@@ -1,0 +1,85 @@
+{% from "components/icons.html" import icon %}
+<div class="b-chat" x-ref="chat">
+  <div class="b-empty" x-show="!messages.length">
+    <strong>Ask {{ shell.brand.name }} about your money</strong>
+    <span>Try: where do I spend the most on dining? Or drop a receipt here.</span>
+  </div>
+  <template x-for="m in messages" :key="m.id">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <template x-if="m.role === 'user'"><div class="b-msg-user"><span x-text="m.text"></span><small x-show="m.lang" x-text="m.lang"></small></div></template>
+
+      <template x-if="m.role === 'receipt'">
+        <div class="b-receipt">
+          <div class="top">
+            <img x-show="m.receipt && m.receipt.document_id" :src="m.receipt ? '/api/v1/receipts/' + m.receipt.document_id + '/thumbnail' : ''" alt="" onerror="this.style.display='none'">
+            <div style="flex:1;min-width:0">
+              <div class="b-name" x-text="m.receipt ? (m.receipt.merchant + ' · ' + Banko.fmt.money(m.receipt.amount)) : 'Reading ' + m.name"></div>
+              <div class="b-muted" x-text="m.receipt ? (m.receipt.status === 'duplicate' ? 'Looks like a purchase you already have' : 'Posted · ' + m.receipt.category) : (m.error ? '' : 'Working on it')"></div>
+              <div class="b-tag bad" x-show="m.error" x-text="m.error"></div>
+            </div>
+          </div>
+          <div class="b-pipe">
+            <template x-for="s in pipelineSteps(m)" :key="s.key">
+              <span :class="{ failed: s.status === 'failed' }"><b x-text="s.label"></b><span x-text="s.ms ? (s.ms >= 1000 ? (s.ms / 1000).toFixed(1) + ' s' : Math.round(s.ms) + ' ms') : s.status"></span></span>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="m.role === 'bot'">
+        <div class="b-msg-bot">
+          <div class="b-steps" x-show="m.steps.length">
+            <template x-for="(s, i) in m.steps" :key="i"><span class="b-step" :class="stepClass(s)"><b x-text="s.label"></b><span x-text="s.ms ? Math.round(s.ms) + ' ms' : ''"></span></span></template>
+          </div>
+          <div class="b-ans" x-show="m.answer || m.error || m.stopped">
+            <div x-html="render(m.answer)"></div>
+            <div class="b-tag bad" x-show="m.error" x-text="m.error"></div>
+            <div class="b-muted" x-show="m.stopped">Stopped.</div>
+            <div class="b-cites" x-show="m.citations.length">
+              <template x-for="c in m.citations" :key="c.expense_id"><button type="button" class="b-cite" @click="openCitation(c)" x-text="Banko.fmt.date(c.date) + ' · ' + c.merchant + ' · ' + Banko.fmt.money(c.amount)"></button></template>
+            </div>
+            <template x-for="p in m.proposals" :key="p.action_id">
+              <div class="b-proposal">
+                <span x-text="p.summary"></span>
+                <div class="b-row" style="justify-content:flex-start;gap:8px" x-show="p.status === 'pending'">
+                  <button class="b-btn primary sm" type="button" @click="confirm(p)">{{ icon('check') }}Confirm</button>
+                  <button class="b-btn sm" type="button" @click="cancel(p)">Cancel</button>
+                </div>
+                <span class="b-muted" x-show="p.status !== 'pending'" x-text="p.status === 'done' ? 'Done.' : 'Cancelled.'"></span>
+                <span class="b-tag bad" x-show="p.error" x-text="p.error"></span>
+              </div>
+            </template>
+          </div>
+          <div class="b-skel" x-show="!m.answer && !m.error && !m.stopped" style="height:38px;width:60%"></div>
+          <div class="b-meta" x-show="m.answer || m.error">
+            <span x-show="m.ms" x-text="(m.ms / 1000).toFixed(1) + ' s' + (m.steps.length ? ' · ' + m.steps.length + ' steps' : '') + (m.cached ? ' · cached' : '')"></span>
+            <span x-show="m.meta.region" x-text="'served from ' + m.meta.region + (m.meta.db_ms ? ' · ' + m.meta.db_ms + ' ms in the database' : '')"></span>
+            <button type="button" class="link" @click="toggleTrace(m)">How this was answered</button>
+            <button type="button" @click="copy(m.answer)">{{ icon('copy') }}copy</button>
+          </div>
+          <div class="b-trace" style="border:1px solid var(--bd);border-radius:12px" x-show="m.showTrace && mode === 'panel'">
+            <div class="b-tl">
+              <template x-for="(s, i) in traceSteps(m)" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="(s.detail || '') + (s.ms ? ' · ' + Math.round(s.ms) + ' ms' : '')"></span></div></template>
+            </div>
+            <div class="b-kv" x-show="m.meta.explain" x-text="m.meta.explain"></div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+</div>
+
+<div class="b-comp">
+  <textarea x-ref="input" x-model="draft" @keydown="onKey($event)" rows="2" placeholder="Message {{ shell.brand.name }}..." aria-label="Message"></textarea>
+  <div class="b-comp-tools">
+    <input type="file" x-ref="file" accept="image/*,application/pdf" capture="environment" hidden @change="pickFile($event)">
+    <button class="b-iconbtn" type="button" @click="$refs.file.click()" title="Add a receipt" aria-label="Add a receipt">{{ icon('paperclip') }}</button>
+    {% block voice_tools %}{% endblock %}
+    <select class="b-select" style="width:auto;padding:5px 8px" x-model="language" aria-label="Answer language">
+      <template x-for="l in languages" :key="l.code"><option :value="l.code" x-text="l.name"></option></template>
+    </select>
+    <span class="sp"></span>
+    <button class="b-iconbtn" type="button" x-show="streaming" @click="stop()" title="Stop" aria-label="Stop">{{ icon('square') }}</button>
+    <button class="b-btn primary sm" type="button" x-show="!streaming" @click="send()" :disabled="!draft.trim()" aria-label="Send">{{ icon('send') }}</button>
+  </div>
+</div>
