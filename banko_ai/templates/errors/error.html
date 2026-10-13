@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ code }} · Banko</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+<script>(function(){var t=localStorage.getItem("banko.theme")||"system";var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=d?"dark":"light";})();</script>
+</head>
+<body>
+<main class="b-main" style="max-width:520px;margin:12vh auto">
+  <div class="b-card b-empty">
+    <strong>{{ message }}</strong>
+    <a class="b-btn primary" href="/">Back to the dashboard</a>
+  </div>
+</main>
+</body>
+</html>

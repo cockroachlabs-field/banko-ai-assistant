@@ -1728,21 +1728,35 @@ small{color:#7A756C}</style></head><body><div class="card"><h2>Banko is getting 
         return jsonify({'status': 'reset'})
     
     # Error handlers
+    def _wants_json() -> bool:
+        return request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json"
+
     @app.errorhandler(404)
     def not_found(error):
-        return jsonify({'error': 'Not found'}), 404
-    
+        if _wants_json():
+            return jsonify({"error": "not_found"}), 404
+        return render_template("errors/error.html", code=404,
+                               message="That page doesn't exist."), 404
+
     @app.errorhandler(500)
-    def internal_error(error):
-        return jsonify({'error': 'Internal server error'}), 500
-    
-    # Register agent dashboard blueprint
+    def server_error(error):
+        if _wants_json():
+            return jsonify({"error": NEUTRAL_FAILED}), 500
+        return render_template("errors/error.html", code=500, message=NEUTRAL_FAILED), 500
+
+    # Register blueprints
     from .agent_dashboard import agent_dashboard
     app.register_blueprint(agent_dashboard)
     from .api_v1 import api_v1
     app.register_blueprint(api_v1)
     from .assistant_api import assistant_api
     app.register_blueprint(assistant_api)
+    from .pages import pages
+    app.register_blueprint(pages)
+
+    # Shell context for all templates
+    from .shell import shell_context
+    app.context_processor(shell_context)
 
     # Last, so every closure the steps call already exists.
     # Lane A needs no database. Lane B runs the gate (schema, personas)

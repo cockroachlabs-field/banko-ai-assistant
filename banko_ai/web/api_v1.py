@@ -17,6 +17,7 @@ from ..config.settings import get_config
 from ..db.engine import get_engine
 from ..services import accounts, budgets, goals, ledger, recurring, reports, seeding, transactions
 from ..services._sql import jsonable, valid_uuid
+from ..services.profile import get_profile
 
 api_v1 = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 log = logging.getLogger("banko.api")
@@ -91,19 +92,19 @@ def _transfer_response(result: ledger.TransferResult):
     return jsonify({"error": "not_found"}), 404
 
 
+@api_v1.after_request
+def _name_the_user(response):
+    response.headers["X-Banko-User"] = _uid()
+    return response
+
+
 @api_v1.get("/me")
 def me():
     uid = _uid()
-    with get_engine().connect() as conn:
-        row = conn.execute(text("""
-            SELECT user_id, username, display_name, avatar_color, spending_style, home_region
-            FROM users WHERE user_id = CAST(:u AS UUID)
-        """), {"u": uid}).fetchone()
-    if row is None:
+    profile = get_profile(uid)
+    if profile is None:
         return jsonify({"error": "not_found"}), 404
-    return jsonify(jsonable({"user_id": row[0], "username": row[1], "display_name": row[2] or row[1],
-                             "avatar_color": row[3], "spending_style": row[4], "home_region": row[5],
-                             "seeding": seeding.seeding_status(uid)}))
+    return jsonify({**profile, "seeding": seeding.seeding_status(uid)})
 
 
 @api_v1.get("/ai")

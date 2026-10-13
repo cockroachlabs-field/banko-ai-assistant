@@ -47,6 +47,12 @@ def _uid() -> str:
     return session.get("user_id") or get_config().coach_default_user_id
 
 
+@assistant_api.after_request
+def _name_the_user(response):
+    response.headers["X-Banko-User"] = _uid()
+    return response
+
+
 def _json() -> dict:
     data = request.get_json(silent=True)
     return data if isinstance(data, dict) else {}
