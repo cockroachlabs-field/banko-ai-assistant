@@ -1,17 +1,25 @@
 document.addEventListener("alpine:init", () => {
+  // One fetch per page, shared by the list and the drawer. A failure is
+  // tried once more at once, and never kept, so the next caller fetches again.
   let categoriesPromise = null;
-  const categories = () => (categoriesPromise = categoriesPromise || Banko.api("/api/v1/categories").then((d) => d.items));
+  const fetchCategories = () => Banko.api("/api/v1/categories").then((d) => d.items);
+  const categories = () => (categoriesPromise = categoriesPromise || fetchCategories().catch(fetchCategories).then(
+    (items) => items, (e) => { categoriesPromise = null; throw e; }));
 
   Alpine.data("transactionsPage", () => ({
     items: [], next: null, q: "", semantic: false, searchMs: 0, range: "30", kind: "", category: "",
     categories: [], error: "", busy: false, loaded: false, selected: null,
     ranges: [{ key: "30", label: "Last 30 days" }, { key: "90", label: "Last 90 days" }, { key: "all", label: "All time" }],
-    async init() {
-      this.categories = await categories();
-      const open = new URLSearchParams(location.search).get("open");
-      if (open) this.$nextTick(() => Banko.emit("banko:open-transaction", { id: open }));
+    init() {
+      // Listeners first: nothing on this page waits for the category list.
       window.addEventListener("banko:open-transaction", (e) => { this.selected = e.detail.id; });
       window.addEventListener("banko:transaction-changed", () => this.load());
+      const open = new URLSearchParams(location.search).get("open");
+      if (open) this.$nextTick(() => Banko.emit("banko:open-transaction", { id: open }));
+      this.loadCategories();
+    },
+    loadCategories() {
+      if (!this.categories.length) categories().then((c) => { this.categories = c; }, () => { /* tried again on the next load */ });
     },
     params() {
       const p = new URLSearchParams({ limit: "40" });
@@ -25,6 +33,7 @@ document.addEventListener("alpine:init", () => {
     },
     async load() {
       this.error = ""; this.semantic = false; this.busy = true;
+      this.loadCategories();
       try {
         const data = await Banko.api("/api/v1/transactions?" + this.params());
         this.items = data.items; this.next = data.next_cursor;
@@ -68,7 +77,8 @@ document.addEventListener("alpine:init", () => {
     shown: false, t: null, categories: [], category: "", saving: false, saveError: "", readMs: 0,
     async open(id) {
       this.shown = true; this.t = null; this.saveError = "";
-      this.categories = await categories();
+      // Before the detail, so the select has its options when the category is set.
+      try { this.categories = await categories(); } catch (e) { this.categories = []; }
       const t0 = performance.now();
       try {
         this.t = await Banko.api("/api/v1/transactions/" + encodeURIComponent(id));

@@ -718,6 +718,34 @@ def test_midnight_takes_its_accent_shades_from_the_brand_accent(server, browser)
         ctx.close()
 
 
+def test_transactions_survive_a_failed_category_fetch(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _login(page, server, "maya")
+        purchase = page.evaluate("async () => (await Banko.api('/api/v1/transactions?kind=purchase&limit=1')).items[0]")
+        calls = []
+
+        def flaky(route):
+            calls.append(route.request.url)
+            if len(calls) == 1:
+                return route.fulfill(status=500, json={"error": "Something went wrong on our side."})
+            return route.fallback()
+
+        page.route("**/api/v1/categories", flaky)
+        page.goto(server + "/transactions?open=" + purchase["expense_id"])
+        drawer = page.locator("aside.b-drawer")
+        expect(drawer).to_contain_text(purchase["merchant"])
+        expect(drawer.locator("select option")).not_to_have_count(0)  # fetched again after the failure
+        page.keyboard.press("Escape")
+        expect(drawer).to_be_hidden()
+        page.locator(".b-filters button.b-f").first.click()
+        expect(page.locator(".b-filters select").nth(1).locator("option")).not_to_have_count(1)
+        assert len(calls) >= 2
+        assert errors == ["Failed to load resource: the server responded with a status of 500 (Internal Server Error)"], errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
