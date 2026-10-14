@@ -608,6 +608,86 @@ def test_goal_pace_tags_follow_the_goal(server, browser):
         ctx.close()
 
 
+NO_ACCOUNTS = {"accounts": [], "groups": {"cash": [], "credit": []}, "cash_total": 0, "credit_total": 0,
+               "net_worth": 0, "utilization": 0}
+
+
+def _no_money_yet(page, seeding):
+    """A user whose history is not written yet: /me reports `seeding`, and
+    the money endpoints answer the way they do before the first row lands."""
+    def me(route):
+        real = route.fetch().json()
+        route.fulfill(json={**real, "seeding": seeding})
+    page.route("**/api/v1/me", me)
+    page.route("**/api/v1/accounts", lambda r: r.fulfill(json=NO_ACCOUNTS))
+    page.route("**/api/v1/accounts/history*", lambda r: r.fulfill(json={"items": [
+        {"month": m, "net_worth": 0} for m in ("2026-08", "2026-09", "2026-10")]}))
+    page.route("**/api/v1/cashflow*", lambda r: r.fulfill(json={"months": [
+        {"month": m, "income": 0, "spending": 0, "net": 0, "savings_rate": None} for m in ("2026-08", "2026-09", "2026-10")],
+        "categories": [], "merchants": []}))
+
+
+def test_pages_wait_for_seeding_and_reload_when_it_finishes(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _login(page, server, "maya")
+        _no_money_yet(page, {"state": "running", "done": 1200, "total": 5000})
+        for path in ("/accounts", "/cashflow"):
+            page.goto(server + path)
+            page.wait_for_load_state("networkidle")
+            expect(page.get_by_text("Setting up your accounts")).to_be_visible()
+            expect(page.get_by_text("Writing 1200 of 5000 ledger entries")).to_be_visible()
+            expect(page.locator("section .b-grid")).to_be_hidden()  # no $0.00 dressed up as a figure
+            expect(page.get_by_text("No accounts yet")).to_have_count(0 if path == "/cashflow" else 1)
+            expect(page.get_by_text("No accounts yet")).to_be_hidden()
+        page.unroute("**/api/v1/me")
+        page.unroute("**/api/v1/cashflow*")
+        with page.expect_navigation():
+            page.evaluate("() => Banko.emit('banko:seeding', { user_id: Banko.shell.user.user_id, state: 'done', done: 5000, total: 5000 })")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("Setting up your accounts")).to_be_hidden()
+        expect(page.locator("section .b-grid")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_no_data_and_failed_seeding_show_real_next_steps(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _login(page, server, "maya")
+        _no_money_yet(page, None)
+        page.goto(server + "/accounts")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("No accounts yet")).to_be_visible()
+        expect(page.locator("section").get_by_role("button", name="Add a receipt")).to_be_visible()
+        page.goto(server + "/cashflow")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("Nothing to chart yet")).to_be_visible()
+        expect(page.locator("section .b-grid")).to_be_hidden()
+
+        page.unroute("**/api/v1/me")
+        _no_money_yet(page, {"state": "failed", "done": 800, "total": 5000})
+        for path in ("/accounts", "/"):
+            page.goto(server + path)
+            page.wait_for_load_state("networkidle")
+            expect(page.get_by_text("Your demo data didn't finish loading")).to_be_visible()
+            expect(page.get_by_role("link", name="Open Settings")).to_be_visible()
+            expect(page.get_by_text("Setting up your accounts")).to_be_hidden()
+        # A seed that fails while the dashboard watches stops the bar too.
+        page.unroute("**/api/v1/me")
+        _no_money_yet(page, {"state": "running", "done": 10, "total": 5000})
+        page.goto(server + "/")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("Setting up your accounts")).to_be_visible()
+        page.evaluate("() => Banko.emit('banko:seeding', { user_id: Banko.shell.user.user_id, state: 'failed', done: 20, total: 5000 })")
+        expect(page.get_by_text("Your demo data didn't finish loading")).to_be_visible()
+        expect(page.get_by_text("Setting up your accounts")).to_be_hidden()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

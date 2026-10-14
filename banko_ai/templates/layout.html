@@ -1,4 +1,5 @@
 {% from "components/icons.html" import icon %}
+{% from "components/setup.html" import setup_failed %}
 <!DOCTYPE html>
 <html lang="en" style="--ac: {{ shell.brand.accent }}">
 <head>
@@ -47,6 +48,16 @@
         </div>
       </div>
     </header>
+    {% if shell.page != 'dashboard' %}
+    <div class="b-card b-empty" style="margin-bottom:14px" x-show="$store.seed.state === 'running'" x-cloak role="status">
+      <strong>Setting up your accounts</strong>
+      <span x-text="$store.seed.text()"></span>
+      <div class="b-bar" style="width:min(360px,80%)"><span :style="'width:' + $store.seed.pct() + '%'"></span></div>
+    </div>
+    <div class="b-card b-empty" style="margin-bottom:14px" x-show="$store.seed.state === 'failed'" x-cloak role="status">
+      {{ setup_failed(shell) }}
+    </div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
 </div>

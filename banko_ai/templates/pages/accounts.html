@@ -4,9 +4,14 @@
 {% block content %}
 <section x-data="accountsPage" x-init="load()">
   <div class="b-page-h"><h1>Accounts</h1><div class="sp"></div>
-    <button class="b-btn primary" type="button" @click="Banko.emit('banko:move-money', {})">{{ icon('arrow-left-right') }}Move money</button></div>
+    <button class="b-btn primary" type="button" x-show="hasAccounts()" @click="Banko.emit('banko:move-money', {})">{{ icon('arrow-left-right') }}Move money</button></div>
   <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong><button class="b-btn" type="button" @click="load()">Try again</button></div></template>
-  <div class="b-grid" x-show="data" x-cloak style="margin-top:14px">
+  <div class="b-card b-empty" x-show="data && !hasAccounts() && $store.seed.state !== 'running'" x-cloak style="margin-top:14px">
+    <strong>No accounts yet</strong>
+    <span>Upload a receipt and {{ shell.brand.name }} opens a card for it, or ask the assistant what it can do.</span>
+    <button class="b-btn primary" type="button" @click="Banko.emit('banko:pick-receipt', {})">{{ icon('receipt') }}Add a receipt</button>
+  </div>
+  <div class="b-grid" x-show="hasAccounts() && $store.seed.state !== 'running'" x-cloak style="margin-top:14px">
     <div class="b-card b-s2">
       <div class="b-lbl">Net worth</div>
       <div class="b-big" x-text="data && Banko.fmt.money(data.net_worth)"></div>

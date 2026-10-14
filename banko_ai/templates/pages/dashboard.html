@@ -1,5 +1,6 @@
 {% extends "layout.html" %}
 {% from "components/icons.html" import icon %}
+{% from "components/setup.html" import setup_failed %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
 <section x-data="dashboardPage" x-init="load()">
@@ -11,13 +12,17 @@
     <div class="b-bar" style="width:min(360px,80%)"><span :style="'width:' + seedingPct() + '%'"></span></div>
   </div>
 
+  <div x-show="failed" x-cloak class="b-card b-empty" role="status">
+    {{ setup_failed(shell) }}
+  </div>
+
   <div x-show="noData" x-cloak class="b-card b-empty">
     <strong>No accounts yet</strong>
     <span>Upload a receipt and {{ shell.brand.name }} opens a card for it, or ask the assistant what it can do.</span>
     <button class="b-btn primary" type="button" @click="Banko.emit('banko:pick-receipt', {})">{{ icon('receipt') }}Add a receipt</button>
   </div>
 
-  <div class="b-grid" x-show="data && !seeding && !noData" x-cloak>
+  <div class="b-grid" x-show="data && !seeding && !failed && !noData" x-cloak>
     <div class="b-card b-s2">
       <div class="b-row">
         <div>
@@ -91,7 +96,7 @@
     </div>
   </div>
 
-  <div class="b-grid" x-show="!data && !error && !seeding && !noData">
+  <div class="b-grid" x-show="!data && !error && !seeding && !failed && !noData">
     <div class="b-card b-s2"><div class="b-skel" style="height:150px"></div></div>
     <div class="b-card"><div class="b-skel" style="height:150px"></div></div>
   </div>

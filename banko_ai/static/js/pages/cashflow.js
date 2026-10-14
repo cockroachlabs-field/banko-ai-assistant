@@ -3,9 +3,13 @@ document.addEventListener("alpine:init", () => {
     data: null, months: 6, error: "", charts: [],
     async load() {
       this.error = "";
-      try { this.data = await Banko.api("/api/v1/cashflow?months=" + this.months); this.$nextTick(() => this.draw()); }
-      catch (e) { this.error = Banko.explain(e); }
+      try {
+        this.data = await Banko.api("/api/v1/cashflow?months=" + this.months);
+        if (!this.empty()) this.$nextTick(() => this.draw());
+      } catch (e) { this.error = Banko.explain(e); }
     },
+    // No money in or out in these months: a real empty state, not six $0 bars.
+    empty() { return !!this.data && this.data.months.every((m) => !Number(m.income) && !Number(m.spending)); },
     current() { return this.data && this.data.months[this.data.months.length - 1]; },
     draw() {
       for (const c of this.charts) c.destroy();

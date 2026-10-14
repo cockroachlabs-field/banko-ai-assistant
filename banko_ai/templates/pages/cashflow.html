@@ -1,11 +1,17 @@
 {% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
 {% block title %}Cash flow{% endblock %}
 {% block content %}
 <section x-data="cashflowPage" x-init="load()">
   <div class="b-page-h"><h1>Cash flow</h1><div class="sp"></div>
     <template x-for="m in [3, 6, 12]" :key="m"><button type="button" class="b-f" :class="{ on: months === m }" @click="months = m; load()" x-text="m + ' months'"></button></template></div>
   <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong></div></template>
-  <div class="b-grid" x-show="data" x-cloak style="margin-top:14px">
+  <div class="b-card b-empty" x-show="empty() && $store.seed.state !== 'running'" x-cloak style="margin-top:14px">
+    <strong>Nothing to chart yet</strong>
+    <span>Income and spending show up here as money moves. Upload a receipt, or ask the assistant what it can do.</span>
+    <button class="b-btn primary" type="button" @click="Banko.emit('banko:pick-receipt', {})">{{ icon('receipt') }}Add a receipt</button>
+  </div>
+  <div class="b-grid" x-show="data && !empty() && $store.seed.state !== 'running'" x-cloak style="margin-top:14px">
     <div class="b-card b-s2"><div class="b-lbl">Income and spending</div><div style="height:220px;margin-top:8px"><canvas x-ref="flow"></canvas></div></div>
     <div class="b-card">
       <div class="b-lbl">Savings rate this month</div>

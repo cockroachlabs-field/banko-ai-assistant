@@ -1,0 +1,13 @@
+{# What a user sees when seeding their demo data failed: the shell banner and
+   the dashboard card share this copy. Personas can be reset from Settings;
+   anyone else starts over with a new user. #}
+{% macro setup_failed(shell) %}
+<strong>Your demo data didn't finish loading</strong>
+{% if shell.user.persona %}
+<span>Reset {{ shell.user.display_name }} in Settings to load it again.</span>
+<a class="b-btn primary" href="/settings#data">Open Settings</a>
+{% else %}
+<span>Switch user and create a new one to start over.</span>
+<a class="b-btn primary" href="/logout">Switch user</a>
+{% endif %}
+{% endmacro %}

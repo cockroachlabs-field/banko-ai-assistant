@@ -14,6 +14,15 @@ document.addEventListener("alpine:init", () => {
     drop(id) { this.items = this.items.filter((t) => t.id !== id); },
   });
 
+  // Whether this user's demo data is still being written. The shell shows a
+  // banner from it on every page but the dashboard, which has its own card.
+  Alpine.store("seed", {
+    state: null, done: 0, total: 0,
+    set(p) { this.state = p.state; this.done = p.done || 0; this.total = p.total || 0; },
+    pct() { return this.total ? Math.round((this.done / this.total) * 100) : 5; },
+    text() { return this.total ? "Writing " + this.done + " of " + this.total + " ledger entries" : "Starting"; },
+  });
+
   const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
   const sprite = (name) => document.querySelector('link[rel="stylesheet"]').href.replace(/css\/app\.css.*$/, "vendor/lucide-sprite.svg") + "#i-" + name;
 
@@ -25,6 +34,7 @@ document.addEventListener("alpine:init", () => {
     init() {
       this.applyTheme();
       darkQuery.addEventListener("change", () => this.applyTheme());
+      this.watchSetup();
       this.connect();
       window.addEventListener("banko:open-transaction", (e) => {
         if (Banko.shell.page !== "transactions") window.location.assign("/transactions?open=" + encodeURIComponent(e.detail.id));
@@ -39,6 +49,22 @@ document.addEventListener("alpine:init", () => {
         localStorage.setItem("banko.theme", this.theme);
         this.applyTheme();
       });
+    },
+
+    watchSetup() {
+      if (Banko.shell.page === "dashboard") return;  // the dashboard shows its own card
+      const seed = Alpine.store("seed");
+      let heard = false;
+      window.addEventListener("banko:seeding", (e) => {
+        const p = e.detail || {};
+        if (p.user_id !== Banko.shell.user.user_id) return;
+        heard = true;
+        const was = seed.state;
+        seed.set(p);
+        // This page read its figures while the history was being written.
+        if (p.state === "done" && was === "running") window.location.reload();
+      });
+      Banko.api("/api/v1/me").then((me) => { if (!heard && me && me.seeding) seed.set(me.seeding); }).catch(() => {});
     },
 
     applyTheme() {

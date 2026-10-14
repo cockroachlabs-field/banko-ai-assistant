@@ -1,13 +1,14 @@
 document.addEventListener("alpine:init", () => {
   Alpine.data("dashboardPage", () => ({
-    data: null, error: "", seeding: null, noData: false, charts: [],
+    data: null, error: "", seeding: null, failed: false, noData: false, charts: [],
 
     init() {
       window.addEventListener("banko:seeding", (ev) => {
         const p = ev.detail;
         if (p.user_id !== Banko.shell.user.user_id) return;
-        this.seeding = p.state === "done" ? null : p;
-        if (this.seeding) this.noData = false;  // the page loaded before seeding reported in
+        this.seeding = p.state === "running" ? p : null;
+        this.failed = p.state === "failed";
+        if (this.seeding || this.failed) this.noData = false;  // the page loaded before seeding reported in
         if (p.state === "done") this.load();
       });
     },
@@ -16,12 +17,13 @@ document.addEventListener("alpine:init", () => {
       this.error = "";
       try {
         const [data, me] = await Promise.all([Banko.api("/api/v1/dashboard"), Banko.api("/api/v1/me")]);
-        const running = !!(me.seeding && me.seeding.state === "running");
+        const state = me.seeding ? me.seeding.state : null;
         const empty = !data.recent.length && Number(data.net_worth) === 0;
-        this.seeding = running ? me.seeding : null;
-        this.noData = empty && !running;
+        this.seeding = state === "running" ? me.seeding : null;
+        this.failed = state === "failed";
+        this.noData = empty && !this.seeding && !this.failed;
         this.data = data;
-        if (!this.seeding && !this.noData) this.$nextTick(() => this.draw());
+        if (!this.seeding && !this.failed && !this.noData) this.$nextTick(() => this.draw());
       } catch (e) {
         this.error = Banko.explain(e);
       }

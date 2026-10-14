@@ -88,6 +88,14 @@ def shell_context() -> dict:
         return {}
 
 
+def _is_persona(user_id: str) -> bool:
+    from ..config.catalog import get_catalog
+    try:
+        return user_id in {p.user_id for p in get_catalog().personas}
+    except Exception:  # a broken catalog file is reported at boot
+        return False
+
+
 def _shell(profile: dict) -> dict:
     cfg = get_config()
     shown = current_app.extensions["banko_ai"]["shown"]()
@@ -100,7 +108,8 @@ def _shell(profile: dict) -> dict:
                      "icon_url": url_for("static", filename=shown.icon_file)},
         "user": {"user_id": profile["user_id"], "username": profile["username"],
                  "display_name": profile["display_name"], "avatar_color": profile["avatar_color"],
-                 "initial": (profile["display_name"] or "?")[0].upper(), "region": _region(profile)},
+                 "initial": (profile["display_name"] or "?")[0].upper(), "region": _region(profile),
+                 "persona": _is_persona(profile["user_id"])},
         "nav": nav_groups(current_app),
         "page": {"assistant_thread": "assistant"}.get(page_raw, page_raw),
         "section": {"assistant_thread": "assistant", "account": "accounts"}.get(page_raw, page_raw),

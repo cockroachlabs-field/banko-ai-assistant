@@ -42,6 +42,7 @@ document.addEventListener("alpine:init", () => {
       } catch (e) { this.error = Banko.explain(e); }
     },
     init() { window.addEventListener("banko:money-moved", () => this.load()); },
+    hasAccounts() { return !!(this.data && this.data.accounts.length); },
     draw() {
       if (this.chart) this.chart.destroy();
       this.chart = Banko.charts.line(this.$refs.net, { labels: this.history.map((p) => Banko.fmt.month(p.month)),

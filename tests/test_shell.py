@@ -183,6 +183,19 @@ def test_per_user_socket_events_reach_only_that_users_sockets(monkeypatch):
         drop_user(b)
 
 
+def test_failed_seeding_points_each_user_to_a_step_they_can_take(monkeypatch, member):
+    # Personas reset from Settings; a user who signed up starts over instead.
+    from banko_ai.config.catalog import get_catalog
+    client = app_client(monkeypatch)
+    for user_id, step, other in ((member, "create a new one to start over", "/settings#data"),
+                                 (get_catalog().personas[0].user_id, "/settings#data", "create a new one to start over")):
+        with client.session_transaction() as s:
+            s["user_id"] = user_id
+        html = client.get("/accounts").get_data(as_text=True)
+        assert "Your demo data didn't finish loading" in html
+        assert step in html and other not in html
+
+
 def test_profile_service(member):
     from banko_ai.services.profile import get_profile
     p = get_profile(member)
