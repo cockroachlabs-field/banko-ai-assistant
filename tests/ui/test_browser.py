@@ -7,6 +7,7 @@
 Boots the app on port 5073 with AI_SERVICE=ollama. No page may log a console
 error; every page is screenshotted to artifacts/ui/."""
 
+import datetime
 import json
 import os
 import subprocess
@@ -910,6 +911,30 @@ def test_a_fraud_check_shows_its_fraud_score_not_a_confidence(server, browser):
         rows = page.locator("section .b-s3 .b-bill")
         expect(rows.filter(has_text="Fraud analysis")).to_contain_text("fraud score 0%")
         expect(rows.filter(has_text="Budget check")).to_contain_text("confidence 85%")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_transactions_range_sends_the_dates_the_api_reads(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        asked = []
+
+        def listing(route):
+            asked.append(urllib.parse.parse_qs(urllib.parse.urlparse(route.request.url).query))
+            route.fulfill(json={"items": [], "next_cursor": None})
+
+        page.route("**/api/v1/transactions?*", listing)
+        _login(page, server, "sam")
+        page.goto(server + "/transactions")
+        page.wait_for_load_state("networkidle")
+        assert asked and "date_from" not in asked[0], asked
+        start = datetime.date.fromisoformat(asked[0]["from"][0])
+        assert 29 <= (datetime.date.today() - start).days <= 31
+        page.get_by_role("button", name="All time").click()
+        page.wait_for_load_state("networkidle")
+        assert "from" not in asked[-1], asked[-1]
         assert not errors, errors
     finally:
         ctx.close()

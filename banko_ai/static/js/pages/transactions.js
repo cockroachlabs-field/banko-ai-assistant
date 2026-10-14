@@ -25,7 +25,7 @@ document.addEventListener("alpine:init", () => {
       const p = new URLSearchParams({ limit: "40" });
       if (this.range !== "all") {
         const d = new Date(); d.setDate(d.getDate() - Number(this.range));
-        p.set("date_from", d.toISOString().slice(0, 10));
+        p.set("from", d.toISOString().slice(0, 10));
       }
       if (this.kind) p.set("kind", this.kind);
       if (this.category) p.set("category", this.category);
