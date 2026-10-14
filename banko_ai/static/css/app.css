@@ -280,6 +280,8 @@ button { font: inherit; color: inherit; }
 .b-ans th, .b-ans td { border-bottom: 1px solid var(--bd2); padding: 3px 8px; text-align: left; }
 .b-cites { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .b-more { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
+.b-watch { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--ac); text-decoration: none; }
+.b-watch .b-i { width: 14px; height: 14px; }
 .b-more .b-cites { margin-top: 0; }
 .b-cite { font-size: 11px; border: 1px solid var(--bd); border-radius: 8px; padding: 3px 8px; background: var(--side); cursor: pointer; }
 .b-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: var(--mu); flex-wrap: wrap; }

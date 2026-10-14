@@ -23,6 +23,7 @@
               <span :class="{ failed: s.status === 'failed' }"><b x-text="s.label"></b><span x-text="s.ms ? (s.ms >= 1000 ? (s.ms / 1000).toFixed(1) + ' s' : Math.round(s.ms) + ' ms') : s.status"></span></span>
             </template>
           </div>
+          {% if shell.page != 'agents' %}<a class="b-watch" href="{{ url_for('pages.agents') }}" target="_blank" rel="noopener">{{ icon('bot') }}Watch the agents</a>{% endif %}
         </div>
       </template>
 

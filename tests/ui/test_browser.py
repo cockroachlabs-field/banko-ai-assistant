@@ -362,6 +362,45 @@ def test_a_dropped_receipt_keeps_its_card_when_the_history_loads(server, browser
         ctx.close()
 
 
+def _drop_receipt(page):
+    page.evaluate("""() => {
+        const dt = new DataTransfer();
+        dt.items.add(new File(['receipt'], 'lunch.jpg', { type: 'image/jpeg' }));
+        window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }""")
+
+
+def test_the_receipt_card_opens_the_agents_page_in_a_new_tab(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page)
+        _login(page, server, "sam")
+        _drop_receipt(page)
+        link = page.locator(".b-panel .b-receipt").get_by_role("link", name="Watch the agents")
+        expect(link).to_have_attribute("target", "_blank")
+        with ctx.expect_page() as opened:
+            link.click()
+        agents = opened.value
+        agents.wait_for_load_state()
+        assert urllib.parse.urlparse(agents.url).path == "/agents", agents.url
+        agents.close()
+
+        page.goto(server + "/agents")  # already watching: no link to the same page
+        page.wait_for_load_state("networkidle")
+        _drop_receipt(page)
+        # The first upload's thread is remembered now, and its history is held until released.
+        for _ in range(50):
+            if api.held:
+                break
+            page.wait_for_timeout(100)
+        api.release()
+        expect(page.locator(".b-panel .b-receipt")).to_contain_text("Blue Bottle")
+        expect(page.locator(".b-panel .b-receipt").get_by_role("link", name="Watch the agents")).to_have_count(0)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_asking_about_a_nudge_opens_a_new_thread_even_when_the_history_answers_late(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
