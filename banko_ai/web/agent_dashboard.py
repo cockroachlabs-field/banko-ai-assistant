@@ -246,16 +246,15 @@ def emit_agent_decision(agent_id, decision_type, confidence, reasoning):
             else:
                 agent_type = 'unknown'
                 region = 'unknown'
-# Emit via WebSocket
+        # A broadcast ping the Agents page refreshes on. No reasoning and no
+        # score: the fraud agent's reasoning names the merchant and amount,
+        # and every connected browser gets this.
         from flask import current_app
         if hasattr(current_app, 'socketio'):
             current_app.socketio.emit('agent_decision', {
-                'agent_id': str(agent_id),
                 'agent_type': agent_type,
                 'region': region,
                 'decision_type': decision_type,
-                'confidence': confidence,
-                'reasoning': reasoning[:200] if reasoning else None,
                 'timestamp': datetime.now(timezone.utc).isoformat()
             })
     except Exception as e:

@@ -183,6 +183,23 @@ def test_per_user_socket_events_reach_only_that_users_sockets(monkeypatch):
         drop_user(b)
 
 
+def test_agent_decision_pings_carry_nothing_about_the_user(monkeypatch):
+    """Every stored decision pings all sockets so the Agents page refreshes;
+    the fraud agent's reasoning names the merchant and amount, so it stays out."""
+    import uuid
+
+    from banko_ai.web.agent_dashboard import emit_agent_decision
+    client = app_client(monkeypatch)
+    app = client.application
+    anon = app.extensions["socketio"].test_client(app)
+    with app.app_context():
+        emit_agent_decision(str(uuid.uuid4()), "fraud_analysis", 0.05, "The $9.75 purchase at Blue Bottle looks normal.")
+    pings = [e["args"][0] for e in anon.get_received() if e["name"] == "agent_decision"]
+    assert len(pings) == 1
+    assert set(pings[0]) == {"agent_type", "region", "decision_type", "timestamp"}
+    assert "Blue Bottle" not in str(pings[0])
+
+
 def test_failed_seeding_points_each_user_to_a_step_they_can_take(monkeypatch, member):
     # Personas reset from Settings; a user who signed up starts over instead.
     from banko_ai.config.catalog import get_catalog
