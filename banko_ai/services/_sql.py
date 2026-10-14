@@ -27,7 +27,10 @@ _follower_ok: dict[str, bool] = {}  # per database URL, definitive answers only
 _TRANSIENT_CLASSES = ("08", "40", "57")
 
 
-def _follower_available(url: str | None) -> bool:
+def follower_available(url: str | None) -> bool:
+    """Whether this database serves follower reads. Asked once per URL; a
+    definitive no is remembered and logged once, a transient failure is
+    asked again next time."""
     key = url or get_config().database_url
     known = _follower_ok.get(key)
     if known is not None:
@@ -50,15 +53,23 @@ def _follower_available(url: str | None) -> bool:
         return False
 
 
+def follower_snapshot(conn: Connection) -> None:
+    """Pin the transaction on conn to one follower read timestamp. It must be
+    the transaction's first statement; every statement after it reads the
+    same snapshot (an inline AS OF SYSTEM TIME per statement would evaluate
+    a new timestamp each time, which CockroachDB rejects)."""
+    conn.execute(text(_FOLLOWER))
+
+
 @contextmanager
 def read_session(user_id: str, *, url: str | None = None, follower: bool = False) -> Iterator[Connection]:
     """A read transaction with banko.user_id set (row-level security reads
     it). follower=True reads a few seconds in the past from the nearest
     replica, for reports only."""
-    use_follower = follower and get_config().reporting_follower_reads and _follower_available(url)
+    use_follower = follower and get_config().reporting_follower_reads and follower_available(url)
     with get_engine(url).begin() as conn:
         if use_follower:
-            conn.execute(text(_FOLLOWER))
+            follower_snapshot(conn)
         conn.execute(text("SELECT set_config('banko.user_id', :uid, true)"), {"uid": str(user_id)})
         yield conn
 

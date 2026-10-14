@@ -15,10 +15,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from ..config.settings import get_config
-from ..db.engine import get_engine
+from ..db.engine import _sqlstate, get_engine
+from ._sql import follower_available, follower_snapshot
 
 log = logging.getLogger("banko.integrity")
-_FOLLOWER = "AS OF SYSTEM TIME follower_read_timestamp()"
 
 
 @dataclass(frozen=True)
@@ -40,10 +40,12 @@ _latest_lock = threading.Lock()
 
 def _run(url: str | None, follower: bool, user_id: str | None) -> IntegrityReport:
     cfg = get_config()
-    aost = _FOLLOWER if follower else ""
     where = "WHERE a.user_id = CAST(:u AS UUID)" if user_id else ""
-    with get_engine(url).connect() as conn:
-        count = int(conn.execute(text(f"SELECT count(*) FROM accounts AS a {aost} {where}"),
+    # One transaction, so the count and the drift query read the same snapshot.
+    with get_engine(url).begin() as conn:
+        if follower:
+            follower_snapshot(conn)
+        count = int(conn.execute(text(f"SELECT count(*) FROM accounts AS a {where}"),
                                  {"u": user_id}).scalar() or 0)
         if count > cfg.integrity_max_accounts:
             return IntegrityReport(datetime.now(timezone.utc), count, (),
@@ -54,7 +56,6 @@ def _run(url: str | None, follower: bool, user_id: str | None) -> IntegrityRepor
             FROM accounts AS a
             LEFT JOIN (SELECT account_id, sum(amount) AS total FROM ledger_entries GROUP BY account_id) AS l
               ON l.account_id = a.account_id
-            {aost}
             {where}
         """), {"u": user_id}).fetchall()
     drifted = tuple({"account_id": str(r[0]), "user_id": str(r[1]),
@@ -65,11 +66,14 @@ def _run(url: str | None, follower: bool, user_id: str | None) -> IntegrityRepor
 
 def check_integrity(*, url: str | None = None, follower_reads: bool = True,
                     user_id: str | None = None) -> IntegrityReport:
-    if follower_reads:
+    # A cluster without follower reads is found out once per process (and
+    # said once); every later cycle reads current data without a word.
+    if follower_reads and follower_available(url):
         try:
             return _run(url, True, user_id)
         except DBAPIError as exc:
-            log.info("follower reads unavailable, checking current data instead: %s", exc.__class__.__name__)
+            log.info("follower read failed, checking current data instead: %s",
+                     _sqlstate(exc) or exc.__class__.__name__)
     return _run(url, False, user_id)
 
 

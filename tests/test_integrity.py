@@ -1,5 +1,6 @@
 """The integrity checker finds drift and stays quiet when there is none."""
 
+import logging
 import os
 import threading
 
@@ -50,6 +51,33 @@ def test_skips_above_the_account_ceiling(account, monkeypatch):
 def test_follower_reads_or_a_clean_fallback(account):
     report = I.check_integrity(follower_reads=True, user_id=account[0])
     assert report.skipped is None
+
+
+def _follower_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if "follower read" in r.getMessage()]
+
+
+def test_the_check_reads_one_follower_snapshot_without_falling_back(account, caplog):
+    """The count and the drift query read one snapshot: the transaction sets
+    AS OF SYSTEM TIME once, so CockroachDB never sees two follower timestamps
+    (it rejects that as "inconsistent AS OF SYSTEM TIME timestamp")."""
+    caplog.set_level(logging.INFO)
+    report = I.check_integrity(follower_reads=True, user_id=account[0])
+    assert report.follower_reads is True and report.skipped is None
+    assert _follower_lines(caplog) == []
+
+
+def test_follower_reads_that_are_unavailable_are_said_once(account, monkeypatch, caplog):
+    """A cluster without follower reads gets one log line per process, not
+    one per integrity cycle."""
+    from banko_ai.services import _sql
+    monkeypatch.setattr(_sql, "_follower_ok", {})
+    # What a cluster without follower reads answers: a definitive SQL error.
+    monkeypatch.setattr(_sql, "_FOLLOWER", "SET TRANSACTION AS OF SYSTEM TIME no_follower_reads_here()")
+    caplog.set_level(logging.INFO)
+    reports = [I.check_integrity(follower_reads=True, user_id=account[0]) for _ in range(3)]
+    assert all(r.skipped is None and r.follower_reads is False for r in reports)
+    assert len(_follower_lines(caplog)) == 1
 
 
 def test_worker_reports_and_stops(account):
