@@ -5,12 +5,14 @@ end with a done event; failures are one neutral error event."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import queue
 import tempfile
 import threading
+from collections import OrderedDict
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,6 +108,52 @@ def _owned(thread_id: str) -> dict | None:
     return threads.get_thread(_uid(), thread_id)
 
 
+class AnswerMeta:
+    """The meta of the answers this process sent (trace, plan, tokens),
+    keyed by thread and answer text, so a reloaded thread still shows how
+    each answer was made. Bounded and in memory, as the old chat page kept
+    its traces: a restart forgets them and those answers reload without."""
+
+    def __init__(self, size: int = 300):
+        self.size = size
+        self._items: OrderedDict[tuple[str, str], dict] = OrderedDict()
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(thread_id: str, answer: str) -> tuple[str, str]:
+        # The checkpoint keeps the answer without citation markers; key on that.
+        from ..assistant.answers import strip_citations
+        return str(thread_id), hashlib.sha256(strip_citations(answer).encode()).hexdigest()
+
+    def put(self, thread_id: str, answer: str, meta: dict) -> None:
+        key = self._key(thread_id, answer)
+        with self._lock:
+            self._items[key] = meta
+            self._items.move_to_end(key)
+            while len(self._items) > self.size:
+                self._items.popitem(last=False)
+
+    def get(self, thread_id: str, answer: str) -> dict | None:
+        key = self._key(thread_id, answer)
+        with self._lock:
+            meta = self._items.get(key)
+            if meta is not None:
+                self._items.move_to_end(key)
+            return meta
+
+    def forget_thread(self, thread_id: str) -> None:
+        with self._lock:
+            for key in [k for k in self._items if k[0] == str(thread_id)]:
+                del self._items[key]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._items.clear()
+
+
+answer_meta = AnswerMeta()
+
+
 # ── threads ──────────────────────────────────────────────────────────────
 
 @assistant_api.get("/assistant/threads")
@@ -134,8 +182,11 @@ def get_thread(thread_id: str):
     if thread is None:
         return jsonify({"error": "not_found"}), 404
     state = _graph().thread_state(thread_id)
-    return jsonify({**thread, "messages": state.get("messages") or [],
-                    "active_receipt": state.get("active_receipt")})
+    messages = []
+    for m in state.get("messages") or []:
+        meta = answer_meta.get(thread_id, str(m.get("content") or "")) if m.get("role") == "assistant" else None
+        messages.append({**m, "meta": meta} if meta else m)
+    return jsonify({**thread, "messages": messages, "active_receipt": state.get("active_receipt")})
 
 
 @assistant_api.patch("/assistant/threads/<thread_id>")
@@ -150,6 +201,7 @@ def delete_thread(thread_id: str):
         return jsonify({"error": "not_found"}), 404
     from ..assistant import checkpoint
     checkpoint.delete_checkpoints(thread_id)
+    answer_meta.forget_thread(thread_id)
     return "", 204
 
 
@@ -180,9 +232,10 @@ def _close_trace(chat: TimedChat, shown, *, stopped: bool = False) -> float | No
     return elapsed
 
 
-def _answer_event(final: dict, chat: TimedChat, shown) -> dict:
+def _answer_event(thread_id: str, final: dict, chat: TimedChat, shown) -> dict:
     """The SSE answer event from the graph's final event: the trace closes
-    here, with the model step and the time to answer."""
+    here, with the model step and the time to answer. Its meta is kept for
+    the thread's next reload."""
     elapsed = _close_trace(chat, shown)
     meta = dict(final.get("meta") or {})
     if meta.get("explain"):
@@ -196,9 +249,11 @@ def _answer_event(final: dict, chat: TimedChat, shown) -> dict:
     meta["model_calls"] = chat.calls
     meta["answer_ms"] = None if elapsed is None else round(elapsed)
     meta["cached"] = bool(final.get("cached"))
+    answer = final.get("answer") or ""
+    answer_meta.put(thread_id, answer, jsonable(meta))
     # Shaped like the proposal events, which drop their "type" key on the way out.
     proposals = [{k: v for k, v in p.items() if k != "type"} for p in final.get("proposals") or []]
-    return {"type": "answer", "answer": final.get("answer") or "", "citations": final.get("citations") or [],
+    return {"type": "answer", "answer": answer, "citations": final.get("citations") or [],
             "proposals": proposals, "cached": bool(final.get("cached")),
             "route": (final.get("route") or {}).get("kind"), "meta": meta}
 
@@ -223,7 +278,7 @@ def _turn_stream(user_id: str, thread_id: str, message: str, language: str | Non
                 events.put(event)
             elif not answered:  # one answer per turn, never two
                 answered = True
-                events.put(_answer_event(event, chat, shown))
+                events.put(_answer_event(thread_id, event, chat, shown))
 
         try:
             out = _graph().run_turn(user_id, thread_id, message, language_code=language, chat=chat,

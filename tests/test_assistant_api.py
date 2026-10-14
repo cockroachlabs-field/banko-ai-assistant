@@ -149,6 +149,26 @@ def test_a_failure_after_the_answer_still_ends_with_done(client, monkeypatch):
     assert "You spent" in dict(evs)["answer"]["answer"]
 
 
+def test_a_reloaded_thread_keeps_each_answers_trace_plan_and_tokens(client):
+    tid = _thread(client)
+    evs = events(client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                             json={"message": "how much did I spend on restaurants in the last 30 days"}))
+    sent = dict(evs)["answer"]["meta"]
+    user, bot = client.get(f"/api/v1/assistant/threads/{tid}").get_json()["messages"]
+    assert "meta" not in user
+    assert bot["meta"]["trace"] == sent["trace"] and bot["meta"]["explain"] == sent["explain"]
+    assert bot["meta"]["tokens"] == sent["tokens"] and bot["meta"]["trace"][-1]["label"] == "Time to answer"
+
+
+def test_an_answer_this_process_did_not_send_reloads_without_meta(client):
+    tid = _thread(client)
+    events(client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                       json={"message": "how much did I spend on groceries in the last 30 days"}))
+    assistant_api.answer_meta.clear()  # what a restart looks like
+    user, bot = client.get(f"/api/v1/assistant/threads/{tid}").get_json()["messages"]
+    assert "meta" not in user and "meta" not in bot and bot["content"].startswith("You spent")
+
+
 def test_other_users_thread_is_404(client, monkeypatch):
     other = make_user()
     try:
