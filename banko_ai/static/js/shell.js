@@ -140,7 +140,14 @@ document.addEventListener("alpine:init", () => {
       if (file) Banko.emit("banko:receipt", { file });
     },
     pasteFile(e) {
-      const item = Array.from((e.clipboardData && e.clipboardData.items) || []).find((i) => i.kind === "file" && i.type.startsWith("image/"));
+      const data = e.clipboardData;
+      if (!data) return;
+      // Text copied from Office or Keynote often carries a picture of itself
+      // too; pasted into a field, the text is what was meant.
+      const t = e.target;
+      const editable = !!t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+      if (editable && data.getData("text/plain")) return;
+      const item = Array.from(data.items || []).find((i) => i.kind === "file" && i.type.startsWith("image/"));
       if (!item) return;
       e.preventDefault();
       Banko.emit("banko:receipt", { file: item.getAsFile() });

@@ -409,6 +409,32 @@ def test_a_failed_thread_keeps_the_question_and_an_empty_answer_stops_loading(se
         ctx.close()
 
 
+def test_text_pasted_into_a_field_stays_text_even_with_an_image_along(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        page.route("**/api/v1/receipts", lambda r: r.fulfill(status=200, content_type="text/event-stream",
+                                                             body=_sse(("error", {"message": "Not a receipt"}), ("done", {}))))
+        _login(page, server, "maya")
+        seen = page.evaluate("""() => {
+            const got = [];
+            window.addEventListener('banko:receipt', (e) => got.push(e.detail.file.name));
+            const paste = (target, text) => {
+                const dt = new DataTransfer();
+                if (text) dt.setData('text/plain', text);
+                dt.items.add(new File(['png'], 'slide.png', { type: 'image/png' }));
+                return target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+            };
+            // Copied from Keynote: the text and a picture of it.
+            const fieldKeptDefault = paste(document.querySelector('.b-palette input'), 'Q3 revenue');
+            const inField = got.length;
+            paste(document.body, '');
+            return { fieldKeptDefault, inField, anywhere: got.length - inField };
+        }""")
+        assert seen == {"fieldKeptDefault": True, "inField": 0, "anywhere": 1}
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
