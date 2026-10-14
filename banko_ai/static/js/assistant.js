@@ -9,8 +9,21 @@ document.addEventListener("alpine:init", () => {
   Banko.stripCitations = (text) => String(text || "").replace(MARKER, "");
   const RECEIPT_TYPES = /^(image\/|application\/pdf$)/;
   const STEP_LABELS = { ocr: "OCR", extract: "Extract", category: "Category", duplicate: "Dup check", post: "Posted", fraud: "Fraud", budget: "Budget" };
+  // The panel remembers its thread per user, so after "Switch user" another
+  // persona's thread never loads.
+  const threadKey = () => "banko.thread:" + Banko.shell.user.user_id;
 
-  Alpine.data("assistant", (mode) => ({
+  Alpine.data("assistant", (mode) => {
+  // A thread switch in flight: a history load or a new thread. Anything that
+  // adds a message or changes the thread waits for it, so a history that
+  // arrives late never replaces what the user just did.
+  let pending = null;
+  const track = (promise) => {
+    const p = promise.finally(() => { if (pending === p) pending = null; });
+    pending = p;
+    return p;
+  };
+  return {
     mode, open: mode === "page", threadId: null, threadTitle: "", messages: [], draft: "",
     streaming: false, controller: null,
     language: localStorage.getItem("banko.language") || (Banko.shell.languages[0] || { code: "en-US" }).code,
@@ -21,9 +34,12 @@ document.addEventListener("alpine:init", () => {
     autoRead: localStorage.getItem("banko.autoread") === "1",
 
     init() {
-      if (this.mode === "panel") this.threadId = localStorage.getItem("banko.thread");
+      if (this.mode === "panel") {
+        localStorage.removeItem("banko.thread");  // the old entry, shared by every user
+        this.threadId = localStorage.getItem(threadKey());
+      }
       window.addEventListener("banko:ask", (e) => this.ask(e.detail || {}));
-      window.addEventListener("banko:receipt", (e) => { this.show(); this.upload(e.detail.file); });
+      window.addEventListener("banko:receipt", async (e) => { await this.show(); this.upload(e.detail.file); });
       window.addEventListener("banko:pick-receipt", () => { this.show(); this.$nextTick(() => this.$refs.file.click()); });
       this.$watch("language", (v) => localStorage.setItem("banko.language", v));
       this.initVoice();
@@ -75,45 +91,66 @@ document.addEventListener("alpine:init", () => {
       window.speechSynthesis.speak(u);
     },
 
+    // Resolves once no thread switch is in flight; never rejects.
+    settled() { return pending ? pending.then(() => {}, () => {}) : Promise.resolve(); },
+
     show() {
-      if (this.mode !== "panel") return;
+      if (this.mode !== "panel") return Promise.resolve();
       if (!this.open) { this.open = true; if (this.threadId && !this.messages.length) this.loadThread(this.threadId); }
       this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
+      return this.settled();
     },
     hide() { if (this.mode === "panel") this.open = false; },
 
     async ask({ text, context, fresh }) {
-      this.show();
+      await this.show();
       if (fresh || context) await this.newThread(context || null);
       if (text) await this.send(text);
     },
 
     remember(id, title) {
       this.threadId = id; this.threadTitle = title || this.threadTitle;
-      if (this.mode === "panel") localStorage.setItem("banko.thread", id);
+      if (this.mode === "panel") localStorage.setItem(threadKey(), id);
       Banko.emit("banko:thread", { id });
     },
 
-    async newThread(context) {
-      const body = context ? { context } : {};
-      const thread = await Banko.api("/api/v1/assistant/threads", { method: "POST", body });
-      this.messages = [];
-      this.remember(thread.thread_id, thread.title);
-      return thread.thread_id;
+    forget() {
+      this.threadId = null; this.threadTitle = "";
+      if (this.mode === "panel") localStorage.removeItem(threadKey());
     },
 
-    async loadThread(id) {
-      try {
-        const t = await Banko.api("/api/v1/assistant/threads/" + id);
-        this.remember(t.thread_id, t.title);
-        this.messages = (t.messages || []).map((m) => m.role === "user"
-          ? { id: ++seq, role: "user", text: m.content }
-          : { id: ++seq, role: "bot", answer: m.content, steps: [], citations: [], proposals: [], meta: {}, showTrace: false });
-        this.scroll();
-      } catch (e) {
-        if (this.mode === "panel") { localStorage.removeItem("banko.thread"); this.threadId = null; this.messages = []; }
-        else Alpine.store("toasts").push({ title: "Assistant", text: Banko.explain(e), kind: "error" });
-      }
+    newThread(context) {
+      const before = this.settled();
+      return track((async () => {
+        await before;
+        const body = context ? { context } : {};
+        const thread = await Banko.api("/api/v1/assistant/threads", { method: "POST", body });
+        this.messages = [];
+        this.remember(thread.thread_id, thread.title);
+        return thread.thread_id;
+      })());
+    },
+
+    loadThread(id) {
+      const before = this.messages.length;
+      return track((async () => {
+        try {
+          const t = await Banko.api("/api/v1/assistant/threads/" + id);
+          // The user moved on while it loaded: another thread, or a message already on screen.
+          if (this.threadId !== id || this.messages.length !== before) return;
+          this.remember(t.thread_id, t.title);
+          this.messages = (t.messages || []).map((m) => m.role === "user"
+            ? { id: ++seq, role: "user", text: m.content }
+            : { id: ++seq, role: "bot", answer: m.content, steps: [], citations: [], proposals: [], meta: {}, showTrace: false });
+          this.scroll();
+        } catch (e) {
+          if (this.threadId !== id) return;
+          // Gone (deleted, or not this user's): start fresh. A blip keeps
+          // the thread, so the next question still continues it.
+          if (e instanceof Banko.ApiError && e.status === 404) this.forget();
+          if (this.mode !== "panel") Alpine.store("toasts").push({ title: "Assistant", text: Banko.explain(e), kind: "error" });
+        }
+      })());
     },
 
     async ensureThread() { return this.threadId || (await this.newThread(null)); },
@@ -122,6 +159,7 @@ document.addEventListener("alpine:init", () => {
       text = (text || this.draft).trim();
       if (!text || this.streaming) return;
       this.draft = "";
+      await this.settled();
       const tid = await this.ensureThread();
       const lang = this.languages.find((l) => l.code === this.language);
       this.messages.push({ id: ++seq, role: "user", text, lang: lang ? lang.name : "" });
@@ -171,6 +209,7 @@ document.addEventListener("alpine:init", () => {
         Alpine.store("toasts").push({ title: "Receipts", text: "Upload a receipt image or PDF.", kind: "error" });
         return;
       }
+      await this.settled();
       const card = Alpine.reactive({ id: ++seq, role: "receipt", name: file.name, pipeline: {}, receipt: null, error: "" });
       this.messages.push(card);
       this.scroll();
@@ -221,7 +260,9 @@ document.addEventListener("alpine:init", () => {
     openCitation(c) { Banko.emit("banko:open-transaction", { id: c.expense_id }); },
 
     async startPage(threadId) {
-      if (threadId) await this.loadThread(threadId);
+      if (!threadId) return;
+      this.threadId = threadId;
+      await this.loadThread(threadId);
     },
 
     onKey(e) {
@@ -229,5 +270,6 @@ document.addEventListener("alpine:init", () => {
       else if (e.key === "Escape") this.hide();
     },
     scroll() { this.$nextTick(() => { const box = this.$refs.chat; if (box) box.scrollTop = box.scrollHeight; }); },
-  }));
+  };
+  });
 });
