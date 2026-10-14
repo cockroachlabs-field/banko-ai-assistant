@@ -9,7 +9,7 @@
   <div x-show="seeding" x-cloak class="b-card b-empty">
     <strong>Setting up your accounts</strong>
     <span x-text="seedingText()"></span>
-    <div class="b-bar" style="width:min(360px,80%)"><span :style="'width:' + seedingPct() + '%'"></span></div>
+    <div class="b-bar busy" style="width:min(360px,80%)"><span :style="'width:' + seedingPct() + '%'"></span></div>
   </div>
 
   <div x-show="failed" x-cloak class="b-card b-empty" role="status">

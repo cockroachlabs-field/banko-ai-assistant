@@ -52,7 +52,12 @@
     <div class="b-card b-empty" style="margin-bottom:14px" x-show="$store.seed.state === 'running'" x-cloak role="status">
       <strong>Setting up your accounts</strong>
       <span x-text="$store.seed.text()"></span>
-      <div class="b-bar" style="width:min(360px,80%)"><span :style="'width:' + $store.seed.pct() + '%'"></span></div>
+      <div class="b-bar busy" style="width:min(360px,80%)"><span :style="'width:' + $store.seed.pct() + '%'"></span></div>
+    </div>
+    <div class="b-card b-empty" style="margin-bottom:14px" x-show="$store.seed.ready" x-cloak role="status">
+      <strong>Your accounts are ready</strong>
+      <span>Refresh to see your history on this page.</span>
+      <button class="b-btn primary" type="button" @click="refresh()">Refresh</button>
     </div>
     <div class="b-card b-empty" style="margin-bottom:14px" x-show="$store.seed.state === 'failed'" x-cloak role="status">
       {{ setup_failed(shell) }}

@@ -627,7 +627,7 @@ def _no_money_yet(page, seeding):
         "categories": [], "merchants": []}))
 
 
-def test_pages_wait_for_seeding_and_reload_when_it_finishes(server, browser):
+def test_pages_wait_for_seeding_and_offer_a_refresh_when_it_finishes(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
         _login(page, server, "maya")
@@ -636,16 +636,29 @@ def test_pages_wait_for_seeding_and_reload_when_it_finishes(server, browser):
             page.goto(server + path)
             page.wait_for_load_state("networkidle")
             expect(page.get_by_text("Setting up your accounts")).to_be_visible()
-            expect(page.get_by_text("Writing 1200 of 5000 ledger entries")).to_be_visible()
+            expect(page.get_by_text("Writing your history: 1200 of 5000 ledger entries")).to_be_visible()
+            expect(page.locator(".b-bar.busy")).to_be_visible()  # a batch is in flight: the bar moves
             expect(page.locator("section .b-grid")).to_be_hidden()  # no $0.00 dressed up as a figure
             expect(page.get_by_text("No accounts yet")).to_have_count(0 if path == "/cashflow" else 1)
             expect(page.get_by_text("No accounts yet")).to_be_hidden()
         page.unroute("**/api/v1/me")
         page.unroute("**/api/v1/cashflow*")
-        with page.expect_navigation():
-            page.evaluate("() => Banko.emit('banko:seeding', { user_id: Banko.shell.user.user_id, state: 'done', done: 5000, total: 5000 })")
-        page.wait_for_load_state("networkidle")
+        # Work in progress on the page, which a reload would throw away.
+        page.evaluate("() => Banko.emit('banko:ask', {})")
+        panel = page.locator(".b-panel")
+        panel.locator("textarea").fill("a question I was still typing")
+        page.evaluate("() => { window.__stayed = true; }")
+        page.evaluate("() => Banko.emit('banko:seeding', { user_id: Banko.shell.user.user_id, state: 'done', done: 5000, total: 5000 })")
+        expect(page.get_by_text("Your accounts are ready")).to_be_visible()
         expect(page.get_by_text("Setting up your accounts")).to_be_hidden()
+        page.wait_for_timeout(500)
+        assert page.evaluate("() => window.__stayed") is True
+        expect(panel.locator("textarea")).to_have_value("a question I was still typing")
+        page.keyboard.press("Escape")
+        with page.expect_navigation():
+            page.get_by_role("button", name="Refresh").click()
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("Your accounts are ready")).to_be_hidden()
         expect(page.locator("section .b-grid")).to_be_visible()
         assert not errors, errors
     finally:

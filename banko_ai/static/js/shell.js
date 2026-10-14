@@ -16,11 +16,12 @@ document.addEventListener("alpine:init", () => {
 
   // Whether this user's demo data is still being written. The shell shows a
   // banner from it on every page but the dashboard, which has its own card.
+  // ready: it finished while this page was open, so the page offers a refresh.
   Alpine.store("seed", {
-    state: null, done: 0, total: 0,
+    state: null, done: 0, total: 0, ready: false,
     set(p) { this.state = p.state; this.done = p.done || 0; this.total = p.total || 0; },
-    pct() { return this.total ? Math.round((this.done / this.total) * 100) : 5; },
-    text() { return this.total ? "Writing " + this.done + " of " + this.total + " ledger entries" : "Starting"; },
+    pct() { return this.total ? Math.round((this.done / this.total) * 100) : 0; },
+    text() { return this.total ? "Writing your history: " + this.done + " of " + this.total + " ledger entries" : "Getting your history ready"; },
   });
 
   const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -62,10 +63,14 @@ document.addEventListener("alpine:init", () => {
         const was = seed.state;
         seed.set(p);
         // This page read its figures while the history was being written.
-        if (p.state === "done" && was === "running") window.location.reload();
+        // Offer a refresh rather than reloading under an answer, an upload
+        // or an open dialog.
+        if (p.state === "done" && was === "running") seed.ready = true;
       });
       Banko.api("/api/v1/me").then((me) => { if (!heard && me && me.seeding) seed.set(me.seeding); }).catch(() => {});
     },
+
+    refresh() { window.location.reload(); },
 
     applyTheme() {
       const dark = this.theme === "dark" || (this.theme === "system" && darkQuery.matches);

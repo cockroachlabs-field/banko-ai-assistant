@@ -50,7 +50,10 @@ document.addEventListener("alpine:init", () => {
     spendDelta() { return this.data ? Number(this.data.spending.this_total) - Number(this.data.spending.last_same_day) : 0; },
     monthName() { return new Date().toLocaleDateString("en-US", { month: "long" }); },
     dateBadge(day) { return Banko.fmt.date(day, { month: "short" }) + "<br>" + Banko.fmt.date(day, { day: "numeric" }); },
-    seedingPct() { const p = this.seeding || {}; return p.total ? Math.round((p.done / p.total) * 100) : 5; },
-    seedingText() { const p = this.seeding || {}; return p.total ? "Writing " + p.done + " of " + p.total + " ledger entries" : "Starting"; },
+    seedingPct() { const p = this.seeding || {}; return p.total ? Math.round((p.done / p.total) * 100) : 0; },
+    seedingText() {
+      const p = this.seeding || {};
+      return p.total ? "Writing your history: " + p.done + " of " + p.total + " ledger entries" : "Getting your history ready";
+    },
   }));
 });
