@@ -29,8 +29,9 @@
       <template x-if="m.role === 'bot'">
         <div class="b-msg-bot">
           <div class="b-steps" x-show="m.steps.length">
-            <template x-for="(s, i) in m.steps" :key="i"><span class="b-step" :class="stepClass(s)"><b x-text="s.label"></b><span x-text="s.ms ? Math.round(s.ms) + ' ms' : ''"></span></span></template>
+            <template x-for="s in m.steps" :key="s.uid"><span class="b-step" :class="stepClass(s)"><b x-text="s.label"></b><span x-show="stepNote(s)" x-text="stepNote(s)"></span></span></template>
           </div>
+          <div class="b-think" x-show="working(m)" role="status"><span class="b-dots" aria-hidden="true"><i></i><i></i><i></i></span><span x-text="statusLine(m)"></span></div>
           <div class="b-ans" x-show="m.answer || m.error || m.stopped">
             <div x-html="render(m.answer)"></div>
             <div class="b-tag bad" x-show="m.error" x-text="m.error"></div>
@@ -50,19 +51,22 @@
               </div>
             </template>
           </div>
-          <div class="b-skel" x-show="!m.done && !m.answer && !m.error && !m.stopped" style="height:38px;width:60%"></div>
-          <div class="b-meta" x-show="m.done || m.answer || m.error">
-            <span x-show="m.ms" x-text="(m.ms / 1000).toFixed(1) + ' s' + (m.steps.length ? ' · ' + m.steps.length + ' steps' : '') + (m.cached ? ' · cached' : '')"></span>
+          <div class="b-skel" x-show="working(m) && !m.answer" style="height:38px;width:60%"></div>
+          <div class="b-meta" x-show="(m.answered || m.error || m.stopped) && !m.unsent">
+            <span x-show="metaLine(m)" x-text="metaLine(m)"></span>
             <span x-show="m.meta.region" x-text="'served from ' + m.meta.region + (m.meta.db_ms ? ' · ' + m.meta.db_ms + ' ms in the database' : '')"></span>
-            <button type="button" class="link" @click="toggleTrace(m)">How this was answered</button>
+            <button type="button" class="link" x-show="hasTrace(m)" @click="toggleTrace(m)">How this was answered</button>
             <button type="button" @click="copy(m.answer)">{{ icon('copy') }}copy</button>
             <button type="button" x-show="canSpeak" @click="speak(m.answer)">{{ icon('volume-2') }}read aloud</button>
+          </div>
+          <div class="b-explain" x-show="m.answered && m.meta.explain">
+            <div class="b-lbl">How CockroachDB ran it<span x-show="m.meta.explain_cut"> · plan shortened</span></div>
+            <pre class="b-plan" x-text="m.meta.explain"></pre>
           </div>
           <div class="b-trace" style="border:1px solid var(--bd);border-radius:12px" x-show="m.showTrace && mode === 'panel'">
             <div class="b-tl">
               <template x-for="(s, i) in traceSteps(m)" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="Banko.traceLine(s)"></span></div></template>
             </div>
-            <div class="b-kv" x-show="m.meta.explain" x-text="m.meta.explain"></div>
           </div>
         </div>
       </template>
@@ -81,7 +85,7 @@
       <template x-for="l in languages" :key="l.code"><option :value="l.code" x-text="l.name"></option></template>
     </select>
     <span class="sp"></span>
-    <button class="b-iconbtn" type="button" x-show="streaming" @click="stop()" title="Stop" aria-label="Stop">{{ icon('square') }}</button>
-    <button class="b-btn primary sm" type="button" x-show="!streaming" @click="send()" :disabled="!draft.trim()" aria-label="Send">{{ icon('send') }}</button>
+    <button class="b-iconbtn" type="button" x-show="answering()" @click="stop()" title="Stop" aria-label="Stop">{{ icon('square') }}</button>
+    <button class="b-btn primary sm" type="button" x-show="!answering()" @click="send()" :disabled="!draft.trim() || streaming" aria-label="Send">{{ icon('send') }}</button>
   </div>
 </div>

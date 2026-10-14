@@ -27,11 +27,29 @@ document.addEventListener("alpine:init", () => {
     window.DOMPurify.sanitize(window.marked.parse(Banko.stripCitations(text), { breaks: true }), PURIFY);
   // One trace row's detail and timing, with a separator only when both exist.
   Banko.traceLine = (s) => [s.detail, s.ms ? Math.round(s.ms) + " ms" : ""].filter(Boolean).join(" · ");
+  const duration = (ms) => (!ms ? "" : ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms) + " ms");
+  const count = (n) => Number(n || 0).toLocaleString("en-US");
   const RECEIPT_TYPES = /^(image\/|application\/pdf$)/;
   const STEP_LABELS = { ocr: "OCR", extract: "Extract", category: "Category", duplicate: "Dup check", post: "Posted", fraud: "Fraud", budget: "Budget" };
   // The panel remembers its thread per user, so after "Switch user" another
   // persona's thread never loads.
   const threadKey = () => "banko.thread:" + Banko.shell.user.user_id;
+  const newBot = () => Alpine.reactive({ id: ++seq, role: "bot", steps: [], answer: "", citations: [], proposals: [], meta: {},
+                                         route: "", cached: false, error: "", stopped: false, ms: 0, showTrace: false,
+                                         answered: false, done: false, unsent: false });
+  // A saved message as the chat shows it. An answer this server sent keeps
+  // its meta (trace, plan, tokens) until the server restarts.
+  const fromServer = (m) => m.role === "user"
+    ? { id: ++seq, role: "user", text: m.content }
+    : { ...newBot(), answer: m.content, meta: m.meta || {}, cached: !!(m.meta && m.meta.cached), answered: true, done: true };
+  // A history read after the new turn landed already ends with it: keep the
+  // exchange on screen and drop its copy from the history.
+  function before(history, added) {
+    const asked = added.find((m) => m.role === "user");
+    const n = history.length;
+    const last = n && history[n - 1].role === "user" ? n - 1 : n > 1 && history[n - 2].role === "user" ? n - 2 : -1;
+    return asked && last >= 0 && history[last].text === asked.text ? history.slice(0, last) : history;
+  }
 
   Alpine.data("assistant", (mode) => {
   // A thread switch in flight: a history load or a new thread. Anything that
@@ -43,11 +61,16 @@ document.addEventListener("alpine:init", () => {
     pending = p;
     return p;
   };
+  // A new conversation on its way: the thread the next question goes to.
+  let creating = null;
+  // Bumps whenever the conversation on screen is replaced, so a history that
+  // was asked for before never lands in the new one.
+  let epoch = 0;
   // Threads whose title was read back after an answer in this page.
   const titled = new Set();
   return {
     mode, open: mode === "page", threadId: null, threadTitle: "", messages: [], draft: "",
-    streaming: false, controller: null,
+    streaming: false, controller: null, current: null,
     language: localStorage.getItem("banko.language") || (Banko.shell.languages[0] || { code: "en-US" }).code,
     languages: Banko.shell.languages,
     voiceSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
@@ -124,13 +147,13 @@ document.addEventListener("alpine:init", () => {
     },
     hide() { if (this.mode === "panel") this.open = false; },
 
-    async ask({ text, context, fresh }) {
-      await this.show();
-      if (fresh || context) {
-        try { await this.newThread(context || null); }
-        catch (e) { if (text && !this.draft) this.draft = text; this.notify(e); return; }
-      }
-      if (text) await this.send(text);
+    // A palette ask, "Ask Banko about this" or New conversation. Nothing here
+    // waits before the question is on screen: send shows it at once.
+    ask({ text, context, fresh }) {
+      this.show();
+      const thread = fresh || context ? this.newThread(context || null) : null;
+      if (text) return this.send(text, thread);
+      return thread ? thread.then(() => {}, (e) => this.notify(e)) : Promise.resolve();
     },
 
     notify(e) { Alpine.store("toasts").push({ title: "Assistant", text: Banko.explain(e), kind: "error" }); },
@@ -146,32 +169,45 @@ document.addEventListener("alpine:init", () => {
       if (this.mode === "panel") localStorage.removeItem(threadKey());
     },
 
-    newThread(context) {
-      const before = this.settled();
-      return track((async () => {
-        await before;
-        const body = context ? { context } : {};
-        const thread = await Banko.api("/api/v1/assistant/threads", { method: "POST", body });
-        this.messages = [];
-        this.remember(thread.thread_id, thread.title);
-        return thread.thread_id;
+    // A thread for a new conversation. A fresh or context thread (replace)
+    // takes the conversation off the screen at once; the thread a first
+    // question needs keeps that question on screen. If it can't be made, the
+    // conversation that was there comes back.
+    newThread(context, { replace = true } = {}) {
+      const shown = { messages: this.messages, title: this.threadTitle };
+      if (replace) { epoch++; this.messages = []; this.threadTitle = ""; }
+      const mine = epoch;
+      const made = track((async () => {
+        try {
+          const body = context ? { context } : {};
+          const thread = await Banko.api("/api/v1/assistant/threads", { method: "POST", body });
+          if (mine === epoch) this.remember(thread.thread_id, thread.title);
+          return thread.thread_id;
+        } catch (e) {
+          if (replace && mine === epoch) { this.messages = shown.messages.concat(this.messages); this.threadTitle = shown.title; }
+          throw e;
+        }
       })());
+      creating = made;
+      made.then(() => {}, () => {}).then(() => { if (creating === made) creating = null; });
+      return made;
     },
 
     loadThread(id) {
-      const before = this.messages.length;
+      const mine = epoch;
+      const at = this.messages.length;
       return track((async () => {
         try {
           const t = await Banko.api("/api/v1/assistant/threads/" + id);
-          // The user moved on while it loaded: another thread, or a message already on screen.
-          if (this.threadId !== id || this.messages.length !== before) return;
+          // The user moved on while it loaded: another thread or a new conversation.
+          if (mine !== epoch || this.threadId !== id) return;
           this.remember(t.thread_id, t.title);
-          this.messages = (t.messages || []).map((m) => m.role === "user"
-            ? { id: ++seq, role: "user", text: m.content }
-            : { id: ++seq, role: "bot", answer: m.content, steps: [], citations: [], proposals: [], meta: {}, showTrace: false, done: true });
+          // What they did meanwhile (a question, a receipt) stays, below its history.
+          const added = this.messages.slice(at);
+          this.messages = before((t.messages || []).map(fromServer), added).concat(added);
           this.scroll();
         } catch (e) {
-          if (this.threadId !== id) return;
+          if (mine !== epoch || this.threadId !== id) return;
           // Gone (deleted, or not this user's): start fresh. A blip keeps
           // the thread, so the next question still continues it.
           if (e instanceof Banko.ApiError && e.status === 404) this.forget();
@@ -180,48 +216,72 @@ document.addEventListener("alpine:init", () => {
       })());
     },
 
-    async ensureThread() { return this.threadId || (await this.newThread(null)); },
+    // The thread a question goes to: a new conversation on its way decides
+    // it (and if that fails, the question fails with it); otherwise the
+    // thread on screen once its history is in, or a new one.
+    async threadFor(thread) {
+      const making = thread || creating;
+      if (making) return making;
+      await this.settled();
+      return this.threadId || this.newThread(null, { replace: false });
+    },
 
-    async send(text) {
+    async send(text, thread) {
       text = (text || this.draft).trim();
       if (!text || this.streaming) return;
+      // Busy before anything is awaited, so a second send is ignored.
+      this.streaming = true;
       this.draft = "";
-      await this.settled();
+      this.messages = this.messages.filter((m) => !m.unsent);
+      const lang = this.languages.find((l) => l.code === this.language);
+      const user = { id: ++seq, role: "user", text, lang: lang ? lang.name : "" };
+      const bot = newBot();
+      this.messages.push(user, bot);
+      this.current = bot;
+      this.scroll();
+      const t0 = performance.now();
       let tid;
-      try { tid = await this.ensureThread(); }
+      try { tid = await this.threadFor(thread); }
       catch (e) {
-        // Keep what they typed, so trying again is one click.
+        // It never left: the question goes back to the composer, so trying
+        // again is one click, and the bubble says why.
+        this.messages = this.messages.filter((m) => m.id !== user.id);
+        bot.error = Banko.explain(e); bot.unsent = true;
         if (!this.draft) this.draft = text;
         this.notify(e);
+        this.streaming = false; this.current = null;
         return;
       }
-      const lang = this.languages.find((l) => l.code === this.language);
-      this.messages.push({ id: ++seq, role: "user", text, lang: lang ? lang.name : "" });
-      const bot = Alpine.reactive({ id: ++seq, role: "bot", steps: [], answer: "", citations: [], proposals: [], meta: {},
-                                    route: "", cached: false, error: "", stopped: false, ms: 0, showTrace: false, done: false });
-      this.messages.push(bot);
-      this.scroll();
-      this.streaming = true;
       this.controller = new AbortController();
-      const t0 = performance.now();
       try {
         await Banko.stream("/api/v1/assistant/threads/" + tid + "/messages", {
           body: { message: text, language: this.language }, signal: this.controller.signal,
-          onEvent: (event, data) => this.onAnswerEvent(bot, event, data),
+          onEvent: (event, data) => this.onAnswerEvent(bot, event, data, t0, tid),
         });
       } catch (e) {
-        if (e.name === "AbortError") bot.stopped = true;
-        else bot.error = Banko.explain(e);
+        if (e.name === "AbortError") { if (!bot.answered) bot.stopped = true; }
+        else if (!bot.answered) bot.error = Banko.explain(e);
       } finally {
-        bot.ms = Math.round(performance.now() - t0);
-        // A stream that ended with no answer and no error still failed.
-        if (!bot.answer && !bot.error && !bot.stopped) bot.error = Banko.FALLBACK;
+        this.finish(bot, t0, tid);
+        // The answer may be out already; the thread was being put away until now.
         bot.done = true;
-        this.streaming = false; this.controller = null;
-        this.scroll();
-        Banko.emit("banko:answered", { thread: tid, bot });
+        this.streaming = false; this.controller = null; this.current = null;
+        Banko.emit("banko:turn-end", { thread: tid });
         if (!bot.error && !bot.stopped && !titled.has(tid)) { titled.add(tid); this.refreshTitle(tid); }
       }
+    },
+
+    // The bubble as answered: meta line, trace and plan show. Once per bubble,
+    // at the answer event, or when the stream ends without one.
+    finish(bot, t0, tid) {
+      if (bot.answered) return;
+      bot.ms = Math.round(performance.now() - t0);
+      bot.steps = bot.steps.filter((s) => s.status !== "running");
+      // A turn that ended with no answer and no error still failed.
+      if (!bot.answer && !bot.error && !bot.stopped) bot.error = Banko.FALLBACK;
+      bot.answered = true;
+      this.scroll();
+      Banko.emit("banko:answered", { thread: tid, bot });
     },
 
     // The server titles a thread from its first question, so read the
@@ -233,8 +293,8 @@ document.addEventListener("alpine:init", () => {
       } catch (e) { /* the title is only a label */ }
     },
 
-    onAnswerEvent(bot, event, data) {
-      if (event === "step") bot.steps.push(data);
+    onAnswerEvent(bot, event, data, t0, tid) {
+      if (event === "step") this.onStep(bot, data);
       else if (event === "token") { bot.answer += data.text; this.scroll(); }
       else if (event === "citation") { if (!bot.citations.some((c) => c.expense_id === data.expense_id)) bot.citations.push(data); }
       else if (event === "proposal") bot.proposals.push({ ...data });
@@ -242,11 +302,47 @@ document.addEventListener("alpine:init", () => {
         bot.answer = data.answer || bot.answer;
         bot.citations = data.citations && data.citations.length ? data.citations : bot.citations;
         bot.meta = data.meta || {}; bot.route = data.route || ""; bot.cached = !!data.cached;
+        this.finish(bot, t0, tid);
       } else if (event === "error") {
         bot.error = data.message || Banko.FALLBACK;
         if (data.trace) bot.meta = { ...bot.meta, trace: data.trace };
       }
     },
+
+    // A running step is a chip with a spinner and the status line; the step
+    // that finishes it (same key) takes its place.
+    onStep(bot, s) {
+      const step = { ...s, uid: ++seq };
+      const at = s.key && s.status !== "running" ? bot.steps.findIndex((x) => x.key === s.key && x.status === "running") : -1;
+      if (at >= 0) bot.steps.splice(at, 1, step);
+      else bot.steps.push(step);
+    },
+
+    working(m) { return !m.answered && !m.error && !m.stopped; },
+    statusLine(m) {
+      const running = m.steps.filter((s) => s.status === "running");
+      return (running.length ? running[running.length - 1].label : m.answer ? "Writing the answer" : "Thinking") + "…";
+    },
+    stepNote(s) {
+      if (s.status === "running") return "";
+      return [s.status === "hit" || s.status === "miss" ? s.status : "", duration(s.ms)].filter(Boolean).join(" · ");
+    },
+    // "18.2 s · 3 model calls · 2,950 tokens", or "1.2 s · cached · about 350 tokens saved".
+    metaLine(m) {
+      const meta = m.meta || {};
+      const t = meta.tokens || {};
+      const ms = m.ms || meta.answer_ms || 0;
+      const calls = meta.model_calls || 0;
+      const spent = (t.input || 0) + (t.output || 0);
+      return [ms ? (ms / 1000).toFixed(1) + " s" : "",
+              m.cached || meta.cached ? "cached" : "",
+              calls ? calls + " model call" + (calls === 1 ? "" : "s") : "",
+              spent ? (t.estimated ? "about " : "") + count(spent) + " tokens" : "",
+              t.saved ? "about " + count(t.saved) + " tokens saved" : ""].filter(Boolean).join(" · ");
+    },
+    hasTrace(m) { return !!((m.meta && m.meta.trace && m.meta.trace.length) || m.steps.some((s) => s.status !== "running")); },
+    // The Stop button, until the answer is out (the rest is bookkeeping).
+    answering() { return this.streaming && !!this.current && !this.current.answered; },
 
     stop() { if (this.controller) this.controller.abort(); },
 
@@ -300,7 +396,9 @@ document.addEventListener("alpine:init", () => {
     },
     toggleTrace(m) { m.showTrace = !m.showTrace; Banko.emit("banko:trace", { message: m }); },
     traceSteps(m) { return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps; },
-    stepClass(s) { return s.status === "warning" || s.status === "error" ? "warn" : "ok"; },
+    stepClass(s) {
+      return { running: "run", warning: "warn", error: "warn", hit: "hit", miss: "miss" }[s.status] || "ok";
+    },
     openCitation(c) { Banko.emit("banko:open-transaction", { id: c.expense_id }); },
 
     async startPage(threadId) {

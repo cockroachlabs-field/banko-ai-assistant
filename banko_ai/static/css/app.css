@@ -254,8 +254,23 @@ button { font: inherit; color: inherit; }
 .b-steps { display: flex; flex-wrap: wrap; gap: 6px; }
 .b-step { font-size: 11px; color: var(--mu); background: var(--chip); border-radius: 8px; padding: 3px 8px; display: inline-flex; gap: 5px; align-items: center; }
 .b-step b { color: var(--tx); font-weight: 600; }
-.b-step.ok::before { content: "✓"; color: var(--pos); font-weight: 700; }
+.b-step.ok::before, .b-step.hit::before { content: "✓"; color: var(--pos); font-weight: 700; }
 .b-step.warn::before { content: "!"; color: var(--warn); font-weight: 700; }
+.b-step.miss::before { content: "○"; color: var(--mu); }
+.b-step.run::before { content: ""; width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--bd);
+  border-top-color: var(--ac); animation: b-spin .8s linear infinite; }
+@keyframes b-spin { to { transform: rotate(360deg); } }
+.b-think { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--mu); }
+.b-dots { display: inline-flex; gap: 3px; }
+.b-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--ac); opacity: .3; animation: b-dot 1.2s ease-in-out infinite; }
+.b-dots i:nth-child(2) { animation-delay: .15s; }
+.b-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes b-dot { 0%, 80%, 100% { opacity: .3; transform: none; } 40% { opacity: 1; transform: translateY(-3px); } }
+.b-explain { display: flex; flex-direction: column; gap: 4px; }
+.b-explain .b-lbl { font-size: 11px; color: var(--mu); }
+.b-plan { margin: 0; font-family: ui-monospace, Menlo, monospace; font-size: 11px; line-height: 1.45; color: var(--mu);
+  background: var(--side); border: 1px solid var(--bd); border-radius: 10px; padding: 8px 10px;
+  white-space: pre; overflow: auto; max-height: 260px; }
 .b-ans { background: var(--card); border: 1px solid var(--bd); border-radius: 4px 16px 16px 16px; padding: 10px 12px; overflow-wrap: anywhere; }
 .b-ans p { margin: 0 0 8px; } .b-ans p:last-child { margin-bottom: 0; }
 .b-ans table { border-collapse: collapse; font-size: 12px; margin: 6px 0; }

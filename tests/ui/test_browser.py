@@ -58,6 +58,27 @@ TRACED = _sse(("step", {"label": "Intent routing", "ms": 3, "status": "success"}
                                "status": "success", "kind": "sql"}]}}),
               ("done", {}))
 TITLED = "How much did I spend on dining?"
+PLAN = ("planning time: 3ms\nexecution time: 76ms\n\n• group (scalar)\n│ regions: us-east-1\n│\n└── • scan\n"
+        "      table: expenses@idx_expenses_user_date\n      spans: [/'a1' - /'a1']")
+SPENT = {"input": 2600, "output": 350, "estimated": False, "saved": 0}
+PLAN_TRACE = [{"label": "Aggregation SQL", "detail": "$42.10 across 3 transactions", "ms": 23.6, "status": "success",
+               "kind": "assistant"},
+              {"label": "Model", "detail": "Ollama · granite3.3:8b, 3 calls, 2,950 tokens (2,600 in, 350 out)",
+               "ms": 6339.4, "status": "success", "kind": "llm"},
+              {"label": "Time to answer", "detail": "", "ms": 18200.0, "status": "info", "kind": "total"}]
+PLANNED = _sse(("token", {"text": "You spent $42.10 on dining."}),
+               ("answer", {"answer": "You spent $42.10 on dining.", "citations": [], "proposals": [], "cached": False,
+                           "route": "aggregate", "meta": {"trace": PLAN_TRACE, "explain": PLAN, "explain_cut": True,
+                                                          "tokens": SPENT, "model_calls": 3, "answer_ms": 18200,
+                                                          "region": "us-east-1", "db_ms": 23}}),
+               ("done", {}))
+CACHED = _sse(("token", {"text": "You spent $42.10 on dining."}),
+              ("answer", {"answer": "You spent $42.10 on dining.", "citations": [], "proposals": [], "cached": True,
+                          "route": "plan", "meta": {"trace": [{"label": "Answer cache", "detail": "hit, about 350 tokens saved",
+                                                                "ms": 812.0, "status": "hit", "kind": "assistant"}],
+                                                     "tokens": {"input": 0, "output": 0, "estimated": False, "saved": 350},
+                                                     "model_calls": 0, "answer_ms": 1200, "cached": True}}),
+              ("done", {}))
 RECEIPT = _sse(("step", {"step": "ocr", "status": "done", "detail": "120 characters", "ms": 400}),
                ("receipt", {"document_id": "66666666-6666-4666-8666-666666666666", "status": "posted",
                             "merchant": "Blue Bottle", "amount": 9.75, "category": "Coffee", "thread_id": OLD_THREAD}),
@@ -231,10 +252,12 @@ def test_expired_session_goes_to_login(server, browser):
 class _PanelApi:
     """The assistant API the panel talks to, mocked. The history of the
     remembered thread is held until release(), so a test can let the user
-    act first, which is what a slow checkpoint read looks like."""
+    act first, which is what a slow checkpoint read looks like. With
+    hold_threads, creating a thread is held too, until release_threads()."""
 
-    def __init__(self, page, answer=ANSWER):
-        self.held, self.fetched, self.answer = [], [], answer
+    def __init__(self, page, answer=ANSWER, history=HISTORY, hold_threads=False):
+        self.held, self.fetched, self.answer, self.history = [], [], answer, history
+        self.hold_threads, self.creating, self.asked = hold_threads, [], []
         page.route("**/api/v1/assistant/**", self._assistant)
         page.route("**/api/v1/receipts", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=RECEIPT))
         page.route("**/api/v1/receipts/*/thumbnail", lambda r: r.fulfill(status=200, content_type="image/gif", body=PIXEL))
@@ -250,8 +273,12 @@ class _PanelApi:
                 return None
             return route.fulfill(status=404, json={"error": "not_found"})
         if req.method == "POST" and path.endswith("/messages"):
+            self.asked.append(req.post_data_json["message"])
             return route.fulfill(status=200, content_type="text/event-stream", body=self.answer)
         if req.method == "POST" and path == "/api/v1/assistant/threads":
+            if self.hold_threads:
+                self.creating.append(route)
+                return None
             return route.fulfill(status=201, json={"thread_id": NEW_THREAD, "title": "New chat", "message_count": 0})
         if req.method == "GET" and path == "/api/v1/assistant/threads":
             # The server titles a thread from its first question.
@@ -262,7 +289,12 @@ class _PanelApi:
 
     def release(self):
         while self.held:
-            self.held.pop(0).fulfill(status=200, json=HISTORY)
+            self.held.pop(0).fulfill(status=200, json=self.history)
+
+    def release_threads(self):
+        while self.creating:
+            self.creating.pop(0).fulfill(status=201, json={"thread_id": NEW_THREAD, "title": "New chat",
+                                                           "message_count": 0})
 
 
 def _remember_a_thread(page, base, persona) -> str:
@@ -405,6 +437,263 @@ def test_a_failed_thread_keeps_the_question_and_an_empty_answer_stops_loading(se
         expect(bot).to_contain_text(page.evaluate("() => Banko.FALLBACK"))
         # The browser logs the 500 this test returns; nothing else may show up.
         assert errors == ["Failed to load resource: the server responded with a status of 500 (Internal Server Error)"], errors
+    finally:
+        ctx.close()
+
+
+def _open_panel(page):
+    page.evaluate("() => Banko.emit('banko:ask', {})")
+    panel = page.locator(".b-panel")
+    expect(panel).to_be_visible()
+    return panel
+
+
+def _hold_the_stream(page):
+    """The answer stream held open, so the test sends its events one at a
+    time (page.route can only fulfill a whole body at once). Returns
+    push(event, data) and close()."""
+    page.evaluate("""() => {
+        const real = window.fetch;
+        window.__sse = null;
+        window.fetch = (url, opts) => {
+            if (!String(url).endsWith('/messages')) return real(url, opts);
+            const body = new ReadableStream({ start(c) { window.__sse = c; } });
+            return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }));
+        };
+    }""")
+
+    def push(name, data):
+        page.wait_for_function("() => window.__sse !== null")
+        page.evaluate("""([n, d]) => window.__sse.enqueue(
+            new TextEncoder().encode('event: ' + n + '\\ndata: ' + JSON.stringify(d) + '\\n\\n'))""", [name, data])
+
+    return push, lambda: page.evaluate("() => window.__sse.close()")
+
+
+def test_the_question_and_a_thinking_bubble_show_before_any_answer(server, browser):
+    """Send shows the question and a thinking bubble at once, before the
+    thread exists or a remembered thread's history has loaded."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page, hold_threads=True)
+        _login(page, server, "sam")
+        panel = _open_panel(page)
+        panel.locator("textarea").fill("where did I spend the most last week?")
+        page.keyboard.press("Enter")
+        expect(panel.locator(".b-msg-user > span")).to_have_text("where did I spend the most last week?")
+        expect(panel.locator(".b-msg-bot .b-think")).to_have_text("Thinking…")
+        assert api.creating and api.asked == []  # the thread is still being made; nothing went out yet
+        api.release_threads()
+        expect(panel.locator(".b-chat")).to_contain_text("You spent $42.10 on dining.")
+        expect(panel.locator(".b-msg-bot .b-think")).to_be_hidden()
+
+        _remember_a_thread(page, server, "sam")
+        page.keyboard.press("Control+k")
+        page.locator(".b-palette input").fill("and the week before?")
+        page.keyboard.press("Enter")
+        expect(panel.locator(".b-msg-user > span")).to_have_text("and the week before?")
+        expect(panel.locator(".b-msg-bot .b-think")).to_be_visible()
+        assert api.held and api.asked == ["where did I spend the most last week?"]
+        api.release()
+        expect(panel.locator(".b-msg-bot").last).to_contain_text("You spent $42.10 on dining.")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_history_that_arrives_late_sits_above_the_new_exchange_once(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        q = "how much did I spend on dining?"
+        # Read after the new turn landed, the history already holds it.
+        late = {**HISTORY, "messages": HISTORY["messages"] + [
+            {"role": "user", "content": q}, {"role": "assistant", "content": "You spent $42.10 on dining."}]}
+        api = _PanelApi(page, history=late)
+        _remember_a_thread(page, server, "sam")
+        page.keyboard.press("Control+k")
+        page.locator(".b-palette input").fill(q)
+        page.keyboard.press("Enter")
+        panel = page.locator(".b-panel")
+        expect(panel.locator(".b-msg-user > span")).to_have_text([q])
+        api.release()
+        expect(panel.locator(".b-msg-user > span")).to_have_text(["What did I spend on coffee?", q])
+        expect(panel.locator(".b-msg-bot").last).to_contain_text("You spent $42.10 on dining.")
+        page.wait_for_timeout(300)
+        expect(panel.locator(".b-msg-user > span")).to_have_text(["What did I spend on coffee?", q])
+        expect(panel.locator(".b-msg-bot")).to_have_count(2)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_second_send_while_one_is_streaming_is_ignored(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page, hold_threads=True)
+        _login(page, server, "sam")
+        panel = _open_panel(page)
+        box = panel.locator("textarea")
+        box.fill("first question")
+        page.keyboard.press("Enter")
+        box.fill("second question")
+        page.keyboard.press("Enter")
+        api.release_threads()
+        expect(panel.locator(".b-chat")).to_contain_text("You spent $42.10 on dining.")
+        page.wait_for_timeout(300)
+        expect(panel.locator(".b-msg-user > span")).to_have_text(["first question"])
+        expect(box).to_have_value("second question")
+        assert api.asked == ["first question"]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_running_step_shows_its_status_line_then_becomes_a_chip(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page)
+        _login(page, server, "sam")
+        push, close = _hold_the_stream(page)
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "show me my coffee purchases this month")
+        bot = page.locator(".b-panel .b-msg-bot")
+        push("step", {"key": "planner:1", "label": "Planning the steps", "detail": "", "ms": None, "status": "running"})
+        expect(bot.locator(".b-think")).to_have_text("Planning the steps…")
+        expect(bot.locator(".b-step.run")).to_have_text("Planning the steps")
+        push("step", {"key": "planner:1", "label": "Planner", "detail": "search_transactions", "ms": 15012.4,
+                      "status": "success"})
+        expect(bot.locator(".b-step.run")).to_have_count(0)
+        expect(bot.locator(".b-step")).to_have_text(["Planner15.0 s"])
+        expect(bot.locator(".b-think")).to_have_text("Thinking…")
+        push("step", {"key": "answer", "label": "Writing the answer", "detail": "", "ms": None, "status": "running"})
+        push("token", {"text": "You bought coffee 9 times."})
+        expect(bot.locator(".b-think")).to_have_text("Writing the answer…")
+        push("step", {"key": "answer", "label": "LLM answer", "detail": "streamed", "ms": 640, "status": "success"})
+        expect(bot.locator(".b-step")).to_have_text(["Planner15.0 s", "LLM answer640 ms"])
+        push("answer", {"answer": "You bought coffee 9 times.", "citations": [], "proposals": [], "cached": False,
+                        "route": "plan", "meta": {"trace": PLAN_TRACE, "tokens": SPENT, "model_calls": 3}})
+        push("done", {})
+        close()
+        expect(bot.locator(".b-think")).to_be_hidden()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_answer_shows_its_meta_and_plan_while_the_stream_stays_open(server, browser):
+    """The answer event marks the bubble answered at once; the stream stays
+    open while the turn is put away, and no new turn starts until done."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page)
+        _login(page, server, "sam")
+        push, close = _hold_the_stream(page)
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        panel = page.locator(".b-panel")
+        bot = panel.locator(".b-msg-bot")
+        push("token", {"text": "You spent $42.10 on dining."})
+        push("answer", {"answer": "You spent $42.10 on dining.", "citations": [], "proposals": [], "cached": False,
+                        "route": "aggregate", "meta": {"trace": PLAN_TRACE, "explain": PLAN, "tokens": SPENT,
+                                                       "model_calls": 3, "answer_ms": 18200, "region": "us-east-1",
+                                                       "db_ms": 23}})
+        expect(bot.locator(".b-meta")).to_contain_text("3 model calls · 2,950 tokens")
+        expect(bot.locator(".b-meta")).to_contain_text("served from us-east-1 · 23 ms in the database")
+        expect(bot.locator(".b-explain pre")).to_contain_text("table: expenses@idx_expenses_user_date")
+        expect(bot.locator(".b-think")).to_be_hidden()
+        panel.locator("textarea").fill("one more")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(300)
+        expect(panel.locator(".b-msg-user")).to_have_count(1)  # bookkeeping still running: it waits
+        push("done", {})
+        close()
+        expect(panel.get_by_role("button", name="Send")).to_be_enabled()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_plan_shows_under_every_answer_without_a_click(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=PLANNED)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        block = page.locator(".b-panel .b-msg-bot .b-explain")
+        expect(block).to_be_visible()
+        expect(block).to_contain_text("How CockroachDB ran it")
+        expect(block).to_contain_text("plan shortened")
+        expect(block.locator("pre")).to_contain_text("table: expenses@idx_expenses_user_date")
+        box = block.locator("pre").evaluate("(el) => { const s = getComputedStyle(el); return [s.overflowY, s.maxHeight, s.whiteSpace]; }")
+        assert box[0] == "auto" and box[1].endswith("px") and box[2] == "pre", box
+
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        page.locator(".b-comp textarea").fill(TITLED.lower())
+        page.keyboard.press("Enter")
+        on_page = page.locator(".b-assist-page .b-chat .b-explain")
+        expect(on_page).to_be_visible()
+        expect(on_page.locator("pre")).to_contain_text("regions: us-east-1")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_meta_line_says_what_was_spent_or_saved(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page, answer=PLANNED)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        bots = page.locator(".b-panel .b-msg-bot")
+        expect(bots.nth(0).locator(".b-meta")).to_contain_text("3 model calls · 2,950 tokens")
+        api.answer = CACHED
+        page.locator(".b-panel textarea").fill(TITLED)
+        page.keyboard.press("Enter")
+        expect(bots.nth(1).locator(".b-meta")).to_contain_text("cached · about 350 tokens saved")
+        expect(bots.nth(1).locator(".b-meta")).not_to_contain_text("model call")
+        expect(bots.nth(1).locator(".b-step")).to_have_count(0)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_reloaded_answer_keeps_its_trace_and_plan(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        user, bot_said = HISTORY["messages"]
+        kept = {**HISTORY, "messages": [user, {**bot_said, "meta": {"trace": PLAN_TRACE, "explain": PLAN,
+                                                                    "tokens": SPENT, "model_calls": 1,
+                                                                    "answer_ms": 4200, "region": "us-east-1",
+                                                                    "db_ms": 23}}]}
+        api = _PanelApi(page, history=kept)
+        _remember_a_thread(page, server, "sam")
+        _open_panel(page)
+        api.release()
+        bot = page.locator(".b-panel .b-msg-bot")
+        expect(bot).to_contain_text("You spent $12.40 on coffee.")
+        expect(bot.locator(".b-explain pre")).to_contain_text("table: expenses@idx_expenses_user_date")
+        expect(bot.locator(".b-meta")).to_contain_text("4.2 s · 1 model call · 2,950 tokens")
+        bot.get_by_role("button", name="How this was answered").click()
+        rows = bot.locator(".b-trace .b-tl > div")
+        expect(rows.filter(has_text="Aggregation SQL")).to_have_text("Aggregation SQL$42.10 across 3 transactions · 24 ms")
+        expect(rows.filter(has_text="Time to answer")).to_have_text("Time to answer18200 ms")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_an_answer_without_a_trace_offers_no_trace_button(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page)
+        _remember_a_thread(page, server, "sam")
+        _open_panel(page)
+        api.release()
+        bot = page.locator(".b-panel .b-msg-bot")
+        expect(bot).to_contain_text("You spent $12.40 on coffee.")
+        expect(bot.get_by_role("button", name="How this was answered")).to_have_count(0)
+        expect(bot.locator(".b-explain")).to_be_hidden()
+        expect(bot.get_by_role("button", name="copy")).to_be_visible()
+        assert not errors, errors
     finally:
         ctx.close()
 

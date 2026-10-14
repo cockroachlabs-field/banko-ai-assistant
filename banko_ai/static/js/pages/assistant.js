@@ -3,7 +3,8 @@ document.addEventListener("alpine:init", () => {
     threads: [], current: null, editing: null, name: "",
     async init() {
       window.addEventListener("banko:thread", (e) => { this.current = e.detail.id; this.load(); });
-      window.addEventListener("banko:answered", () => this.load());
+      // The server titles the thread after the answer goes out, so read the list when the turn ends.
+      window.addEventListener("banko:turn-end", () => this.load());
       await this.load();
     },
     async load() { try { this.threads = (await Banko.api("/api/v1/assistant/threads")).threads; } catch (e) { /* the list is optional */ } },
