@@ -204,7 +204,7 @@ _OP_PATTERNS = [
 
 _SUBJECT_RE = re.compile(
     r"\b(?:on|for|at)\s+([a-z][a-z '&-]{2,30}?)"
-    r"(?:\s+(?:in|during|over|the|this|last|past|since)\b|[?.!,]|$)")
+    r"(?:\s+(?:in|during|over|the|this|last|past|since|today|yesterday)\b|[?.!,]|$)")
 
 # "average grocery spend", "total restaurant expenses": subject sits between
 # the operation word and a spend noun, no preposition involved.
@@ -219,6 +219,15 @@ _WINDOW_PATTERNS = [
     (re.compile(r"this\s+month"), "this_month"),
     (re.compile(r"last\s+month"), "last_month"),
     (re.compile(r"this\s+year"), "this_year"),
+    (re.compile(r"\blast\s+year\b"), "last_year"),
+    # Calendar weeks start on Monday; "the past week" and "the past month"
+    # roll back from today, like "the past 7 days".
+    (re.compile(r"\bthis\s+week\b"), "this_week"),
+    (re.compile(r"\blast\s+week\b"), "last_week"),
+    (re.compile(r"\bpast\s+week\b"), "past_week"),
+    (re.compile(r"\bpast\s+month\b"), "past_month"),
+    (re.compile(r"\btoday\b"), "today"),
+    (re.compile(r"\byesterday\b"), "yesterday"),
     (re.compile(r"since\s+([a-z]+)"), "since_month"),
 ]
 
@@ -226,7 +235,7 @@ _WINDOW_PATTERNS = [
 # after the preposition, not a category, so the question covers everything.
 _NOT_A_SUBJECT = frozenset(
     "the this that last past next my a an each every per day days week weeks weekend month months quarter "
-    "year years time period today now all everything total average overall so far".split())
+    "year years time period today yesterday now all everything total average overall so far".split())
 
 _MONTHS = {m: i for i, m in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
@@ -259,6 +268,21 @@ def _resolve_window(q: str, today: date) -> tuple[date, date] | None:
             return last_start, first_this
         if kind == "this_year":
             return today.replace(month=1, day=1), end
+        if kind == "last_year":
+            return date(today.year - 1, 1, 1), date(today.year, 1, 1)
+        if kind == "this_week":
+            return today - timedelta(days=today.weekday()), end
+        if kind == "last_week":
+            monday = today - timedelta(days=today.weekday())
+            return monday - timedelta(weeks=1), monday
+        if kind == "past_week":
+            return end - timedelta(weeks=1, days=1), end
+        if kind == "past_month":
+            return end - timedelta(days=31), end
+        if kind == "today":
+            return today, end
+        if kind == "yesterday":
+            return today - timedelta(days=1), today
         if kind == "since_month":
             mon = _MONTHS.get(m.group(1))
             if mon:

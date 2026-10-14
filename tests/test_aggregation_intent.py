@@ -57,3 +57,31 @@ def test_non_aggregation_returns_none():
     assert classify_aggregation("show me my recent coffee purchases",
                                 today=TODAY) is None
     assert classify_aggregation("why did I get a nudge?", today=TODAY) is None
+
+
+def test_day_and_week_windows():
+    wednesday = date(2026, 10, 14)
+
+    def window(q):
+        intent = classify_aggregation(q, today=wednesday)
+        return intent.window_start, intent.window_end
+
+    assert window("how much did I spend today") == (date(2026, 10, 14), date(2026, 10, 15))
+    assert window("how much did I spend yesterday") == (date(2026, 10, 13), date(2026, 10, 14))
+    # Calendar weeks start on Monday; "the past week" is the last 7 days.
+    assert window("how much did I spend this week") == (date(2026, 10, 12), date(2026, 10, 15))
+    assert window("how much did I spend on groceries last week") == (date(2026, 10, 5), date(2026, 10, 12))
+    assert window("how much did I spend in the past week") == (date(2026, 10, 7), date(2026, 10, 15))
+    assert window("how much did I spend in the past month") == (date(2026, 9, 14), date(2026, 10, 15))
+    assert window("how much did I spend last year") == (date(2025, 1, 1), date(2026, 1, 1))
+
+
+def test_a_weekend_is_not_a_week():
+    intent = classify_aggregation("how much did I spend last weekend", today=date(2026, 10, 14))
+    assert (intent.window_end - intent.window_start).days == 90
+
+
+def test_a_day_word_after_the_category_is_not_part_of_it():
+    for q in ("how much did I spend on groceries yesterday", "how much did I spend on coffee today?"):
+        intent = classify_aggregation(q, today=date(2026, 10, 14))
+        assert intent.subject in ("groceries", "coffee") and (intent.window_end - intent.window_start).days == 1, q
