@@ -1,8 +1,11 @@
 """The assistant: one LangGraph StateGraph per turn, one checkpointed thread
 per conversation.
 
-    START -> ingest -> route -> aggregate | receipt | memory | offtopic | plan | more
+    START -> ingest -> route -> aggregate | visits | receipt | memory | offtopic | plan | more
           -> respond -> learn -> END
+
+A visit question about a place that is none of the user's merchants goes on
+from visits to plan, which searches by meaning instead.
 
 Nodes push events (steps, tokens, citations, proposals) through LangGraph's
 stream writer; run_turn hands them to the caller, which turns them into
@@ -20,7 +23,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -256,6 +259,43 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""), ms=_since(t0),
           key="explain")
     return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,
+            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+
+
+def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
+    """"Did I go to IKEA?": the visits come from SQL and the card from code,
+    so no model lists, drops or invents a date. A place that is none of the
+    user's merchants ("the gym") goes on to the planner."""
+    from ..utils.intent_classifier import extract_window
+    deps, user_id = runtime.context, state["user_id"]
+    place = state["route"].get("payload") or ""
+    window = extract_window(state["message"])
+    days = {"date_from": window[0], "date_to": window[1] - timedelta(days=1)} if window else {}
+    url = deps.url or get_config().database_url
+    with get_engine(url).connect() as conn:
+        region = money_region(conn, user_id, url)
+    _running("sql", "Running the numbers in CockroachDB")
+    t0 = time.perf_counter()
+    found = txns.merchant_history(user_id, place, recent=10, url=deps.url, **days)
+    db_ms = _since(t0)
+    if found is None:
+        _step("Merchant lookup", f"no merchant called '{place}'; searching by meaning instead", ms=db_ms,
+              status="warning", key="sql")
+        return {"route": {**state["route"], "kind": "plan", "detail": f"'{place}' is not one of your merchants"}}
+    last_ever = None
+    if window and not found["visits"]:
+        last_ever = (txns.merchant_history(user_id, found["merchant"], recent=0, url=deps.url) or {}).get("last")
+    narration.visits(found["merchant"], found["visits"], db_ms)
+    _step("Visits SQL", f"{found['visits']} visits to {found['merchant']}, ${found['total']:,.2f}, computed by "
+          "CockroachDB", ms=db_ms, status="success", key="sql")
+    card = answers.render_visits_markdown(found, window=window, last_ever=last_ever)
+    _running("explain", "Reading the query plan")
+    t0 = time.perf_counter()
+    explain = txns.explain_merchant_visits(user_id, found["merchant"], url=deps.url, **days)
+    served = serving_regions(explain) or region
+    _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""), ms=_since(t0),
+          key="explain")
+    return {"answer": answers.translate(card, state.get("language") or "English", deps.chat),
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
 
@@ -654,15 +694,21 @@ def _branch(state: TurnState) -> str:
     return {"remember": "memory", "forget": "memory"}.get(kind, kind)
 
 
+def _after_visits(state: TurnState) -> str:
+    return "plan" if state["route"]["kind"] == "plan" else "respond"
+
+
 def build_graph(checkpointer):
     g = StateGraph(TurnState, context_schema=TurnDeps)
-    for name, fn in (("ingest", ingest), ("route", route_node), ("aggregate", aggregate), ("receipt", receipt),
-                     ("memory", memory), ("offtopic", offtopic), ("plan", plan), ("more", more),
-                     ("respond", respond), ("learn", learn)):
+    for name, fn in (("ingest", ingest), ("route", route_node), ("aggregate", aggregate), ("visits", visits),
+                     ("receipt", receipt), ("memory", memory), ("offtopic", offtopic), ("plan", plan),
+                     ("more", more), ("respond", respond), ("learn", learn)):
         g.add_node(name, fn)
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "route")
-    g.add_conditional_edges("route", _branch, ["aggregate", "receipt", "memory", "offtopic", "plan", "more"])
+    g.add_conditional_edges("route", _branch,
+                            ["aggregate", "visits", "receipt", "memory", "offtopic", "plan", "more"])
+    g.add_conditional_edges("visits", _after_visits, ["plan", "respond"])
     for name in ("aggregate", "receipt", "memory", "offtopic", "plan", "more"):
         g.add_edge(name, "respond")
     g.add_edge("respond", "learn")

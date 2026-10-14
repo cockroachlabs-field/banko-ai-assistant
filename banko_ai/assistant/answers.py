@@ -49,6 +49,27 @@ def render_aggregation_markdown(agg) -> str:
     return "\n".join(lines)
 
 
+def render_visits_markdown(found: dict, *, window: tuple | None = None, last_ever: str | None = None) -> str:
+    """The answer to "did I go to X?": every count, sum and date comes from
+    SQL (merchant_history). window is the asked window, end exclusive."""
+    name, n = found["merchant"], int(found["visits"])
+    span = f"between {window[0]} and {window[1] - timedelta(days=1)}" if window else f"since {found['first']}"
+    if not n:
+        tail = f" The last one was on {last_ever}." if last_ever else ""
+        return f"I don't see a visit to **{name}** {span}.{tail}"
+    latest = found["recent"][0] if found["recent"] else None
+    last = f"{found['last']} (${latest['amount']:,.2f})" if latest else str(found["last"])
+    times = "1 time" if n == 1 else f"{n} times"
+    lines = [f"You went to **{name}** {times} {span} and spent **${found['total']:,.2f}** there "
+             f"(${found['average']:,.2f} a visit). The last visit was on {last}."]
+    if found["recent"]:
+        lines += ["", "| Date | Amount | Category |", "|---|---|---|"]
+        lines += [f"| {r['date']} | ${r['amount']:,.2f} | {r['category']} |" for r in found["recent"]]
+        if n > len(found["recent"]):
+            lines += ["", f"The latest {len(found['recent'])} of {n} visits."]
+    return "\n".join(lines)
+
+
 def insights_messages(agg, question: str) -> list[dict]:
     """The prompt for two or three observations over figures SQL already
     computed (top merchants are summed here, never by the model)."""

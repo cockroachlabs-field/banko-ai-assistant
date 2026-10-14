@@ -40,6 +40,23 @@ _PAGING_WORDS = {"show", "me", "more", "next", "page", "load", "see", "get", "gi
                  "and", "then", "ten", "twenty"}
 _PAGING_CUES = {"more", "next", "continue", "going", "anymore"}
 _TOKEN = re.compile(r"[a-z]+|\d+")
+# "did I go to IKEA?", "when did I last shop at Costco?", "how often do I go
+# to Whole Foods?": visits to a place, answered from SQL. The place can carry
+# a window ("IKEA last month"); the merchant lookup finds the name inside it.
+_VISIT_LEAD = (r"(?:(?:did|have)\s+i\s+(?:ever\s+|recently\s+|already\s+)?"
+               r"|when\s+(?:did|have)\s+i\s+(?:last\s+)?"
+               r"|when\s+was\s+(?:i\s+last\s+|the\s+last\s+time\s+i\s+)"
+               r"|when\s+was\s+my\s+(?:last|latest|most\s+recent)\s+"
+               r"|how\s+(?:often|frequently)\s+(?:do|did)\s+i\s+"
+               r"|how\s+many\s+times\s+(?:did|have|do)\s+i\s+)")
+# Verbs that take a preposition come first, so "visit to X" never leaves
+# "to X" as the place.
+_VISIT_VERB = (r"(?:(?:visit|trip|purchase|order|stop)\s+(?:to|at|from)"
+               r"|(?:go|gone|went|been)\s+(?:to|at)"
+               r"|(?:shop|shopped|eat|eaten|ate|stop|stopped)\s+(?:at|by)"
+               r"|(?:buy|bought|order|ordered|get|got)(?:\s+(?:anything|something|stuff|food))?\s+(?:from|at)"
+               r"|visit|visited|at)")
+_VISIT = re.compile(rf"^\s*{_VISIT_LEAD}{_VISIT_VERB}\s+(?P<place>.+?)\s*[?.!]*\s*$", re.I)
 
 
 def reads_as_follow_up(message: str) -> bool:
@@ -137,6 +154,8 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
             return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)
         # Otherwise it's about the receipt
         return Route("receipt", "follow-up about the active receipt")
+    if (m := _VISIT.match(text)):
+        return Route("visits", "visits to a place, answered by SQL", payload=m.group("place"))
     if context:
         return Route("plan", f"opened with {context.get('kind', 'context')}")
     if not active_receipt and _STRONG_REF.search(text):

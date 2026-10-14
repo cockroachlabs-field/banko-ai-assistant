@@ -182,7 +182,10 @@ per-user vector index, and the header shows who is signed in. Questions
 that ask for totals or counts ("how much did I spend on restaurants in
 the past 60 days?") are answered by SQL directly, so the figures are
 exact and identical no matter which AI provider is active; the model
-adds the narrative and suggestions around them. Every answer wears a
+adds the narrative and suggestions around them. Visit questions ("did I
+go to IKEA last month?", "when did I last go to Costco?") come straight
+from SQL too: the visits, totals and dates are listed by code, with no
+model in the loop. Every answer wears a
 badge with the real database time, and an expandable panel shows the
 actual EXPLAIN ANALYZE that produced it.
 

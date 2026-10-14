@@ -42,6 +42,12 @@ def aggregation_sql(agg, ms: float) -> None:
     _say("   Figures computed by CockroachDB; the model never does the arithmetic")
 
 
+def visits(merchant: str, count: int, ms: float) -> None:
+    _say("\n🧮 VISITS (agentic routing):")
+    _say(f"1. SQL answered in {int(ms)}ms: {count} visits to {_plain(merchant)}")
+    _say("   Counted by CockroachDB; the model never lists the dates")
+
+
 def narrative_cache(hit: bool, tokens: int = 0) -> None:
     _say(f"3. ✅ Narrative cache HIT (est. {tokens} tokens saved)" if hit
          else "3. ❌ Narrative cache MISS, generating")

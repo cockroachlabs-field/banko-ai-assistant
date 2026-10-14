@@ -116,3 +116,14 @@ def test_insights_use_only_given_figures():
     out = A.aggregation_insights(_agg(), "how much on coffee", chat)
     assert out == "- You visit Blue Bottle often."
     assert "$42.50" in chat.prompts()[-1]
+
+
+def test_a_visits_card_says_how_many_it_lists():
+    from banko_ai.assistant.answers import render_visits_markdown
+    recent = [{"expense_id": f"e{i}", "date": f"2026-09-{20 - i:02d}", "amount": 12.5, "merchant": "IKEA",
+               "category": "Shopping", "description": ""} for i in range(10)]
+    card = render_visits_markdown({"merchant": "IKEA", "visits": 12, "total": 150.0, "average": 12.5,
+                                   "first": "2026-07-01", "last": "2026-09-20", "recent": recent})
+    assert card.startswith("You went to **IKEA** 12 times since 2026-07-01 and spent **$150.00** there")
+    assert "The last visit was on 2026-09-20 ($12.50)." in card
+    assert card.count("| $12.50 | Shopping |") == 10 and card.endswith("The latest 10 of 12 visits.")

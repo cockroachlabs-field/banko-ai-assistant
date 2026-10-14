@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -668,3 +668,57 @@ def test_a_turn_without_a_search_ends_the_paging(g, member, thread):
     _turn(g, member, thread, "how much did I spend on groceries in the last 30 days", ScriptedChat("- Steady."))
     out, _ = _turn(g, member, thread, "show more", ScriptedChat('{"steps": []}', '{"steps": []}', "Sure."))
     assert out["route"]["kind"] != "more"
+
+
+def _top_merchant(member):
+    with get_engine().connect() as c:
+        return c.execute(text("""
+            SELECT merchant, count(*), sum(expense_amount) FROM expenses WHERE user_id = CAST(:u AS UUID)
+            GROUP BY merchant ORDER BY count(*) DESC, merchant LIMIT 1"""), {"u": member}).fetchone()
+
+
+def test_a_visit_question_is_answered_from_sql_without_the_model(g, member, thread):
+    merchant, visits, total = _top_merchant(member)
+    quiet = ScriptedChat("the model should not be asked")
+    out, events = _turn(g, member, thread, f"did I go to {merchant.lower()}?", quiet)
+    assert out["route"]["kind"] == "visits" and quiet.calls == []
+    assert f"**{merchant}** {visits} times" in out["answer"] and f"${total:,.2f}" in out["answer"]
+    assert out["meta"]["explain"] and "db_ms" in out["meta"]
+    assert any(e["type"] == "step" and e["label"] == "Visits SQL" for e in events)
+
+
+def _kite_shop(member):
+    from banko_ai.services.accounts import list_accounts
+    from banko_ai.services.ledger import post_purchase
+    acct = next(a for a in list_accounts(member)["accounts"] if a["kind"] == "credit")
+    last_month = (date.today().replace(day=1) - timedelta(days=1)).replace(day=3)
+    for day, amount in ((last_month, "42.00"), (date.today() - timedelta(days=400), "18.50")):
+        post_purchase(member, acct["account_id"], amount=amount, merchant="Zephyr Kites", category="Shopping",
+                      expense_date=day)
+    return last_month
+
+
+def test_a_visit_window_counts_that_window_only(g, member, thread):
+    last_month = _kite_shop(member)
+    out, _ = _turn(g, member, thread, "did I go to Zephyr Kites last month?", ScriptedChat("unused"))
+    assert out["route"]["kind"] == "visits"
+    assert "**Zephyr Kites** 1 time " in out["answer"] and "$42.00" in out["answer"]
+    assert str(last_month) in out["answer"] and "$18.50" not in out["answer"]
+    none, _ = _turn(g, member, thread, "have I been to Zephyr Kites this month?", ScriptedChat("unused"))
+    assert none["answer"].startswith("I don't see a visit to **Zephyr Kites**")
+    assert f"The last one was on {last_month}." in none["answer"]
+
+
+def test_a_visit_card_is_translated_in_another_language(g, member, thread):
+    merchant, visits, _ = _top_merchant(member)
+    chat = ScriptedChat(f"Fuiste a {merchant} {visits} veces.")
+    out, _ = _turn(g, member, thread, f"have I been to {merchant}?", chat, language_code="es-ES")
+    assert out["answer"] == f"Fuiste a {merchant} {visits} veces." and len(chat.calls) == 1
+
+
+def test_a_place_that_is_not_a_merchant_goes_to_the_planner(g, member, thread):
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "moon base"}}]}',
+                        '{"steps": []}', "I found no visits to a moon base.")
+    out, events = _turn(g, member, thread, "did I go to the moon base?", chat)
+    assert out["route"]["kind"] == "plan" and chat.calls
+    assert any(e["type"] == "step" and e["label"] == "Merchant lookup" and e["status"] == "warning" for e in events)

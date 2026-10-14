@@ -120,3 +120,30 @@ def test_more_inside_a_real_question_is_not_paging():
 
 def test_more_with_no_search_before_it_goes_to_the_planner():
     assert route("show more", has_history=True, today=TODAY).kind == "plan"
+
+
+def test_visit_questions_are_answered_by_sql():
+    for text, phrase in (("did i go to ikea", "ikea"), ("Did I go to IKEA last month?", "IKEA last month"),
+                         ("have I been to Costco", "Costco"), ("when did I last go to Starbucks?", "Starbucks"),
+                         ("how often do I go to Whole Foods", "Whole Foods"),
+                         ("how many times did I go to Target", "Target"),
+                         ("did I shop at Walmart this year", "Walmart this year"),
+                         ("did I eat at Chipotle recently", "Chipotle recently"),
+                         ("when was my last visit to Trader Joe's", "Trader Joe's"),
+                         ("have I ever ordered from DoorDash?", "DoorDash"), ("did I visit REI", "REI"),
+                         ("did i go to the gym", "the gym")):
+        r = route(text, today=TODAY)
+        assert (r.kind, r.payload) == ("visits", phrase), text
+
+
+def test_visit_words_inside_other_questions_route_as_before():
+    assert route("how much did I spend at Target last month", today=TODAY).kind == "aggregate"
+    for text in ("did I go over my dining budget?", "where did I go for dinner last week?",
+                 "have I been saving enough?", "did I spend more on coffee than tea?"):
+        assert route(text, today=TODAY).kind != "visits", text
+
+
+def test_a_visit_question_about_the_active_receipt_stays_with_the_receipt():
+    assert route("did I go to Trader Joe's?", active_receipt=RECEIPT, today=TODAY).kind == "receipt"
+    # A window makes it a new question, as for any receipt follow-up.
+    assert route("did I go to Trader Joe's this week?", active_receipt=RECEIPT, today=TODAY).kind == "visits"

@@ -433,28 +433,65 @@ def duplicate_check(user_id: str, expense_id: str, *, window_days: int, max_dist
     return {"candidates": found}
 
 
-def merchant_history(user_id: str, merchant: str, *, url: str | None = None) -> dict | None:
+def _visits_where(user_id: str, name: str, date_from: date | None, date_to: date | None) -> tuple[str, dict]:
+    where, params = ["user_id = CAST(:u AS UUID)", "merchant = :m"], {"u": user_id, "m": name}
+    if date_from:
+        where.append("expense_date >= :dfrom")
+        params["dfrom"] = date_from
+    if date_to:
+        where.append("expense_date <= :dto")
+        params["dto"] = date_to
+    return " AND ".join(where), params
+
+
+def _visits_sql(where: str) -> str:
+    """Visits to one merchant, counted and summed by CockroachDB. One
+    statement for the answer and its EXPLAIN, so they never drift apart."""
+    return f"""
+        SELECT count(*), COALESCE(sum(expense_amount), 0), COALESCE(avg(expense_amount), 0),
+               min(expense_date), max(expense_date)
+        FROM expenses WHERE {where}
+    """
+
+
+def merchant_history(user_id: str, merchant: str, *, date_from: date | None = None, date_to: date | None = None,
+                     recent: int = 5, url: str | None = None) -> dict | None:
+    """Visits to one of the user's merchants: count, total, average, first and
+    last day and the latest purchases, all time or between two days
+    (inclusive). None when the phrase names none of the user's merchants."""
     from ..utils.aggregations import resolve_merchant
     admin_url = url or get_config().database_url
     name = resolve_merchant(merchant, user_id, admin_url)
     if name is None:
         return None
     url = request_url(url)
+    where, params = _visits_where(user_id, name, date_from, date_to)
     with read_session(user_id, url=url) as conn:
-        agg = conn.execute(text("""
-            SELECT count(*), COALESCE(sum(expense_amount), 0), COALESCE(avg(expense_amount), 0),
-                   min(expense_date), max(expense_date)
-            FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant = :m
-        """), {"u": user_id, "m": name}).fetchone()
-        recent = conn.execute(text("""
+        agg = conn.execute(text(_visits_sql(where)), params).fetchone()
+        recent = conn.execute(text(f"""
             SELECT expense_id, expense_date, expense_amount, merchant, shopping_type, description
-            FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant = :m
-            ORDER BY expense_date DESC LIMIT 5
-        """), {"u": user_id, "m": name}).fetchall()
+            FROM expenses WHERE {where}
+            ORDER BY expense_date DESC LIMIT :n
+        """), {**params, "n": max(0, int(recent))}).fetchall()
     visits = int(agg[0])
     return jsonable({"merchant": name, "visits": visits, "total": agg[1],
                      "average": agg[2], "first": agg[3], "last": agg[4],
                      "recent": [_expense_json(r) for r in recent]})
+
+
+def explain_merchant_visits(user_id: str, name: str, *, date_from: date | None = None,
+                            date_to: date | None = None, url: str | None = None) -> str:
+    """EXPLAIN ANALYZE of the visits statement for one of the user's merchants
+    (name as merchant_history resolved it)."""
+    import psycopg
+
+    from ..utils.aggregations import _to_pyformat
+    url = request_url(url)
+    where, params = _visits_where(user_id, name, date_from, date_to)
+    with get_engine(url).connect() as conn:
+        with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
+            cur.execute("EXPLAIN ANALYZE " + _to_pyformat(_visits_sql(where)), params)
+            return "\n".join(str(r[0]) for r in cur.fetchall())
 
 
 def explain_semantic(user_id: str, q: str, *, url: str | None = None) -> str:
