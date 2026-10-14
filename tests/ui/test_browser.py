@@ -746,6 +746,39 @@ def test_transactions_survive_a_failed_category_fetch(server, browser):
         ctx.close()
 
 
+def test_resetting_a_persona_asks_first(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        sent, asked = [], []
+
+        def reset(route):
+            sent.append(route.request.post_data_json)
+            route.fulfill(status=202, json={"status": "started", "users": 1})
+
+        def answer(accept):
+            def handler(dialog):
+                asked.append(dialog.message)
+                dialog.accept() if accept else dialog.dismiss()
+            return handler
+
+        page.route("**/api/v1/admin/reset", reset)
+        _login(page, server, "sam")
+        page.goto(server + "/settings")
+        page.wait_for_load_state("networkidle")
+        button = page.get_by_role("button", name="Reset Maya")
+        page.once("dialog", answer(False))
+        button.click()
+        page.wait_for_timeout(300)
+        assert len(asked) == 1 and asked[0].startswith("Reset Maya Chen?") and sent == []
+        page.once("dialog", answer(True))
+        button.click()
+        expect(page.get_by_text("Resetting Maya Chen.")).to_be_visible()
+        assert sent == [{"persona": "maya"}]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

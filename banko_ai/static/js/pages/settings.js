@@ -56,6 +56,7 @@ document.addEventListener("alpine:init", () => {
       finally { this.genBusy = false; }
     },
     async reset(p) {
+      if (!window.confirm("Reset " + p.display_name + "? Their money history is deleted and seeded again.")) return;
       this.dataText = ""; this.dataError = false;
       try {
         await Banko.api("/api/v1/admin/reset", { method: "POST", body: { persona: p.username } });
