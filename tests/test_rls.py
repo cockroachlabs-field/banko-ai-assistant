@@ -161,6 +161,52 @@ def test_vector_search_survives_rls_for_the_app_role(two_users):
     assert "vector search" in plan and "idx_expenses_user_embedding" in plan
 
 
+def _plan_as_app(user_id: str, sql: str) -> str:
+    """EXPLAIN as banko_app with banko.user_id set in the transaction, the way
+    read_session runs every request. CockroachDB rejects placeholders in
+    EXPLAIN, so the statement binds client side."""
+    import psycopg
+
+    from banko_ai.utils.aggregations import _to_pyformat
+    with _app().connect() as conn:
+        conn.execute(text("SELECT set_config('banko.user_id', :u, true)"), {"u": user_id})
+        assert conn.execute(text("SELECT current_user")).scalar() == rls.APP_ROLE
+        with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
+            cur.execute("EXPLAIN " + _to_pyformat(sql), {"u": user_id})
+            return "\n".join(str(r[0]) for r in cur.fetchall())
+
+
+def test_the_transaction_stream_never_runs_a_subquery_per_purchase(two_users):
+    """Under the policy, a NOT EXISTS against ledger_entries is not
+    decorrelated and runs once per expense row (11 s for one user on a
+    3-region cluster). The unlinked-purchase branch is a join instead."""
+    plan = _plan_as_app(two_users[0], T._STREAM)
+    assert '"exists"' not in plan and "subquery" not in plan, plan
+    # The ledger branch's outer join to expenses, and the unlinked purchases' own join.
+    assert plan.count("join (") >= 2, plan
+
+
+def test_the_stream_lists_linked_and_unlinked_purchases_once_for_either_role(rls_on):
+    uid = make_user()
+    try:
+        acct = L.open_account(uid, kind="checking", name="C", institution="B", mask="1", opening_balance="100")
+        linked = L.post_purchase(uid, acct, amount="12.50", merchant="Linked Deli", category="Restaurant")
+        unlinked = "6a2b0c1d-0000-4000-8000-00000000f9f9"
+        with get_engine().begin() as c:
+            c.execute(text("INSERT INTO expenses (expense_id, user_id, expense_date, expense_amount, shopping_type, "
+                           "description, merchant, payment_method) VALUES (CAST(:e AS UUID), CAST(:u AS UUID), "
+                           "current_date, 7.25, 'Coffee', 'Before the ledger', 'Loose Cafe', 'Cash')"),
+                      {"e": unlinked, "u": uid})
+        as_app = T.list_transactions(uid, limit=50)
+        as_admin = T.list_transactions(uid, limit=50, url=get_engine().url.render_as_string(hide_password=False))
+        assert as_app == as_admin
+        got = sorted((i["kind"], i["merchant"], i["amount"], i["expense_id"], i["account_id"]) for i in as_app["items"])
+        assert got == [("purchase", "Linked Deli", -12.5, linked, acct),
+                       ("purchase", "Loose Cafe", -7.25, unlinked, None)]
+    finally:
+        drop_user(uid)
+
+
 def test_reapply_alters_existing_policies_instead_of_dropping_them():
     statements = rls.rls_statements(["banko_meta", "accounts", "goals"], existing={"accounts"})
     assert not [s for s in statements if s.startswith("DROP POLICY")]

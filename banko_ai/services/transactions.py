@@ -37,10 +37,13 @@ _STREAM = """
     SELECT e.expense_id, e.expense_date::TIMESTAMPTZ, -e.expense_amount, 'purchase', e.description, NULL,
            e.merchant, e.shopping_type, e.expense_id
     FROM expenses AS e
-    WHERE e.user_id = CAST(:u AS UUID)
-      AND NOT EXISTS (SELECT 1 FROM ledger_entries AS l2
-                      WHERE l2.expense_id = e.expense_id AND l2.user_id = CAST(:u AS UUID))
+    LEFT JOIN ledger_entries AS l2 ON l2.expense_id = e.expense_id AND l2.user_id = CAST(:u AS UUID)
+    WHERE e.user_id = CAST(:u AS UUID) AND l2.entry_id IS NULL
 """
+# Purchases with no ledger entry come from the anti join above, never from a
+# NOT EXISTS: under row-level security (banko_app) the policy predicate stops
+# CockroachDB from decorrelating that subquery, and it ran once per expense
+# row (11 s for one user on a 3-region cluster, against 1 s for the join).
 
 
 def _encode_cursor(posted_at: datetime, ident: str) -> str:
