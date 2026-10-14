@@ -86,6 +86,12 @@ document.addEventListener("alpine:init", () => {
     },
     today() { return new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }); },
 
+    // The palette shortcut as this keyboard writes it (both keys work everywhere).
+    shortcut() {
+      const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+      return /mac|iphone|ipad|ios/i.test(platform) ? "⌘K" : "Ctrl K";
+    },
+
     onKey(e) {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); this.paletteOpen ? (this.paletteOpen = false) : this.openPalette(); }

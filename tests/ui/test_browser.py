@@ -779,6 +779,20 @@ def test_resetting_a_persona_asks_first(server, browser):
         ctx.close()
 
 
+@pytest.mark.parametrize(("platform", "label"), [("MacIntel", "⌘K"), ("Win32", "Ctrl K"), ("Linux x86_64", "Ctrl K")])
+def test_the_palette_shortcut_reads_right_on_each_platform(server, browser, platform, label):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        page.add_init_script(f"""
+            Object.defineProperty(Navigator.prototype, 'platform', {{ get: () => '{platform}' }});
+            Object.defineProperty(Navigator.prototype, 'userAgentData', {{ get: () => undefined }});""")
+        _login(page, server, "maya")
+        expect(page.locator(".b-ask kbd")).to_have_text(label)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

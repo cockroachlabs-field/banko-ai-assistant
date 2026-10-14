@@ -33,7 +33,7 @@
         <div class="b-hello" x-text="greeting()">{{ shell.user.display_name }}</div>
         <div class="b-sub" x-text="today()"></div>
       </div>
-      <button class="b-ask" type="button" @click="openPalette()"><span class="spark">✦</span>Ask {{ shell.brand.name }} about your money...<kbd>⌘K</kbd></button>
+      <button class="b-ask" type="button" @click="openPalette()"><span class="spark">✦</span>Ask {{ shell.brand.name }} about your money...<kbd x-text="shortcut()"></kbd></button>
       <div class="b-pills">
         {% if shell.user.region %}<span class="b-pill hide-sm" title="Home region: where your rows live"><span class="b-dot"></span>{{ shell.user.region }}</span>{% endif %}
         <span class="b-pill hide-sm" id="persona-pill"><img src="{{ shell.provider.icon_url }}" alt="">{{ shell.provider.name }} · {{ shell.provider.model }}</span>
