@@ -23,7 +23,7 @@
         <div class="b-bill" style="padding:9px 0">
           <span class="b-tag" x-text="i.agent"></span>
           <span style="flex:1;min-width:0"><div class="b-name" x-text="i.title"></div><div class="b-muted" style="white-space:normal" x-text="i.detail"></div></span>
-          <span class="b-muted" x-show="i.confidence !== null" x-text="'confidence ' + Banko.fmt.pct(i.confidence)"></span>
+          <span class="b-muted" x-show="i.confidence !== null" x-text="Banko.scoreText(i.kind, i.confidence)"></span>
           <span class="b-muted" x-text="Banko.fmt.relative(i.at)"></span>
         </div>
       </template>

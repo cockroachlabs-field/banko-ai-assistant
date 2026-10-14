@@ -509,6 +509,49 @@ def test_the_agents_feed_orders_live_and_stored_items_by_time(server, browser):
         ctx.close()
 
 
+PURCHASE_ID = "88888888-8888-4888-8888-888888888888"
+
+
+def _purchase(**extra):
+    """A transaction detail as GET /api/v1/transactions/<id> returns it."""
+    base = {"id": PURCHASE_ID, "expense_id": PURCHASE_ID, "kind": "purchase", "posted_at": "2026-10-12",
+            "amount": -9.75, "merchant": "Blue Bottle", "description": "Coffee", "category": "Coffee",
+            "category_label": "Coffee", "category_icon": "☕", "payment_method": "Debit Card", "account_id": None,
+            "similar": [], "residency": None, "receipt": None,
+            "checks": {"duplicates": [], "decisions": [{"decision_id": "d1", "decision_type": "fraud_analysis",
+                                                        "confidence": 0.0, "reasoning": "No indicators",
+                                                        "action": {"fraud_detected": False},
+                                                        "created_at": "2026-10-12T10:00:00+00:00"}]}}
+    return {**base, **extra}
+
+
+def test_a_fraud_check_shows_its_fraud_score_not_a_confidence(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        page.route(f"**/api/v1/transactions/{PURCHASE_ID}", lambda r: r.fulfill(json=_purchase()))
+        page.route("**/api/v1/agents/activity", lambda r: r.fulfill(json={"items": [
+            {"id": "decision:f", "agent": "fraud", "kind": "fraud_analysis", "title": "Fraud analysis",
+             "detail": "No indicators", "confidence": 0.0, "region": None, "at": "2026-10-13T10:00:00+00:00"},
+            {"id": "decision:b", "agent": "budget", "kind": "budget_check", "title": "Budget check",
+             "detail": "On track", "confidence": 0.85, "region": None, "at": "2026-10-13T09:00:00+00:00"}]}))
+        _login(page, server, "maya")
+        page.goto(server + "/transactions")
+        page.wait_for_load_state("networkidle")
+        page.evaluate("(id) => Banko.emit('banko:open-transaction', { id })", PURCHASE_ID)
+        drawer = page.locator("aside.b-drawer")
+        expect(drawer).to_contain_text("✓ Fraud check passed · fraud score 0%")
+        expect(drawer).not_to_contain_text("confidence")
+
+        page.goto(server + "/agents")
+        page.wait_for_load_state("networkidle")
+        rows = page.locator("section .b-s3 .b-bill")
+        expect(rows.filter(has_text="Fraud analysis")).to_contain_text("fraud score 0%")
+        expect(rows.filter(has_text="Budget check")).to_contain_text("confidence 85%")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

@@ -79,8 +79,8 @@ document.addEventListener("alpine:init", () => {
     close() { this.shown = false; },
     decisionText(d) {
       const flagged = d.action && d.action.fraud_detected;
-      const conf = typeof d.confidence === "number" ? " · confidence " + Banko.fmt.pct(d.confidence) : "";
-      return (flagged ? "Flagged by the fraud agent" : "✓ Fraud check passed") + conf;
+      const score = typeof d.confidence === "number" ? " · " + Banko.scoreText(d.decision_type, d.confidence) : "";
+      return (flagged ? "Flagged by the fraud agent" : "✓ Fraud check passed") + score;
     },
     async save() {
       this.saving = true; this.saveError = "";

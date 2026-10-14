@@ -132,6 +132,14 @@
     return { letters, color: PALETTE[h % PALETTE.length] };
   }
 
+  // The number an agent recorded with a decision. The fraud agent stores a
+  // fraud score there (0% means no fraud indicators), every other agent its
+  // confidence, so the label follows the decision type.
+  function scoreText(decisionType, value) {
+    const label = String(decisionType || "").startsWith("fraud") ? "fraud score " : "confidence ";
+    return label + fmt.pct(value);
+  }
+
   function emit(name, detail) { window.dispatchEvent(new CustomEvent(name, { detail })); }
 
   // Idempotency keys. crypto.getRandomValues works on plain http too, where
@@ -159,5 +167,5 @@
     return !m || /^[a-z][a-z0-9_]*$/.test(m) ? FALLBACK : m;
   }
 
-  window.Banko = { shell, api, stream, parseSSE, fmt, monogram, emit, newKey, explain, ApiError, FALLBACK };
+  window.Banko = { shell, api, stream, parseSSE, fmt, monogram, scoreText, emit, newKey, explain, ApiError, FALLBACK };
 })();
