@@ -260,6 +260,38 @@ def test_semantic_search_falls_back_when_the_vector_index_returns_nothing(seeded
     assert restaurant and all(h["category"] == "Restaurant" for h in restaurant)
 
 
+def _short_vector_index(monkeypatch):
+    """Make the per-user vector query come back with one row, though the
+    user has many: on v26.3 one user's searches all returned the same
+    single purchase, so the empty-result check never fired."""
+    original = T.semantic_sql
+    monkeypatch.setattr(T, "semantic_sql", lambda filters="": original(filters).replace("LIMIT :k", "LIMIT 1"))
+
+
+def test_semantic_search_falls_back_when_the_vector_index_returns_too_few(seeded, monkeypatch):
+    from banko_ai.utils.request_trace import current_trace, reset_trace, start_trace
+    _short_vector_index(monkeypatch)
+    calls = _count_exact_scans(monkeypatch)
+    token = start_trace()
+    try:
+        hits = T.semantic_search(seeded, "pizza dinner", limit=5)["items"]
+        steps = current_trace()
+    finally:
+        reset_trace(token)
+    assert calls, "the exact per-user scan never ran"
+    assert len(hits) == 5
+    distances = [h["distance"] for h in hits]
+    assert distances == sorted(distances)
+    fallback = [s for s in steps if s["label"] == "Vector index fallback"]
+    assert len(fallback) == 1 and fallback[0]["detail"].startswith("vector index returned 1 of ")
+
+
+def test_a_full_answer_from_the_vector_index_needs_no_exact_scan(seeded, monkeypatch):
+    calls = _count_exact_scans(monkeypatch)
+    assert len(T.semantic_search(seeded, "pizza dinner", limit=5)["items"]) == 5
+    assert calls == []
+
+
 def test_transaction_detail_similar_uses_the_fallback(seeded, monkeypatch):
     _blind_vector_index(monkeypatch)
     calls = _count_exact_scans(monkeypatch)

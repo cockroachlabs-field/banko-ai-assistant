@@ -132,10 +132,12 @@ def list_transactions(user_id: str, *, limit: int = 50, cursor: str | None = Non
 
 
 def semantic_sql(filters: str = "") -> str:
-    """The semantic search statement. The nearest neighbours come from the
-    per-user vector index inside a MATERIALIZED CTE, and filters apply
-    outside it: any extra predicate inside would make the optimizer skip the
-    vector index (cockroachlabs/cockroach#10432)."""
+    """The semantic search statement. The k nearest neighbours come from the
+    per-user vector index inside a MATERIALIZED CTE, and the filters are a
+    keep flag outside it: any extra predicate inside would make the optimizer
+    skip the vector index (cockroachlabs/cockroach#10432). Every neighbour
+    comes back, so the row count shows whether the index answered in full,
+    and the caller takes the page from the kept rows."""
     return f"""
         WITH nn AS MATERIALIZED (
             SELECT expense_id, embedding <=> :qvec AS distance
@@ -144,10 +146,11 @@ def semantic_sql(filters: str = "") -> str:
             WHERE user_id = CAST(:u AS UUID)
             ORDER BY embedding <=> :qvec LIMIT :k
         )
-        SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance
+        SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance,
+               (true {filters}) AS keep
         FROM nn JOIN expenses AS e ON e.expense_id = nn.expense_id
-        WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL {filters}
-        ORDER BY nn.distance LIMIT :limit
+        WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL
+        ORDER BY nn.distance, e.expense_id
     """
 
 
@@ -159,7 +162,7 @@ def _qvec(text_query: str) -> str:
 def exact_semantic_sql(filters: str = "") -> str:
     """The same statement as semantic_sql(), but the CTE reads this user's
     rows through the date index and sorts them by exact distance, so the
-    vector index plays no part. Only used when the index came back empty."""
+    vector index plays no part. Only used when the index came back short."""
     return f"""
         WITH nn AS MATERIALIZED (
             SELECT expense_id, embedding <=> :qvec AS distance
@@ -167,39 +170,46 @@ def exact_semantic_sql(filters: str = "") -> str:
             WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL
             ORDER BY embedding <=> :qvec LIMIT :k
         )
-        SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance
+        SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance,
+               (true {filters}) AS keep
         FROM nn JOIN expenses AS e ON e.expense_id = nn.expense_id
-        WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL {filters}
-        ORDER BY nn.distance LIMIT :limit
+        WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL
+        ORDER BY nn.distance, e.expense_id
     """
 
 
 _fallback_logged = False
 
 
-def _semantic_rows(conn, user_id: str, qvec: str, *, limit: int, k: int, filters: str = "", extra=None):
+def _neighbours(conn, user_id: str, qvec: str, *, k: int, filters: str = "", extra=None) -> list:
+    """The user's k purchases nearest to qvec, nearest first, each row ending
+    in its keep flag. From the per-user vector index, or from an exact scan
+    when the index came back with fewer rows than the user has."""
     global _fallback_logged
-    params = {"u": user_id, "qvec": qvec, "k": max(k, limit), "limit": min(limit, MAX_LIMIT), **(extra or {})}
+    params = {"u": user_id, "qvec": qvec, "k": k, **(extra or {})}
     rows = conn.execute(text(semantic_sql(filters)), params).fetchall()
-    if rows:
+    if len(rows) >= k:
         return rows
-    # On v26.3 a REGIONAL BY ROW expenses table with both a global and a
-    # per-user C-SPANN index can return nothing for some query vectors even
-    # though the user's rows are there (a larger beam does not help). When
-    # the user does have embedded rows, rank them exactly instead.
-    has_rows = conn.execute(text(
-        "SELECT EXISTS (SELECT 1 FROM expenses WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL)"
-    ), {"u": user_id}).scalar()
-    if not has_rows:
+    # Fewer than k: the user may just have fewer purchases. But on v26.3 a
+    # REGIONAL BY ROW expenses table with both a global and a per-user C-SPANN
+    # index can return none of them, or the same single one for every query,
+    # though the rows are there (a larger beam does not help). Then rank this
+    # user's rows exactly.
+    have = conn.execute(text("""
+        SELECT count(*) FROM (SELECT 1 FROM expenses@idx_expenses_user_date
+                              WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL LIMIT :k)
+    """), {"u": user_id, "k": k}).scalar()
+    if len(rows) >= have:
         return rows
+    got = len(rows)
     t0 = time.perf_counter()
     rows = conn.execute(text(exact_semantic_sql(filters)), params).fetchall()
     trace_step("vector_search", "Vector index fallback",
-               "vector index returned no rows; exact scan of this user's rows",
-               ms=(time.perf_counter() - t0) * 1000, status="warning")
+               ("vector index returned no rows" if not got else f"vector index returned {got} of {have} rows")
+               + "; exact scan of this user's rows", ms=(time.perf_counter() - t0) * 1000, status="warning")
     if not _fallback_logged:
         _fallback_logged = True
-        log.warning("The per-user C-SPANN index returned no rows for a user who has embedded expenses "
+        log.warning("The per-user C-SPANN index returned fewer rows than a user has embedded expenses "
                     "(seen on CockroachDB v26.3 REGIONAL BY ROW tables with two vector indexes); "
                     "falling back to an exact scan of that user's rows. Logged once per process.")
     return rows
@@ -229,7 +239,8 @@ def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, categ
     # loads on first use), and no connection should wait on it.
     qvec = _qvec(q)
     with read_session(user_id, url=url) as conn:
-        rows = _semantic_rows(conn, user_id, qvec, limit=limit, k=k, filters=" ".join(filters), extra=extra)
+        rows = [r for r in _neighbours(conn, user_id, qvec, k=k, filters=" ".join(filters), extra=extra) if r[7]]
+    rows = rows[:limit]
     items = [_decorate({"id": str(r[0]), "expense_id": str(r[0]), "posted_at": r[1], "amount": -r[2],
                         "kind": "purchase", "merchant": r[3], "category": r[4], "description": r[5],
                         "distance": float(r[6]), "account_id": None}) for r in rows]
@@ -275,7 +286,7 @@ def transaction_detail(user_id: str, txn_id: str, *, url: str | None = None) -> 
             """), {"u": user_id, "x": expense_id}).fetchone()
         similar = []
         if row[9]:
-            neighbours = _semantic_rows(conn, user_id, row[9], limit=6, k=6)
+            neighbours = _neighbours(conn, user_id, row[9], k=6)
             similar = [{"expense_id": str(s[0]), "date": s[1], "amount": -s[2], "merchant": s[3],
                         "distance": float(s[6])} for s in neighbours if str(s[0]) != str(row[0])][:5]
         home = conn.execute(text("SELECT home_region FROM users WHERE user_id = CAST(:u AS UUID)"),
@@ -419,7 +430,7 @@ def merchant_history(user_id: str, merchant: str, *, url: str | None = None) -> 
                      "recent": [_expense_json(r) for r in recent]})
 
 
-def explain_semantic(user_id: str, q: str, *, limit: int = 10, url: str | None = None) -> str:
+def explain_semantic(user_id: str, q: str, *, url: str | None = None) -> str:
     import psycopg
 
     from ..utils.aggregations import _to_pyformat
@@ -428,5 +439,5 @@ def explain_semantic(user_id: str, q: str, *, limit: int = 10, url: str | None =
     with get_engine(url).connect() as conn:
         with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
             cur.execute("EXPLAIN ANALYZE " + _to_pyformat(semantic_sql()),
-                        {"u": user_id, "qvec": qvec, "k": MAX_K, "limit": min(limit, MAX_LIMIT)})
+                        {"u": user_id, "qvec": qvec, "k": MAX_K})
             return "\n".join(str(r[0]) for r in cur.fetchall())
