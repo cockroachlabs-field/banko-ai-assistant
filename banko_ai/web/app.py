@@ -57,6 +57,7 @@ from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
+from .shell import plain_page, signed_in_profile
 
 PROVIDER_CHECK_SECONDS = 8.0
 # Fixed forever: changing it would orphan every cookie-less caller's thread.
@@ -371,6 +372,7 @@ def create_app() -> Flask:
         detail = _gate_detail()
         if request.path.startswith("/api/"):
             return jsonify({"error": "warming_up", "detail": detail}), 503
+        plain_page()
         return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
 
     @app.errorhandler(ModelWarmingUp)
@@ -378,6 +380,7 @@ def create_app() -> Flask:
         detail = "The embedding model is still loading. Try again in a few seconds."
         if request.path.startswith("/api/"):
             return jsonify({"error": "warming_up", "detail": detail}), 503
+        plain_page()
         return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
 
     @app.before_request
@@ -624,9 +627,23 @@ def create_app() -> Flask:
         path = request.path
         if any(path.startswith(p) for p in _SESSION_EXEMPT_PREFIXES):
             return None
-        if session.get('user_id'):
+        if not session.get('user_id'):
+            return redirect(url_for('login'))
+        try:
+            profile = signed_in_profile()
+        except Exception as e:
+            # A database blip must not sign anyone out: the page renders, or
+            # fails into the error page, on its own.
+            _coach_log.getLogger("banko.web").warning(
+                "profile lookup failed (%s); serving the page without signing out", e.__class__.__name__)
             return None
-        return redirect(url_for('login'))
+        if profile is None:
+            # The user is gone (an expired demo user, a rebuilt cluster) but
+            # the browser kept its cookie: start over at the persona picker.
+            for key in ('user_id', 'username', 'thread_id'):
+                session.pop(key, None)
+            return redirect(url_for('login'))
+        return None
 
     @app.route('/logout')
     def logout():
@@ -1521,10 +1538,13 @@ def create_app() -> Flask:
     def _wants_json() -> bool:
         return request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json"
 
+    # Error pages never depend on the shell, so they render even when the
+    # database (and with it the signed-in profile) is out of reach.
     @app.errorhandler(404)
     def not_found(error):
         if _wants_json():
             return jsonify({"error": "not_found"}), 404
+        plain_page()
         return render_template("errors/error.html", code=404,
                                message="That page doesn't exist."), 404
 
@@ -1532,6 +1552,7 @@ def create_app() -> Flask:
     def server_error(error):
         if _wants_json():
             return jsonify({"error": NEUTRAL_FAILED}), 500
+        plain_page()
         return render_template("errors/error.html", code=500, message=NEUTRAL_FAILED), 500
 
     # Register blueprints

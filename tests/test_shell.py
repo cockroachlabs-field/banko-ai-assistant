@@ -95,6 +95,44 @@ def test_page_404_is_html_and_api_404_is_json(monkeypatch, member):
     assert api.status_code == 404 and api.is_json
 
 
+def test_a_session_for_a_user_who_is_gone_starts_over_at_login(monkeypatch):
+    # An expired demo user, or a rebuilt cluster, while the browser keeps its cookie.
+    import uuid
+    client = app_client(monkeypatch)
+    for path in ("/", "/settings", "/assistant"):
+        with client.session_transaction() as s:
+            s["user_id"] = str(uuid.uuid4())
+            s["username"] = "gone"
+        resp = client.get(path)
+        assert resp.status_code == 302 and resp.headers["Location"].endswith("/login"), path
+        with client.session_transaction() as s:
+            assert "user_id" not in s and "username" not in s
+    assert client.get("/login").status_code == 200
+
+
+def test_error_pages_render_when_the_profile_lookup_fails(monkeypatch, member):
+    import banko_ai.web.shell as shell
+    client = app_client(monkeypatch)
+    with client.session_transaction() as s:
+        s["user_id"] = member
+
+    def down(*args, **kwargs):
+        raise RuntimeError("connection to server at 10.0.0.7 port 26257 failed")
+
+    real = shell.get_profile
+    monkeypatch.setattr(shell, "get_profile", down)
+    missing = client.get("/no-such-page")
+    assert missing.status_code == 404 and missing.mimetype == "text/html" and b"app.css" in missing.data
+    broken = client.get("/")
+    assert broken.status_code == 500 and broken.mimetype == "text/html" and b"app.css" in broken.data
+    for resp in (missing, broken):
+        assert b"10.0.0.7" not in resp.data and b"RuntimeError" not in resp.data
+    with client.session_transaction() as s:
+        assert s["user_id"] == member  # a blip signs nobody out
+    monkeypatch.setattr(shell, "get_profile", real)
+    assert client.get("/").status_code == 200
+
+
 def test_profile_service(member):
     from banko_ai.services.profile import get_profile
     p = get_profile(member)

@@ -4,11 +4,16 @@ routes are registered, so a page appears in the sidebar when it ships."""
 
 from __future__ import annotations
 
-from flask import current_app, request, session, url_for
+import logging
+
+from flask import current_app, g, request, session, url_for
 
 from ..assistant.answers import LANGUAGES
 from ..config.settings import get_config
 from ..services.profile import get_profile
+
+log = logging.getLogger("banko.shell")
+_UNREAD = object()
 
 NAV = (
     {"key": "dashboard", "label": "Dashboard", "icon": "layout-dashboard", "endpoint": "pages.dashboard", "group": "money"},
@@ -46,17 +51,48 @@ def _region(profile: dict) -> str | None:
         return None
 
 
-def shell_context() -> dict:
+def signed_in_profile() -> dict | None:
+    """The signed-in user's profile, read once per request: None without a
+    session or when that user no longer exists. A failed lookup raises, and
+    raises again for the rest of the request instead of retrying."""
     user_id = session.get("user_id")
     if not user_id:
+        return None
+    found = g.get("_banko_profile", _UNREAD)
+    if found is _UNREAD:
+        try:
+            found = get_profile(user_id)
+        except Exception as exc:
+            found = exc
+        g._banko_profile = found
+    if isinstance(found, Exception):
+        raise found
+    return found
+
+
+def plain_page() -> None:
+    """Mark this request's page as one that renders without the shell (the
+    error and warming pages), so it never waits on the database."""
+    g._banko_plain = True
+
+
+def shell_context() -> dict:
+    if g.get("_banko_plain"):
         return {}
-    profile = get_profile(user_id)
-    if profile is None:
+    try:
+        profile = signed_in_profile()
+        return {"shell": _shell(profile)} if profile is not None else {}
+    except Exception as exc:
+        # Class name only: the message could carry a connection string.
+        log.warning("page shell unavailable (%s); rendering without it", exc.__class__.__name__)
         return {}
+
+
+def _shell(profile: dict) -> dict:
     cfg = get_config()
     shown = current_app.extensions["banko_ai"]["shown"]()
     page_raw = (request.endpoint or "").rsplit(".", 1)[-1]
-    return {"shell": {
+    return {
         "brand": {"name": cfg.brand_name, "accent": cfg.brand_accent},
         "theme": cfg.ui_theme,
         "languages": [{"code": c, "name": LANGUAGES[c]} for c in cfg.ui_languages.split(",")],
@@ -68,4 +104,4 @@ def shell_context() -> dict:
         "nav": nav_groups(current_app),
         "page": {"assistant_thread": "assistant"}.get(page_raw, page_raw),
         "section": {"assistant_thread": "assistant", "account": "accounts"}.get(page_raw, page_raw),
-    }}
+    }
