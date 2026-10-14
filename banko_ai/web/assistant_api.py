@@ -32,6 +32,9 @@ log = logging.getLogger("banko.assistant")
 WARMING = "I'm still warming up. Try that again in a few seconds."
 RECONNECTING = "Reconnecting to the database, try that again in a moment."
 _AGENT_FOR_STEP = {"fraud": "fraud", "budget": "budget"}
+# A semantic search plan carries its query vector twice (about 8,000
+# characters each), and a multi-region plan names every region it touched.
+EXPLAIN_CAP = 60_000
 _RECEIPT_KEYS = ("document_id", "merchant", "amount", "date", "category", "items", "expense_id")
 
 
@@ -183,7 +186,10 @@ def _answer_event(final: dict, chat: TimedChat, shown) -> dict:
     elapsed = _close_trace(chat, shown)
     meta = dict(final.get("meta") or {})
     if meta.get("explain"):
-        meta["explain"] = str(meta["explain"])[:20000]
+        plan = str(meta["explain"])
+        meta["explain"] = plan[:EXPLAIN_CAP]
+        if len(plan) > EXPLAIN_CAP:
+            meta["explain_cut"] = True  # the block under the answer says "plan shortened"
     meta["trace"] = current_trace()
     meta["tokens"] = {"input": chat.input_tokens, "output": chat.output_tokens, "estimated": chat.estimated,
                       "saved": int(final.get("saved_tokens") or 0)}

@@ -102,6 +102,19 @@ def test_the_answer_says_what_the_model_spent_and_what_the_cache_saved(client):
     assert not [s for s in again["meta"]["trace"] if s["kind"] == "llm"]
 
 
+def test_the_plan_cap_is_60000_characters_and_a_cut_plan_says_so(client, monkeypatch):
+    from banko_ai.utils import aggregations
+    tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
+    monkeypatch.setattr(aggregations, "explain_aggregation", lambda *a, **k: "• group\n" + "│ x\n" * 25000)
+    long = dict(_events(client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                                    json={"message": "how much did I spend on restaurants in the last 43 days"})))
+    assert len(long["answer"]["meta"]["explain"]) == 60000 and long["answer"]["meta"]["explain_cut"] is True
+    monkeypatch.setattr(aggregations, "explain_aggregation", lambda *a, **k: "• group\n  regions: us-east-1\n")
+    short = dict(_events(client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                                     json={"message": "how much did I spend on groceries in the last 43 days"})))
+    assert short["answer"]["meta"]["explain"].startswith("• group") and "explain_cut" not in short["answer"]["meta"]
+
+
 def test_a_failed_turn_keeps_its_trace_and_names_nothing_internal(client, monkeypatch):
     class Down:
         def complete(self, messages, *, temperature=0.3):
