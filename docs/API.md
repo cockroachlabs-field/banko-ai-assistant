@@ -36,7 +36,6 @@
 | `/api/cdc/signals` | POST | CDC webhook receiver. Body is a CockroachDB changefeed wrapped envelope; requires an `X-Banko-Signature` header (hex HMAC-SHA256 of the raw body with `CDC_WEBHOOK_HMAC_SECRET`). Returns 202 with queued and replayed signal ids |
 | `/api/coach/nudges` | GET | Recent nudges for the current persona (`?limit=N`) |
 | `/api/coach/nudges/<nudge_id>` | GET | One nudge with its tool trace (the evidence panel) |
-| `/api/coach/simulate` | POST | Create a synthetic spending signal, `{"user_id": "maya", "signal_type": "large_purchase"}`, for demo purposes | 200 | 400 |
 | `/api/coach/chat` | POST | Conversational coach; JSON body `{"message": ..., "thread_id": ...}`, state checkpointed in CockroachDB |
 | `/health/coach` | GET | Coach subsystem health: DB reachability, webhook secret, Kafka flag, last nudge time |
 
@@ -60,7 +59,7 @@ The same signals can arrive over Kafka instead of the webhook: set
 | `/api/stop-generation` | POST | Stop an in-progress generation run |
 | `/api/reset-generation` | POST | Reset generation state |
 | `/cache-cleanup` | POST | Clear expired cache entries |
-| `/data-generator` | GET | Data generator UI |
+| `/data-generator` | GET | Redirects to the demo data section of Settings |
 
 ### Web Interface
 
@@ -110,11 +109,11 @@ the personas are ready.
 | GET | `/api/v1/accounts` | Accounts grouped into cash and credit, with totals, net worth and card utilization | 200 | |
 | GET | `/api/v1/accounts/<id>` | One account | 200 | 404 |
 | GET | `/api/v1/accounts/<id>/statements` | No `month`: the months that have a statement. `?month=YYYY-MM`: opening, credits, charges, closing and entries. Add `&format=csv` for a download | 200 | 400, 404 |
-| GET | `/api/v1/accounts/history` | Net worth history for all personas on the accounts page: `months` array and `series` keyed by persona | 200 | |
+| GET | `/api/v1/accounts/history` | Your net worth at the end of each month, `items` of `{"month": "2026-10", "net_worth": ...}`; `?months=` 1 to 24 (default 12) | 200 | 400 |
 | GET | `/api/v1/categories` | Full category tree with labels, icons, and colors | 200 | |
 | GET | `/api/v1/transactions` | Newest first, keyset paged: `limit` (1 to 200, default 50), `cursor` (from `next_cursor`), `category`, `account`, `kind`, `from`, `to` (years 1900 to 2999), `min`, `max`. With `q`, a semantic search instead, ranked by vector distance (`limit` default 20, plus `category`, `from`, `to`) | 200 | 400 |
 | GET | `/api/v1/transactions/<id>` | One transaction, by ledger entry id or expense id; includes `receipt` (the document that sourced it, if any) and `checks` (fraud and budget agent decisions) | 200 | 404 |
-| PATCH | `/api/v1/transactions/<id>` | Update a transaction; `{"category": "groceries"}` recategorizes it, `{"notes": "..."}` sets or clears the notes field | 200 | 400, 404 |
+| PATCH | `/api/v1/transactions/<id>` | Recategorize one of your purchases, `{"category": "Groceries"}` (a catalog category label, in any case), and get the updated transaction back. Income and transfers have no category, so they answer 404 | 200 | 400, 404 |
 | GET | `/api/v1/cashflow` | Income, spending, net and savings rate per month, plus totals by category and merchant; `?months=` 1 to 24 (default 6) | 200 | 400 |
 | GET | `/api/v1/budgets` | This month's budgets with spending against each | 200 | |
 | PUT | `/api/v1/budgets` | Set one budget, `{"category": "groceries", "amount": "425"}`; `0` removes it | 200 | 400 |
@@ -122,8 +121,11 @@ the personas are ready.
 | GET | `/api/v1/goals` | Savings goals with progress and projected finish | 200 | |
 | POST | `/api/v1/goals/<id>/contribute` | Move money into a goal, `{"from_account", "amount", "idempotency_key"}` | 201, 200 replay | 400, 404, 409 |
 | POST | `/api/v1/transfers` | Move money between two of your accounts, `{"from_account", "to_account", "amount", "idempotency_key"}`; `"kind": "card_payment"` pays a card | 201, 200 replay | 400, 404, 409 |
-| GET | `/api/v1/agents/activity` | Recent agent decisions and actions (receipts, nudges) de-duplicated and sorted by time, for the agents feed | 200 | |
-| GET | `/api/v1/agents/stats` | Agent execution counts and the 5 most recent of each kind | 200 | |
+| GET | `/api/v1/agents/activity` | Your receipts, coach nudges and assistant proposals, plus agent decisions about you (fraud checks on your purchases, budget checks that name you), newest first, each with a stable `id`. `confidence` is set only when an agent recorded one; on fraud checks it is the fraud score | 200 | |
+| GET | `/api/v1/agents/stats` | `agents`: one row per agent type and region with its latest heartbeat, `active` when it beat in the last 10 minutes. `today`: how many of your activity items each agent has today (UTC) | 200 | |
+| GET | `/api/v1/coach/nudges` | Your 50 latest nudges, newest first, each with its signal type and severity | 200 | |
+| GET | `/api/v1/coach/nudges/<id>` | One nudge with the signal's payload and the coach agent's tool trace | 200 | 404 |
+| POST | `/api/v1/coach/simulate` | Send a simulated pipeline signal built from your own data, `{"signal_type": "budget_threshold"}` (or `anomaly`, `recurring_drift`). It goes through the same queue as the CDC webhook, so the real coach agent answers it. 409 with a plain reason when your data can't support that signal, such as no budget at 80% of its limit or more, or no bill whose price went up | 202 | 400, 409 |
 | POST | `/api/v1/admin/reset` | Delete and reseed one persona, `{"persona": "maya"}`, or all of them, `{"all": true, "confirm": "all users"}` | 202 | 400, 404 |
 | POST | `/api/v1/admin/seed` | Create and seed generated demo users, `{"users": 1-200, "months": 1-24}` | 202 | 400 |
 
@@ -140,8 +142,16 @@ no session). The UI checks this on every response and redirects to `/login`
 when it differs from the signed-in persona, which is how expired sessions are
 detected.
 
-Socket.IO events:
-- `seeding`: `{"user_id": "maya", "state": "running", "done": 2000, "total": 5000}`. Sent while a persona is being seeded. `state` is `running` or `done`. The dashboard shows a progress bar during seeding.
+Socket.IO events about one user go only to that user's browsers: on connect
+the page sends `coach.join`, which joins the room of the signed-in user (from
+the session, never from the client).
+- `seeding`: `{"user_id": "00000000-0000-0000-0000-0000000000a1", "state": "running", "done": 2000, "total": 5000}`. Sent while a user's history is being written. `state` is `running`, `done` or `failed`. Every page shows the progress while it runs and refreshes when it is done. Seeds and resets started from Settings report to the person who started them.
+- `agent_activity`: one step of an agent's work for you, such as a receipt step, a fraud or budget check, or an assistant turn: `{"agent_type": "fraud", "status": "completed", "message": "...", "region": "us-east-1", "user_id": "...", "timestamp": "2026-10-13T20:15:00+00:00"}`. Timestamps are UTC.
+- `coach.nudge`: a new nudge from the coach agent.
+
+`agent_decision` goes to every browser, so it carries nothing about a user:
+only the agent type, region, decision type and time, which the Agents page
+refreshes on.
 
 #### Assistant (threads, memories, actions, receipts)
 
@@ -160,7 +170,7 @@ Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts
 | GET | `/api/v1/memories` | List your memories | 200 | |
 | DELETE | `/api/v1/memories/<memory_id>` | Delete a memory | 204 | 404 |
 | POST | `/api/v1/receipts` | Upload a receipt, multipart `receipt` file plus optional `thread_id` form field; streams SSE | SSE | 404, 400 |
-| GET | `/api/v1/receipts/<id>/thumbnail` | Receipt image thumbnail, 200×200 PNG | 200 | 404 |
+| GET | `/api/v1/receipts/<id>/thumbnail` | The receipt image as a JPEG, at most 512 px on its longer side. 404 when there is none, as for a PDF | 200 | 404 |
 
 **SSE events from POST `/api/v1/assistant/threads/<thread_id>/messages`:**
 
@@ -168,7 +178,7 @@ Threads hold conversations; each turn streams Server-Sent Events (SSE). Receipts
 - `token`: `{"text": "partial answer text"}`. Tokens arrive while the answer is written. The `answer` event carries the final text, so replace what you streamed with it.
 - `citation`: `{"expense_id": "...", "merchant": "Blue Bottle", "amount": 13.58, "date": "2026-10-11"}`, one per purchase the answer cites. Amounts are positive.
 - `proposal`: `{"action_id": "<uuid>", "kind": "budget", "summary": "Set your Groceries budget to $450.00 a month", "status": "pending"}`. `kind` is `budget` or `recategorize`. Nothing changes until `POST /api/v1/actions/<action_id>/confirm`, and the answer of a proposal turn ends with "Waiting for your confirmation: <summary>."
-- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": false, "route": "aggregate", "meta": {"region": "us-east-1", "db_ms": 23, "trace": [...], "explain": "..."}}`. `route` is `aggregate`, `receipt`, `remember`, `forget`, `offtopic` or `plan`. The only markers left in `answer` are `[txn:<expense_id>]` for the purchases in `citations`. On aggregation and planner answers, `meta` holds the region that served the query (null on a single-region cluster) and the database time in ms; `meta.trace` is the full step-by-step breakdown of how the answer was built (caches, SQL, model, tools), and `meta.explain` is the EXPLAIN ANALYZE output when aggregation SQL ran. Receipt, memory and off-topic answers, and answers from the answer cache, send `{}`.
+- `answer`: `{"answer": "full answer", "citations": [...], "proposals": [...], "cached": false, "route": "aggregate", "meta": {"region": "us-east-1", "db_ms": 23, "trace": [...], "explain": "..."}}`. `route` is `aggregate`, `receipt`, `remember`, `forget`, `offtopic` or `plan`. The only markers left in `answer` are `[txn:<expense_id>]` for the purchases in `citations`. On aggregation and planner answers, `meta` holds the region that served the query (null on a single-region cluster) and the database time in ms; `meta.trace` is the full step-by-step breakdown of how the answer was built (caches, SQL, model, tools), and `meta.explain` is the EXPLAIN ANALYZE output when aggregation SQL ran. Receipt, memory and off-topic answers, and answers from the answer cache, carry only `meta.trace`.
 - `error`: `{"message": "...", "trace": [...]}`, a neutral message (still warming up, reconnecting, or a general failure), never the exception text. `trace` holds the steps that ran before the error, in the same format as `meta.trace` on the answer event.
 - `done`: `{}`, always the last event.
 

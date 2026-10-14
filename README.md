@@ -29,8 +29,9 @@ CockroachDB cluster.
   within a running app you can swap models inside the active provider from
   Settings (model lists come from each provider's API, not a hardcoded
   enum). Switching providers requires a restart with the new env value.
-- **See agents work in real time** — the dashboard streams actual agent
-  state from the backend (no canned activity).
+- **See agents work in real time**: the Agents page shows real receipts,
+  fraud and budget checks, nudges and the assistant's proposals as they
+  happen, streamed from the backend (no canned activity).
 - **Three-layer semantic cache** — query / embedding / vector-search caches
   with tunable similarity thresholds.
 
@@ -38,9 +39,9 @@ CockroachDB cluster.
 
 The UI has no build step: templates plus Alpine.js bind data from the JSON API.
 
-Pages: dashboard (net worth, spending, budgets, coach insight, upcoming bills), accounts (with statements and transaction drill-down), transactions (table and semantic search), cash flow (income vs spending), budget (set and track spending limits), recurring bills, goals, the assistant (full conversational AI with explanations of how each answer was built), the coach inbox (simulated spending signals with agent decisions and rationale), the agents feed (real receipt uploads, nudges, and decisions as they finish), and settings (language, theme, model, demo data with live progress, memories, and system health).
+Pages: dashboard (net worth, spending, budgets, coach insight, upcoming bills), accounts (balances, net worth history, monthly statements with a CSV download, and Move money), transactions (a filtered list, semantic search, and a drawer with the receipt, similar purchases, the agent checks and recategorize), cash flow (income vs spending), budget (set and track spending limits), recurring bills, goals, the assistant (full conversational AI with explanations of how each answer was built), the coach inbox (every nudge with the signal behind it and the coach agent's tool trace, plus presenter-only simulated signals built from your own data), the agents feed (receipts, nudges, fraud and budget checks, and the assistant's proposals as they happen), and settings (language, theme, model, demo data with live progress, memories, and system health).
 
-A click on any header icon toggles between Daylight and Midnight (controlled by `UI_THEME`). The identity pill in the top right shows the active persona and provider; drop a receipt anywhere and the assistant panel slides up. Switching models happens from Settings and takes effect immediately. Switching providers requires a restart with the new `AI_SERVICE` value.
+The theme button in the header cycles through Daylight, Midnight and your system setting, and remembers your choice; `UI_THEME` sets the default. The identity pill in the top right shows the AI provider and model on screen; drop a receipt anywhere and the assistant panel opens on the right to scan it. Switching models happens from Settings and takes effect immediately. Switching providers requires a restart with the new `AI_SERVICE` value.
 
 ## How it works
 
