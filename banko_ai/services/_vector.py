@@ -42,13 +42,18 @@ def nearest(conn: Connection, *, table: str, index: str, exact_index: str, id_co
         )
         SELECT id, distance FROM nn WHERE distance IS NOT NULL ORDER BY distance
     """), params).fetchall()
-    if rows:
+    if len(rows) >= params["k"]:
         return [(str(r[0]), float(r[1])) for r in rows]
-    has_rows = conn.execute(text(
-        f"SELECT EXISTS (SELECT 1 FROM {table}@{exact_index} WHERE user_id = CAST(:u AS UUID) AND {emb_col} IS NOT NULL)"
-    ), params).scalar()
-    if not has_rows:
-        return []
+    # Fewer than k: the user may just have fewer rows. But on v26.3 the
+    # per-user index of a REGIONAL BY ROW table can return none of them, or
+    # one, though they are there; then rank this user's rows exactly.
+    have = conn.execute(text(f"""
+        SELECT count(*) FROM (SELECT 1 FROM {table}@{exact_index}
+                              WHERE user_id = CAST(:u AS UUID) AND {emb_col} IS NOT NULL LIMIT :k)
+    """), params).scalar()
+    if len(rows) >= have:
+        return [(str(r[0]), float(r[1])) for r in rows]
+    got = len(rows)
     t0 = time.perf_counter()
     rows = conn.execute(text(f"""
         SELECT {id_col}, {emb_col} <=> :qvec AS distance
@@ -57,11 +62,11 @@ def nearest(conn: Connection, *, table: str, index: str, exact_index: str, id_co
         ORDER BY distance LIMIT :k
     """), params).fetchall()
     trace_step("vector_search", "Vector index fallback",
-               f"{index} returned no rows; exact scan of this user's {table}",
+               f"{index} returned {f'{got} of {have} rows' if got else 'no rows'}; exact scan of this user's {table}",
                ms=(time.perf_counter() - t0) * 1000, status="warning")
     if table not in _logged:
         _logged.add(table)
-        log.warning("The per-user vector index %s returned no rows for a user who has rows in %s; "
+        log.warning("The per-user vector index %s returned fewer rows than a user has in %s; "
                     "ranking that user's rows exactly (cockroachlabs/cockroach#13756). Logged once per table.",
                     index, table)
     return [(str(r[0]), float(r[1])) for r in rows]

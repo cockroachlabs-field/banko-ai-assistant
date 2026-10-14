@@ -104,6 +104,32 @@ def test_nearest_returns_nothing_for_a_user_without_rows(two):
                        user_id=a, qvec=embed("x"), k=5) == []
 
 
+class _OneRowIndex:
+    """A connection on which the per-user vector index answers with one row,
+    the way v26.3 did for one user on a REGIONAL BY ROW table."""
+
+    def __init__(self, conn, index):
+        self.conn, self.index = conn, index
+
+    def execute(self, clause, params=None):
+        sql = str(clause)
+        if f"@{self.index}" in sql and "LIMIT :k" in sql:
+            clause = text(sql.replace("LIMIT :k", "LIMIT 1"))
+        return self.conn.execute(clause, params)
+
+
+def test_nearest_ranks_exactly_when_the_index_comes_back_short(two):
+    a, _ = two
+    for q in ("coffee spend", "grocery total", "rent due"):
+        C.put_answer(a, version=1, language="English", query=q, qvec=embed(q), answer=q, tokens=1)
+    with get_engine().connect() as c:
+        found = nearest(_OneRowIndex(c, "answer_cache_user_embedding"), table="answer_cache",
+                        index="answer_cache_user_embedding", exact_index="answer_cache_user_idx",
+                        id_col="cache_id", emb_col="query_embedding", user_id=a, qvec=embed("coffee"), k=3)
+    assert len(found) == 3
+    assert [d for _, d in found] == sorted(d for _, d in found)
+
+
 def test_record_stat_feeds_cache_stats():
     with get_engine().connect() as c:
         before = c.execute(text("SELECT count(*) FROM cache_stats WHERE cache_type = 'answer'")).scalar()
