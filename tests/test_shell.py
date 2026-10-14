@@ -196,6 +196,14 @@ def test_failed_seeding_points_each_user_to_a_step_they_can_take(monkeypatch, me
         assert step in html and other not in html
 
 
+def test_the_error_page_carries_the_brand_name(monkeypatch, member):
+    client = app_client(monkeypatch, BRAND_NAME="Roachbank")
+    with client.session_transaction() as s:
+        s["user_id"] = member
+    html = client.get("/no-such-page").get_data(as_text=True)
+    assert "<title>404 · Roachbank</title>" in html and "Banko" not in html
+
+
 def test_profile_service(member):
     from banko_ai.services.profile import get_profile
     p = get_profile(member)

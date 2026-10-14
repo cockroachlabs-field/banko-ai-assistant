@@ -1539,7 +1539,7 @@ def create_app() -> Flask:
         if _wants_json():
             return jsonify({"error": "not_found"}), 404
         plain_page()
-        return render_template("errors/error.html", code=404,
+        return render_template("errors/error.html", code=404, brand_name=config.brand_name,
                                message="That page doesn't exist."), 404
 
     @app.errorhandler(500)
@@ -1547,7 +1547,8 @@ def create_app() -> Flask:
         if _wants_json():
             return jsonify({"error": NEUTRAL_FAILED}), 500
         plain_page()
-        return render_template("errors/error.html", code=500, message=NEUTRAL_FAILED), 500
+        return render_template("errors/error.html", code=500, brand_name=config.brand_name,
+                               message=NEUTRAL_FAILED), 500
 
     # Register blueprints
     from .agent_dashboard import agent_dashboard
