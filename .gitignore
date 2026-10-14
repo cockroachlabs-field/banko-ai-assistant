@@ -20,8 +20,9 @@ env/
 old_files/
 scratchcode/
 
-# Configuration and sensitive files
-config.py
+# Configuration and sensitive files (a root config.py only: a bare pattern
+# also hid banko_ai/pipeline/config.py, so it never reached the repo)
+/config.py
 *.env
 .env
 

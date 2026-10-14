@@ -29,8 +29,8 @@ Flask + SocketIO web app
   ├── Vector RAG (langchain-cockroachdb 0.2.x, C-SPANN cosine indexes,
   │     384-dim all-MiniLM-L6-v2 embeddings — local, no API key)
   ├── Cache layer (3 tiers: query, embedding, vector_search, all in CRDB)
-  ├── CDC config (banko_ai/pipeline/config.py — webhook + Kafka modes;
-  │     consumers planned in Coach spec)
+  ├── CDC intake (spending signals through the /api/cdc/signals webhook
+  │     or the Kafka consumer in banko_ai/coach/; settings in the coach group)
   └── CockroachDB (v25.4.0+, vector indexes are GA, row-level TTL for
         checkpoints and signal/nudge tables)
 ```
@@ -47,7 +47,6 @@ A fuller architecture diagram lives in the internal design docs (local-only, see
 | `banko_ai/vector_search/` | Semantic search, embedding enrichment, sample data generator |
 | `banko_ai/utils/` | DatabaseManager, cache manager, migration runner, retry/pooling, chat history |
 | `banko_ai/web/` | Flask app (~1800 LOC in `app.py`), agent dashboard, auth stub |
-| `banko_ai/pipeline/` | CDC config (Kafka, webhook, COS) — consumer impls planned |
 | `banko_ai/coach/` | Spending Coach v1a: agent, signal handler, insights, tools, Kafka consumer |
 | `banko_ai/agents/supervisor.py` | **Planned** — LLM-routed multi-agent supervisor |
 | `banko_ai/observability/` | **Planned** — OTel instrumentation |
