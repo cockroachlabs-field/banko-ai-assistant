@@ -8,7 +8,7 @@
   <div class="b-grid" style="margin-top:14px" x-show="goals" x-cloak>
     <template x-for="g in (goals || [])" :key="g.goal_id">
       <div class="b-card">
-        <div class="b-row"><div class="b-name" x-text="g.icon + ' ' + g.name"></div><span class="b-tag" :class="g.on_track ? 'ok' : 'warn'" x-text="g.on_track ? 'On track' : 'Behind'"></span></div>
+        <div class="b-row"><div class="b-name" x-text="g.icon + ' ' + g.name"></div><template x-if="paceTag(g)"><span class="b-tag" :class="paceTag(g).ok ? 'ok' : 'warn'" x-text="paceTag(g).text"></span></template></div>
         <div class="b-big" x-text="Banko.fmt.money0(g.saved)"></div>
         <div class="b-muted" x-text="'of ' + Banko.fmt.money0(g.target_amount) + (g.target_date ? ' by ' + Banko.fmt.date(g.target_date, { month: 'short', year: 'numeric' }) : '')"></div>
         <div class="b-bar"><span :style="'width:' + g.progress * 100 + '%'"></span></div>

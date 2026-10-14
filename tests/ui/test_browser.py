@@ -580,6 +580,34 @@ def test_the_drawer_shows_purchase_checks_only_on_purchases(server, browser):
         ctx.close()
 
 
+def test_goal_pace_tags_follow_the_goal(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        def goal(name, *, remaining, target_date, on_track):
+            return {"goal_id": name, "name": name, "icon": "🎯", "target_amount": 1000, "target_date": target_date,
+                    "account_id": NEW_THREAD, "saved": 1000 - remaining, "remaining": remaining,
+                    "progress": (1000 - remaining) / 1000, "monthly_pace": 100,
+                    "projected_completion": "2027-01-01" if remaining else "2026-10-13", "on_track": on_track}
+        page.route("**/api/v1/goals", lambda r: r.fulfill(json={"items": [
+            goal("Someday", remaining=600, target_date=None, on_track=False),
+            goal("Finished late", remaining=0, target_date="2026-06-01", on_track=False),
+            goal("Steady", remaining=500, target_date="2027-06-01", on_track=True),
+            goal("Slipping", remaining=900, target_date="2026-11-01", on_track=False)]}))
+        _login(page, server, "maya")
+        page.goto(server + "/goals")
+        page.wait_for_load_state("networkidle")
+        cards = page.locator("section .b-grid > .b-card")
+        tags = {name: cards.filter(has_text=name).locator(".b-tag") for name in ("Someday", "Finished late", "Steady", "Slipping")}
+        expect(tags["Someday"]).to_have_count(0)
+        expect(tags["Finished late"]).to_have_text("Done")
+        expect(cards.filter(has_text="Finished late")).not_to_contain_text("Behind")
+        expect(tags["Steady"]).to_have_text("On track")
+        expect(tags["Slipping"]).to_have_text("Behind")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

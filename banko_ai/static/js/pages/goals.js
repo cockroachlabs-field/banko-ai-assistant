@@ -7,6 +7,12 @@ document.addEventListener("alpine:init", () => {
         this.goals = goals.items; this.accounts = accounts.accounts;
       } catch (e) { this.error = Banko.explain(e); }
     },
+    // Done beats any date, and without a target date there is no pace to judge.
+    paceTag(g) {
+      if (Number(g.remaining) === 0) return { text: "Done", ok: true };
+      if (!g.target_date) return null;
+      return g.on_track ? { text: "On track", ok: true } : { text: "Behind", ok: false };
+    },
     paceText(g) {
       if (Number(g.remaining) === 0) return "Done. Nice work.";
       if (!g.projected_completion) return "No contributions in the last three months.";
