@@ -197,8 +197,8 @@ def list_transactions():
     q = request.args.get("q")
     if q:
         return jsonify(transactions.semantic_search(
-            uid, q, limit=_int_arg("limit", 20, 1, 200), category=request.args.get("category"),
-            date_from=_date_arg("from"), date_to=_date_arg("to")))
+            uid, q, limit=_int_arg("limit", 20, 1, 200), cursor=request.args.get("cursor"),
+            category=request.args.get("category"), date_from=_date_arg("from"), date_to=_date_arg("to")))
     amounts = {name: ledger.money(request.args[name]) for name in ("min", "max") if request.args.get(name)}
     return jsonify(transactions.list_transactions(
         uid, limit=_int_arg("limit", 50, 1, 200), cursor=request.args.get("cursor"),

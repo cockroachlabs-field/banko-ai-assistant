@@ -24,7 +24,9 @@ from .ledger import NotFound, bump_data_version
 log = logging.getLogger("banko.services")
 
 MAX_LIMIT = 200
-MAX_K = 500
+# Every page of one semantic search is cut from the same nearest neighbours,
+# so a next page starts exactly where the one before it stopped.
+SEARCH_WINDOW = 100
 
 # Ledger entries, plus expenses that never got a ledger entry (receipts and
 # imports from before the ledger existed), as one ordered stream.
@@ -60,6 +62,21 @@ def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
         return datetime.fromisoformat(stamp), ident
     except (ValueError, UnicodeDecodeError):
         return None
+
+
+def _encode_offset(offset: int) -> str:
+    return base64.urlsafe_b64encode(f"o|{offset}".encode()).decode()
+
+
+def _decode_offset(cursor: str | None) -> int:
+    """Where a search page starts. A cursor that is not one of ours starts over."""
+    if not cursor:
+        return 0
+    try:
+        tag, offset = base64.urlsafe_b64decode(cursor.encode()).decode().split("|")
+        return int(offset) if tag == "o" and int(offset) >= 0 else 0
+    except (ValueError, UnicodeDecodeError):
+        return 0
 
 
 def _category_names(category: str) -> list[str]:
@@ -215,15 +232,18 @@ def _neighbours(conn, user_id: str, qvec: str, *, k: int, filters: str = "", ext
     return rows
 
 
-def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, category: str | None = None,
-                    date_from: date | None = None, date_to: date | None = None,
+def semantic_search(user_id: str, q: str, *, limit: int = 20, cursor: str | None = None,
+                    category: str | None = None, date_from: date | None = None, date_to: date | None = None,
                     url: str | None = None) -> dict:
+    """The user's purchases nearest to q in meaning, one page at a time, with
+    next_cursor while the window has more. The statement reads the whole
+    SEARCH_WINDOW either way, so a later page costs what the first one did."""
     url = request_url(url)
     q = (q or "").strip()[:500]
     if not q:
-        return {"items": []}
+        return {"items": [], "next_cursor": None}
     limit = max(1, min(int(limit), MAX_LIMIT))
-    k = max(limit, min(int(k), MAX_K))
+    offset = _decode_offset(cursor)
     filters: list[str] = []
     extra: dict[str, Any] = {}
     if category:
@@ -239,12 +259,13 @@ def semantic_search(user_id: str, q: str, *, limit: int = 20, k: int = 50, categ
     # loads on first use), and no connection should wait on it.
     qvec = _qvec(q)
     with read_session(user_id, url=url) as conn:
-        rows = [r for r in _neighbours(conn, user_id, qvec, k=k, filters=" ".join(filters), extra=extra) if r[7]]
-    rows = rows[:limit]
+        kept = [r for r in _neighbours(conn, user_id, qvec, k=SEARCH_WINDOW, filters=" ".join(filters), extra=extra)
+                if r[7]]
     items = [_decorate({"id": str(r[0]), "expense_id": str(r[0]), "posted_at": r[1], "amount": -r[2],
                         "kind": "purchase", "merchant": r[3], "category": r[4], "description": r[5],
-                        "distance": float(r[6]), "account_id": None}) for r in rows]
-    return jsonable({"items": items})
+                        "distance": float(r[6]), "account_id": None}) for r in kept[offset:offset + limit]]
+    more = len(kept) > offset + limit
+    return jsonable({"items": items, "next_cursor": _encode_offset(offset + limit) if more else None})
 
 
 def transaction_detail(user_id: str, txn_id: str, *, url: str | None = None) -> dict | None:
@@ -439,5 +460,5 @@ def explain_semantic(user_id: str, q: str, *, url: str | None = None) -> str:
     with get_engine(url).connect() as conn:
         with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
             cur.execute("EXPLAIN ANALYZE " + _to_pyformat(semantic_sql()),
-                        {"u": user_id, "qvec": qvec, "k": MAX_K})
+                        {"u": user_id, "qvec": qvec, "k": SEARCH_WINDOW})
             return "\n".join(str(r[0]) for r in cur.fetchall())

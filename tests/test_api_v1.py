@@ -73,6 +73,15 @@ def test_transactions_paginate_and_search(client):
     assert client.get(f"/api/v1/transactions/{page['items'][0]['id']}").status_code == 200
 
 
+def test_a_search_pages_with_its_cursor(client):
+    first = client.get("/api/v1/transactions?q=groceries&limit=4").get_json()
+    assert len(first["items"]) == 4 and first["next_cursor"]
+    nxt = client.get(f"/api/v1/transactions?q=groceries&limit=4&cursor={first['next_cursor']}").get_json()
+    assert nxt["items"]
+    assert {i["id"] for i in first["items"]}.isdisjoint({i["id"] for i in nxt["items"]})
+    assert first["items"][-1]["distance"] <= nxt["items"][0]["distance"]
+
+
 def test_bad_min_max_are_400(client):
     r = client.get("/api/v1/transactions?min=abc")
     assert r.status_code == 400 and r.get_json()["error"]

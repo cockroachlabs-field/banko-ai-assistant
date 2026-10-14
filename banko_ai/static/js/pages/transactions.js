@@ -7,7 +7,7 @@ document.addEventListener("alpine:init", () => {
     (items) => items, (e) => { categoriesPromise = null; throw e; }));
 
   Alpine.data("transactionsPage", () => ({
-    items: [], next: null, q: "", semantic: false, searchMs: 0, range: "30", kind: "", category: "",
+    items: [], next: null, q: "", searched: "", semantic: false, searchMs: 0, range: "30", kind: "", category: "",
     categories: [], error: "", busy: false, loaded: false, selected: null,
     ranges: [{ key: "30", label: "Last 30 days" }, { key: "90", label: "Last 90 days" }, { key: "all", label: "All time" }],
     init() {
@@ -40,10 +40,12 @@ document.addEventListener("alpine:init", () => {
       } catch (e) { this.error = Banko.explain(e); }
       finally { this.busy = false; this.loaded = true; }
     },
+    // The query the shown matches came from, not whatever the box holds now.
+    searchParams() { return new URLSearchParams({ limit: "25", q: this.searched }); },
     async more() {
       this.busy = true;
       try {
-        const p = this.params(); p.set("cursor", this.next);
+        const p = this.semantic ? this.searchParams() : this.params(); p.set("cursor", this.next);
         const data = await Banko.api("/api/v1/transactions?" + p);
         this.items = this.items.concat(data.items); this.next = data.next_cursor;
       } catch (e) { this.error = Banko.explain(e); }
@@ -55,8 +57,9 @@ document.addEventListener("alpine:init", () => {
       this.error = ""; this.busy = true;
       const t0 = performance.now();
       try {
-        const data = await Banko.api("/api/v1/transactions?limit=25&q=" + encodeURIComponent(q));
-        this.items = data.items; this.next = null; this.semantic = true;
+        this.searched = q;
+        const data = await Banko.api("/api/v1/transactions?" + this.searchParams());
+        this.items = data.items; this.next = data.next_cursor; this.semantic = true;
         this.searchMs = Math.round(performance.now() - t0);
       } catch (e) { this.error = Banko.explain(e); }
       finally { this.busy = false; this.loaded = true; }

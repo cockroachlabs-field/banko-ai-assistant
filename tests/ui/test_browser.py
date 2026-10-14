@@ -940,6 +940,47 @@ def test_the_transactions_range_sends_the_dates_the_api_reads(server, browser):
         ctx.close()
 
 
+def _match(n: int) -> dict:
+    """A semantic search hit as GET /api/v1/transactions?q= returns it."""
+    ident = f"88888888-8888-4888-8888-{n:012d}"
+    return {"id": ident, "expense_id": ident, "kind": "purchase", "posted_at": "2026-10-12", "amount": -4.5 - n,
+            "merchant": f"Cafe {n}", "description": "Coffee", "category": "Coffee", "category_label": "Coffee",
+            "category_icon": "☕", "distance": 0.2 + n / 100, "account_id": None}
+
+
+def test_a_transactions_search_loads_more_from_its_cursor(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        asked = []
+
+        def listing(route):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(route.request.url).query)
+            asked.append(query)
+            if "q" not in query:
+                return route.fulfill(json={"items": [], "next_cursor": None})
+            if query.get("cursor") == ["next-page"]:
+                return route.fulfill(json={"items": [_match(3), _match(4)], "next_cursor": None})
+            return route.fulfill(json={"items": [_match(0), _match(1), _match(2)], "next_cursor": "next-page"})
+
+        page.route("**/api/v1/transactions?*", listing)
+        _login(page, server, "sam")
+        page.goto(server + "/transactions")
+        page.wait_for_load_state("networkidle")
+        page.locator(".b-search input").fill("coffee")
+        page.keyboard.press("Enter")
+        rows = page.locator(".b-tx")
+        expect(rows).to_have_count(3)
+        more = page.get_by_role("button", name="Load more")
+        more.click()
+        expect(rows).to_have_count(5)
+        expect(rows.nth(4)).to_contain_text("Cafe 4")
+        expect(more).to_be_hidden()
+        assert asked[-1]["q"] == ["coffee"] and asked[-1]["cursor"] == ["next-page"], asked[-1]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_the_drawer_shows_purchase_checks_only_on_purchases(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

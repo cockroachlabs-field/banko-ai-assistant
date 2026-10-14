@@ -124,6 +124,43 @@ def test_semantic_search_uses_the_per_user_vector_index(seeded):
     assert hits and all(h["distance"] is not None for h in hits)
 
 
+def test_semantic_search_pages_through_one_ranking(seeded):
+    first = T.semantic_search(seeded, "pizza dinner", limit=5)
+    second = T.semantic_search(seeded, "pizza dinner", limit=5, cursor=first["next_cursor"])
+    whole = T.semantic_search(seeded, "pizza dinner", limit=10)["items"]
+    assert first["next_cursor"] and second["items"]
+    assert [i["expense_id"] for i in first["items"] + second["items"]] == [i["expense_id"] for i in whole]
+
+
+def test_the_last_search_page_has_no_cursor(seeded):
+    with get_engine().connect() as c:
+        embedded = c.execute(text("SELECT count(*) FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                                  "AND embedding IS NOT NULL"), {"u": seeded}).scalar()
+    seen, cursor = [], None
+    for _ in range(10):
+        page = T.semantic_search(seeded, "pizza dinner", limit=40, cursor=cursor)
+        seen += [i["expense_id"] for i in page["items"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert cursor is None
+    assert len(seen) == len(set(seen)) == min(embedded, T.SEARCH_WINDOW)
+
+
+def test_search_pages_keep_their_filters(seeded):
+    first = T.semantic_search(seeded, "dinner", limit=3, category="restaurant")
+    second = T.semantic_search(seeded, "dinner", limit=3, category="restaurant", cursor=first["next_cursor"])
+    assert first["next_cursor"] and second["items"]
+    assert all(i["category"] == "Restaurant" for i in first["items"] + second["items"])
+    assert not {i["expense_id"] for i in first["items"]} & {i["expense_id"] for i in second["items"]}
+
+
+def test_a_garbage_search_cursor_starts_over(seeded):
+    junk = base64.urlsafe_b64encode(b"not|a|cursor").decode()
+    first = T.semantic_search(seeded, "pizza dinner", limit=5)["items"]
+    assert T.semantic_search(seeded, "pizza dinner", limit=5, cursor=junk)["items"] == first
+
+
 def test_transaction_detail_has_similar_and_residency(seeded):
     item = T.list_transactions(seeded, limit=50, kind="purchase")["items"][0]
     detail = T.transaction_detail(seeded, item["id"])
