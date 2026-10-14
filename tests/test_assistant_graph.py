@@ -4,6 +4,7 @@ process."""
 
 import json
 import os
+import threading
 import uuid
 from datetime import date
 
@@ -11,6 +12,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import text
 
+from banko_ai.assistant import background
 from banko_ai.assistant import graph as G
 from banko_ai.db.engine import get_engine
 from banko_ai.services import memories, threads
@@ -47,6 +49,7 @@ def g():
 def _turn(g, member, thread, message, chat, **kw):
     events = []
     out = G.run_turn(member, thread, message, chat=chat, graph=g, on_event=events.append, **kw)
+    background.drain()  # the cache writes the turn left behind, landed before the next one
     return out, events
 
 
@@ -491,6 +494,50 @@ def test_an_empty_answer_is_not_cached(g, member, thread):
     out, _ = _turn(g, member, thread, q, ScriptedChat('{"steps": []}', '{"steps": []}', ""))
     assert out["route"]["kind"] == "plan" and out["answer"] == ""
     assert _answer_rows(member, q) == 0
+
+
+def test_cache_writes_leave_the_answer_path_and_drain_lands_them(g, member, thread, monkeypatch):
+    """respond hands the answer cache write to the background, so the turn
+    returns (and the answer goes out) while the write is still held."""
+    from banko_ai.services import caches
+    gate = threading.Event()
+    real_put = caches.put_answer
+
+    def held_put(*args, **kwargs):
+        gate.wait(5)
+        return real_put(*args, **kwargs)
+
+    monkeypatch.setattr(caches, "put_answer", held_put)
+    _cold_answer_cache(member)
+    q = "which coffee shops did I stop at on weekday mornings?"
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
+                        '{"steps": []}', "Mostly the corner cafe.")
+    out = G.run_turn(member, thread, q, chat=chat, graph=g)
+    assert not out["cached"] and _answer_rows(member, q) == 0
+    gate.set()
+    assert background.drain()
+    assert _answer_rows(member, q) == 1
+    again, events = _fresh_thread_turn(g, member, q, ScriptedChat("unused"))
+    assert again["cached"] and again["answer"] == out["answer"]
+    assert [e["status"] for e in events if e["type"] == "step" and e["label"] == "Answer cache"] == ["hit"]
+
+
+def test_implicit_memory_is_extracted_off_the_answer_path(g, member, thread):
+    released, seen = threading.Event(), {}
+
+    def extraction(msgs):
+        seen["released"] = released.wait(5)
+        return '{"content": "I usually buy coffee at Blue Bottle", "kind": "preference"}'
+
+    chat = ScriptedChat('{"steps": []}', '{"steps": []}', "Noted, that's a few visits a week.", extraction)
+    out = G.run_turn(member, thread, "i usually buy coffee at blue bottle, is that a lot?", chat=chat, graph=g)
+    assert out["route"]["kind"] == "plan" and out["answer"].startswith("Noted")
+    released.set()
+    assert background.drain()
+    assert seen["released"] is True
+    saved = [m for m in memories.list_memories(member) if "Blue Bottle" in m["content"]]
+    assert len(saved) == 1
+    memories.forget(member, saved[0]["memory_id"])
 
 
 def test_a_broken_answer_cache_does_not_break_the_answer(g, member, thread, monkeypatch):

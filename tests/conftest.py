@@ -42,6 +42,16 @@ if os.getenv("DATABASE_URL"):
 
 
 @pytest.fixture(autouse=True)
+def _assistant_background_lands():
+    """The assistant writes its caches and implicit memories after the
+    answer, on a background pool. Each test waits for them, so nothing a
+    test started lands in the next one (or after its user is gone)."""
+    yield
+    from banko_ai.assistant import background
+    background.drain()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_settings():
     """Settings are cached per process. Tests change the environment, so
     each one starts from a clean read."""

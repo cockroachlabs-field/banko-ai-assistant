@@ -160,11 +160,30 @@ def _close_trace(chat: TimedChat, shown, *, stopped: bool = False) -> None:
     if stopped:
         trace_step("error", "Answer stopped", "The answer failed here; details are in the server log",
                    status="error")
-    trace_step("total", "Total request time", ms=trace_elapsed_ms())
+        trace_step("total", "Total request time", ms=trace_elapsed_ms())
+    else:
+        trace_step("total", "Time to answer", ms=trace_elapsed_ms())
+
+
+def _answer_event(final: dict, chat: TimedChat, shown) -> dict:
+    """The SSE answer event from the graph's final event: the trace closes
+    here, with the model step and the time to answer."""
+    _close_trace(chat, shown)
+    meta = dict(final.get("meta") or {})
+    if meta.get("explain"):
+        meta["explain"] = str(meta["explain"])[:20000]
+    meta["trace"] = current_trace()
+    # Shaped like the proposal events, which drop their "type" key on the way out.
+    proposals = [{k: v for k, v in p.items() if k != "type"} for p in final.get("proposals") or []]
+    return {"type": "answer", "answer": final.get("answer") or "", "citations": final.get("citations") or [],
+            "proposals": proposals, "cached": bool(final.get("cached")),
+            "route": (final.get("route") or {}).get("kind"), "meta": meta}
 
 
 def _turn_stream(user_id: str, thread_id: str, message: str, language: str | None) -> Iterator[str]:
-    """Run the turn on a worker thread and relay its events as they happen."""
+    """Run the turn on a worker thread and relay its events as they happen.
+    The answer goes out the moment respond is done; learn and the checkpoint
+    write finish after it, and done closes the stream."""
     events: queue.Queue = queue.Queue()
     chat = TimedChat(_chat())
     # The persona as shown, read here: the worker thread has no app context.
@@ -173,23 +192,28 @@ def _turn_stream(user_id: str, thread_id: str, message: str, language: str | Non
 
     def work() -> None:
         token = start_trace()
+        answered = False
+
+        def relay(event: dict) -> None:
+            nonlocal answered
+            if event.get("type") != "final":
+                events.put(event)
+            elif not answered:  # one answer per turn, never two
+                answered = True
+                events.put(_answer_event(event, chat, shown))
+
         try:
             out = _graph().run_turn(user_id, thread_id, message, language_code=language, chat=chat,
-                                    on_event=events.put)
-            _close_trace(chat, shown)
-            meta = dict(out.get("meta") or {})
-            if meta.get("explain"):
-                meta["explain"] = str(meta["explain"])[:20000]
-            meta["trace"] = current_trace()
-            # Shaped like the proposal events, which drop their "type" key on the way out.
-            proposals = [{k: v for k, v in p.items() if k != "type"} for p in out["proposals"]]
-            events.put({"type": "answer", "answer": out["answer"], "citations": out["citations"],
-                        "proposals": proposals, "cached": out["cached"],
-                        "route": (out.get("route") or {}).get("kind"), "meta": meta})
+                                    on_event=relay)
+            relay({"type": "final", **out})  # a no-op once respond's final event went out
         except Exception as exc:
-            log.warning("assistant turn failed", exc_info=True)
-            _close_trace(chat, shown, stopped=True)
-            events.put({"type": "error", "message": _friendly(exc), "trace": current_trace()})
+            if answered:
+                # The user has the answer; only the bookkeeping after it failed.
+                log.warning("assistant turn failed after its answer went out", exc_info=True)
+            else:
+                log.warning("assistant turn failed", exc_info=True)
+                _close_trace(chat, shown, stopped=True)
+                events.put({"type": "error", "message": _friendly(exc), "trace": current_trace()})
         finally:
             reset_trace(token)
             events.put(done)

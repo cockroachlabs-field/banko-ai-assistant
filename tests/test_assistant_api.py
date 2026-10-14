@@ -4,6 +4,7 @@ memories, always for the signed-in user only."""
 import io
 import json
 import os
+import threading
 from datetime import date
 
 import pytest
@@ -96,6 +97,56 @@ def test_a_streamed_answer(client):
     assert answer["route"] == "aggregate" and "You spent" in answer["answer"]
     got = client.get(f"/api/v1/assistant/threads/{tid}").get_json()
     assert got["message_count"] == 2 and len(got["messages"]) == 2
+
+
+def _live_kinds(resp, on_kind=None) -> list[str]:
+    """Event names in the order the server sent them, read as they arrive."""
+    kinds, buf = [], ""
+    for chunk in resp.response:
+        buf += chunk.decode() if isinstance(chunk, bytes) else chunk
+        while "\n\n" in buf:
+            block, buf = buf.split("\n\n", 1)
+            kind = block.split("\n", 1)[0].removeprefix("event: ")
+            kinds.append(kind)
+            if on_kind:
+                on_kind(kind)
+    return kinds
+
+
+def test_the_answer_goes_out_before_the_turn_is_put_away(client, monkeypatch):
+    """The answer event leaves when respond is done. Thread bookkeeping (the
+    learn node) and the checkpoint write come after it, and the stream still
+    ends with done."""
+    answered = threading.Event()
+    learn = {}
+    real_touch = G.threads.touch_thread
+
+    def touch_after_the_answer(*args, **kwargs):
+        learn["saw_the_answer"] = answered.wait(8)
+        return real_touch(*args, **kwargs)
+
+    monkeypatch.setattr(G.threads, "touch_thread", touch_after_the_answer)
+    tid = _thread(client)
+    resp = client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                       json={"message": "how much did I spend on restaurants in the last 30 days"}, buffered=False)
+    kinds = _live_kinds(resp, lambda kind: answered.set() if kind == "answer" else None)
+    assert learn["saw_the_answer"] is True
+    assert kinds.count("answer") == 1 and kinds[-1] == "done" and "error" not in kinds
+    assert kinds.index("answer") > max(i for i, k in enumerate(kinds) if k == "token")
+
+
+def test_a_failure_after_the_answer_still_ends_with_done(client, monkeypatch):
+    def learn_breaks(state, runtime):
+        raise RuntimeError("bookkeeping down")
+
+    monkeypatch.setattr(G, "learn", learn_breaks)
+    monkeypatch.setattr(G, "_graph", G.build_graph(InMemorySaver()))
+    tid = _thread(client)
+    evs = events(client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                             json={"message": "how much did I spend on restaurants in the last 30 days"}))
+    kinds = [k for k, _ in evs]
+    assert kinds.count("answer") == 1 and kinds[-1] == "done" and "error" not in kinds
+    assert "You spent" in dict(evs)["answer"]["answer"]
 
 
 def test_other_users_thread_is_404(client, monkeypatch):

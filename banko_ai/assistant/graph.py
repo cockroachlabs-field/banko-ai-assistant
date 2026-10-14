@@ -6,7 +6,11 @@ per conversation.
 
 Nodes push events (steps, tokens, citations, proposals) through LangGraph's
 stream writer; run_turn hands them to the caller, which turns them into
-Server-Sent Events. The model is reached only through the Chat protocol."""
+Server-Sent Events. respond ends with one "final" event carrying the whole
+answer, so the caller can send it before learn and the checkpoint write
+finish. Cache writes and the implicit memory extraction run in the
+background (assistant.background). The model is reached only through the
+Chat protocol."""
 
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ from ..db.regions import money_region
 from ..services import caches, ledger, memories, receipts, reports, threads
 from ..services import transactions as txns
 from ..utils.request_trace import serving_regions, trace_step
-from . import answers, narration
+from . import answers, background, narration
 from .planner import first_object, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
 from .router import reads_as_follow_up
@@ -174,10 +178,8 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         _step("Narrative cache", "miss: generating the narrative", status="miss")
         text, cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
         if key is not None:
-            try:
-                caches.put_search(user_id, key, [{"answer": text}], url=deps.url, stat="narrative")
-            except Exception:
-                log.warning("narrative cache write skipped", exc_info=True)
+            background.submit("narrative cache write", caches.put_search, user_id, key, [{"answer": text}],
+                              url=deps.url, stat="narrative")
     t0 = time.perf_counter()
     explain = explain_aggregation(intent, user_id, url, region=region, merchant=merchant)
     served = serving_regions(explain) or region
@@ -467,20 +469,28 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     # tool grounded would keep a guess for every later ask.
     elif (generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer
           and any(r.get("ok") for r in results)):
-        try:
-            from ..services._vector import embed
-            caches.put_answer(state["user_id"], version=ledger.data_version(state["user_id"], deps.url),
-                              language=language, query=state["message"], qvec=embed(state["message"]),
-                              answer=answer, tokens=caches.estimate_tokens(answer), url=deps.url)
-        except Exception:
-            log.warning("answer cache write skipped", exc_info=True)
+        background.submit("answer cache write", _keep_answer, state["user_id"], language, state["message"],
+                          answer, deps.url)
     for c in citations:
         _emit({"type": "citation", **c})
     for p in proposals:
         _emit(p)
+    # Everything the answer event needs, sent now: learn and the checkpoint
+    # write still have to run, and nobody should wait for them.
+    _emit({"type": "final", "answer": answer, "citations": citations, "proposals": proposals,
+           "cached": bool(state.get("cached")), "route": state.get("route") or {},
+           "meta": dict(state.get("meta") or {})})
     return {"answer": answer, "citations": citations, "last_route": state["route"].get("kind"),
             "messages": [{"role": "user", "content": state["message"]},
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
+
+
+def _keep_answer(user_id: str, language: str, query: str, answer: str, url: str | None) -> None:
+    """The answer cache write, after the answer went out. The data version
+    is read here, after the turn, as the inline write always did."""
+    from ..services._vector import embed
+    caches.put_answer(user_id, version=ledger.data_version(user_id, url), language=language, query=query,
+                      qvec=embed(query), answer=answer, tokens=caches.estimate_tokens(answer), url=url)
 
 
 def learn(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -493,17 +503,17 @@ def learn(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         log.warning("thread bookkeeping skipped", exc_info=True)
     if (get_config().assistant_implicit_memory and state["route"].get("kind") not in ("remember", "forget")
             and _IMPLICIT.search(state["message"])):
-        try:
-            raw = deps.chat.complete(memory_extraction_messages(state["message"]), temperature=0)
-            obj = first_object(raw) or {}
-            if obj.get("content") and obj.get("kind") in ("fact", "preference", "goal"):
-                saved = memories.remember(user_id, obj["content"], kind=obj["kind"],
-                                          source_thread_id=state["thread_id"], url=deps.url)
-                if saved["created"]:
-                    _step("Memory saved", saved["content"], status="success")
-        except Exception:
-            log.warning("implicit memory skipped", exc_info=True)
+        # One more model call; the answer is already out, so it runs behind it.
+        background.submit("implicit memory", _extract_memory, deps.chat, user_id, state["message"],
+                          state["thread_id"], deps.url)
     return {}
+
+
+def _extract_memory(chat: Chat, user_id: str, message: str, thread_id: str, url: str | None) -> None:
+    raw = chat.complete(memory_extraction_messages(message), temperature=0)
+    obj = first_object(raw) or {}
+    if obj.get("content") and obj.get("kind") in ("fact", "preference", "goal"):
+        memories.remember(user_id, obj["content"], kind=obj["kind"], source_thread_id=thread_id, url=url)
 
 
 def _branch(state: TurnState) -> str:

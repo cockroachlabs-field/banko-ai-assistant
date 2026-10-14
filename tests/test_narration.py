@@ -11,6 +11,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from PIL import Image
 from sqlalchemy import text
 
+from banko_ai.assistant import background
 from banko_ai.assistant import graph as G
 from banko_ai.assistant.tools import ToolContext, run_tool
 from banko_ai.config.settings import reset_config
@@ -44,7 +45,9 @@ def graph(monkeypatch):
 
 
 def _turn(member, graph, message, chat, language="en-US"):
-    return G.run_turn(member, str(uuid.uuid4()), message, language_code=language, chat=chat, graph=graph)
+    out = G.run_turn(member, str(uuid.uuid4()), message, language_code=language, chat=chat, graph=graph)
+    background.drain()  # the cache writes the turn left behind, landed before the next one
+    return out
 
 
 def test_an_aggregation_turn_narrates(member, graph, capsys):
