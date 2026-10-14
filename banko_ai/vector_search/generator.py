@@ -306,6 +306,10 @@ class EnhancedExpenseGenerator:
         from ..web.auth import resolve_user_region
 
         is_regional = regional_tables_ready(self.database_url)
+        # One lookup per user, not per row: the sample rows share 100 users,
+        # and an unknown user's miss is never cached by resolve_user_region.
+        regions = ({uid: resolve_user_region(uid, self.database_url) for uid in {e['user_id'] for e in expenses}}
+                   if is_regional else {})
 
         # Prepare data for insertion
         data_to_insert = []
@@ -323,14 +327,14 @@ class EnhancedExpenseGenerator:
                 'tags': expense['tags'],
                 'embedding': expense['embedding']
             }
-            if is_regional:
-                user_region = resolve_user_region(expense['user_id'], self.database_url)
-                if user_region:
-                    row['crdb_region'] = user_region
+            user_region = regions.get(expense['user_id'])
+            if user_region:
+                row['crdb_region'] = user_region
             data_to_insert.append(row)
-        
-        # Insert in smaller batches to reduce transaction conflicts
-        # Use environment variable or default to 50
+
+        # One transaction per batch. On a cluster that survives a region
+        # failure each commit waits on a cross-region quorum, so the batch
+        # count, not the row count, sets the load time (DATA_GEN_BATCH_SIZE).
         from ..config.settings import get_config
 
         batch_size = get_config().data_gen_batch_size

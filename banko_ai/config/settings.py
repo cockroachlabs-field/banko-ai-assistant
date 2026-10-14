@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     # Demo data
     banko_skip_autosetup: bool = _field(False, group="data", env="BANKO_SKIP_AUTOSETUP", description="Skip generating sample data on an empty database.")
     sample_data_count: int = _field(5000, group="data", env="SAMPLE_DATA_COUNT", description="Sample expenses generated at boot when the database is empty. `banko-ai run --generate-data N` overrides it.")
-    data_gen_batch_size: int = _field(50, group="data", env="DATA_GEN_BATCH_SIZE", description="Rows per insert batch in the data generator.")
+    data_gen_batch_size: int = _field(500, group="data", env="DATA_GEN_BATCH_SIZE", description="Rows per insert batch in the data generator. Each batch is one transaction, and on a cluster that survives a region failure every commit waits on a cross-region quorum, so fewer, larger batches load faster.")
     demo_user_ttl_days: int = _field(0, group="data", env="DEMO_USER_TTL_DAYS", description="Delete signed-up demo users older than this many days at boot. 0 keeps them.")
     monthly_budget_default: float = _field(10000.0, group="data", env="MONTHLY_BUDGET_DEFAULT", description="Monthly budget the budget agent assumes when a user has none.")
     fraud_duplicate_window_days: int = _field(60, group="data", env="FRAUD_DUPLICATE_WINDOW_DAYS", description="Days the fraud agent looks back for duplicate charges.")
