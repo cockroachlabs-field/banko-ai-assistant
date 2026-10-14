@@ -151,6 +151,35 @@ def test_stream_parser_handles_error_and_abort(server, browser):
         ctx.close()
 
 
+def test_errors_people_see_are_plain_words(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _login(page, server, "maya")
+        page.route("**/api/v1/transactions?q=*", lambda route: route.fulfill(
+            status=503, json={"error": "warming_up", "detail": "waiting for the database (OperationalError)"}))
+        seen = page.evaluate("""async () => {
+            const out = {};
+            try { null.accounts; } catch (e) { out.script = Banko.explain(e); }
+            try { await Banko.api("http://127.0.0.1:9/api/v1/me"); } catch (e) { out.offline = Banko.explain(e); }
+            try { await Banko.api("/api/v1/transactions?q=coffee"); } catch (e) { out.warming = Banko.explain(e); }
+            out.message = Banko.explain(new Banko.ApiError(400, "Pick a category"));
+            out.code = Banko.explain(new Banko.ApiError(503, "warming_up"));
+            out.unknown = Banko.explain(new Banko.ApiError(500, "some_new_code"));
+            out.nothing = Banko.explain(undefined);
+            out.fallback = Banko.FALLBACK;
+            return out;
+        }""")
+        fallback = seen.pop("fallback")
+        assert seen["script"] == seen["offline"] == seen["unknown"] == seen["nothing"] == fallback
+        assert seen["message"] == "Pick a category"
+        assert seen["warming"] == seen["code"]
+        assert "warming up" in seen["code"].lower()
+        for text in seen.values():
+            assert "warming_up" not in text and "OperationalError" not in text and "fetch" not in text.lower()
+    finally:
+        ctx.close()
+
+
 def test_assistant_markup_is_sanitized(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

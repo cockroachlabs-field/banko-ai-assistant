@@ -23,7 +23,7 @@ document.addEventListener("alpine:init", () => {
         this.data = data;
         if (!this.seeding && !this.noData) this.$nextTick(() => this.draw());
       } catch (e) {
-        this.error = e.message || Banko.FALLBACK;
+        this.error = Banko.explain(e);
       }
     },
 

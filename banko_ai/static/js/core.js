@@ -6,8 +6,9 @@
   const shell = node ? JSON.parse(node.textContent) : {};
   const FALLBACK = "Something went wrong. Please try again.";
 
+  // message is the API's error string: a code (see COPY) or a neutral sentence.
   class ApiError extends Error {
-    constructor(status, message) { super(message); this.status = status; }
+    constructor(status, message) { super(message); this.name = "ApiError"; this.status = status; }
   }
 
   // An expired session falls back to the default persona on the server.
@@ -140,14 +141,23 @@
     return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   }
 
-  // API error codes the UI turns into plain copy. Anything else is already
-  // neutral text from the server.
+  // API error codes the UI turns into plain copy. Any other API message is
+  // already neutral text from the server.
   const COPY = {
     insufficient_funds: "There isn't enough available in that account.",
     key_conflict: "That request was already used with a different amount.",
     not_found: "That item no longer exists.",
+    warming_up: "Still warming up. Try again in a few seconds.",
   };
-  function explain(err) { const m = (err && err.message) || ""; return COPY[m] || m || FALLBACK; }
+  // What a person sees for an error. Only the API's own message is shown,
+  // never the text of a network failure or a script error, and a code with
+  // no copy falls back too.
+  function explain(err) {
+    if (!(err instanceof ApiError)) return FALLBACK;
+    const m = err.message || "";
+    if (COPY[m]) return COPY[m];
+    return !m || /^[a-z][a-z0-9_]*$/.test(m) ? FALLBACK : m;
+  }
 
   window.Banko = { shell, api, stream, parseSSE, fmt, monogram, emit, newKey, explain, ApiError, FALLBACK };
 })();
