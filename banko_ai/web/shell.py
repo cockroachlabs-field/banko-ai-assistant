@@ -67,7 +67,8 @@ def signed_in_profile() -> dict | None:
         g._banko_profile = found
     if isinstance(found, Exception):
         raise found
-    return found
+    profile: dict | None = found
+    return profile
 
 
 def plain_page() -> None:
