@@ -4,12 +4,14 @@ over real budgets, purchases and bills. Payloads follow PIPELINE_CONTRACT.md."""
 
 from __future__ import annotations
 
-import calendar
 import uuid
 from datetime import date, timedelta
 
 from ..services import budgets, recurring, transactions
 from .signals import Signal, SignalType
+
+# A budget is near its limit from 80% spent, where the pipeline's warn level starts.
+NEAR_LIMIT = 0.8
 
 
 class SimulateUnavailable(Exception):
@@ -22,8 +24,11 @@ def _budget_threshold(user_id: str, url: str | None) -> tuple[str, dict]:
     if not items:
         raise SimulateUnavailable("Set a budget first; the coach reacts to a budget near its limit.")
     top = items[0]
+    if top["pct"] < NEAR_LIMIT:
+        raise SimulateUnavailable(f"No budget is near its limit yet. The closest is {top['category']}, "
+                                  f"at {round(top['pct'] * 100)}% spent.")
     days = progress["days_in_month"] - progress["day"]
-    severity = "critical" if top["pct"] >= 1 else "warn" if top["pct"] >= 0.8 else "info"
+    severity = "critical" if top["pct"] >= 1 else "warn"
     return severity, {"category": top["key"], "pct_used": round(float(top["pct"]), 4),
                       "monthly_budget": float(top["budget"]), "spent_so_far": float(top["spent"]),
                       "days_remaining": days}
@@ -50,10 +55,12 @@ def _recurring_drift(user_id: str, url: str | None) -> tuple[str, dict]:
     bills = recurring.detect_recurring(user_id, url=url)
     if not bills:
         raise SimulateUnavailable("No recurring bills were found in this user's history yet.")
-    changed = [b for b in bills if b.price_change_pct]
-    bill = max(changed or bills, key=lambda b: abs(b.price_change_pct or 0))
+    raised = [b for b in bills if (b.price_change_pct or 0) > 0 and b.previous_amount > 0]
+    if not raised:
+        raise SimulateUnavailable("None of the recurring bills went up in price.")
+    bill = max(raised, key=lambda b: b.price_change_pct or 0)
     old, new = float(bill.previous_amount), float(bill.amount)
-    pct = round((new - old) / old, 4) if old else 0.0
+    pct = round((new - old) / old, 4)
     return "info", {"subscription": bill.merchant, "old_amount": old, "new_amount": new, "pct_change": pct,
                     "merchant_id": str(uuid.uuid5(uuid.NAMESPACE_URL, "banko-merchant:" + bill.merchant))}
 

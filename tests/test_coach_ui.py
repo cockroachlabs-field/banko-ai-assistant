@@ -79,6 +79,10 @@ def test_persona_label_hides_the_actual_provider(monkeypatch, member):
 
 
 def test_build_signal_uses_real_data(member):
+    # A purchase today keeps the budget near its limit on any day of the month.
+    from banko_ai.services import accounts, ledger
+    checking = next(a for a in accounts.list_accounts(member)["accounts"] if a["kind"] != "credit")
+    ledger.post_purchase(member, checking["account_id"], amount="45.00", merchant="Corner Bistro", category="Restaurant")
     budgets.set_budget(member, "Restaurant", "50")
     sig = build_signal(member, "budget_threshold")
     assert sig.user_id == member and sig.payload["monthly_budget"] == 50.0
@@ -95,6 +99,39 @@ def test_build_signal_says_why_it_cannot(member):
             build_signal(lonely, "recurring_drift")
     finally:
         drop_user(lonely)
+
+
+def test_a_budget_far_from_its_limit_is_not_near_its_limit(monkeypatch):
+    lonely = make_user()
+    try:
+        budgets.set_budget(lonely, "Groceries", "500")  # nothing spent: 0%
+        with pytest.raises(SimulateUnavailable):
+            build_signal(lonely, "budget_threshold")
+        resp = client_for(monkeypatch, lonely).post("/api/v1/coach/simulate", json={"signal_type": "budget_threshold"})
+        assert resp.status_code == 409 and "near its limit" in resp.get_json()["error"]
+    finally:
+        drop_user(lonely)
+
+
+def test_a_price_drift_signal_needs_a_bill_that_went_up(monkeypatch):
+    from decimal import Decimal
+
+    from banko_ai.coach import simulate
+    from banko_ai.services.recurring import Recurring
+
+    def bill(merchant, previous, amount, pct):
+        return Recurring(merchant=merchant, category="Subscriptions", cadence="monthly", amount=Decimal(amount),
+                         previous_amount=Decimal(previous), price_change_pct=pct, last_date=date.today(),
+                         next_due=date.today(), occurrences=6)
+
+    flat = [bill("Streamly", "15.99", "15.99", None), bill("Gym Co", "40.00", "35.00", -12.5)]
+    monkeypatch.setattr(simulate.recurring, "detect_recurring", lambda user_id, url=None: flat)
+    with pytest.raises(SimulateUnavailable):
+        build_signal(str(uuid.uuid4()), "recurring_drift")
+    monkeypatch.setattr(simulate.recurring, "detect_recurring",
+                        lambda user_id, url=None: flat + [bill("Cloud Drive", "9.99", "11.99", 20.02)])
+    sig = build_signal(str(uuid.uuid4()), "recurring_drift")
+    assert sig.payload["subscription"] == "Cloud Drive" and sig.payload["pct_change"] > 0
 
 
 def test_simulate_endpoint_queues_through_the_webhook_path(monkeypatch, member):
