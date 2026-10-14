@@ -66,6 +66,7 @@ class TurnState(TypedDict, total=False):
     answer: str
     streamed: bool  # the answer already went out as tokens while it was made
     cached: bool
+    saved_tokens: int  # the model's work a cache hit stood in for, estimated
     meta: dict
     proposals: list[dict]
     citations: list[dict]
@@ -170,7 +171,7 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         detail = txns.transaction_detail(user_id, str(ctx.get("id")), url=deps.url)
         facts = f"Transaction: {json.dumps(detail, default=str)}" if detail else ""
     return {"memories": recalled, "context_facts": facts, "results": [], "answer": "", "streamed": False,
-            "cached": False, "meta": {}, "proposals": [], "citations": [], "route": {}}
+            "cached": False, "saved_tokens": 0, "meta": {}, "proposals": [], "citations": [], "route": {}}
 
 
 def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -224,10 +225,12 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         hit = caches.get_search(user_id, key, url=deps.url, stat="narrative")
     except Exception:  # a cache outage is a miss, never a broken answer
         log.warning("narrative cache read skipped", exc_info=True)
+    saved = 0
     if hit:
         text, cached, streamed = hit[0]["answer"], True, False
-        narration.narrative_cache(True, caches.estimate_tokens(text))
-        _step("Narrative cache", "hit: SQL reran, the prose was reused", status="hit")
+        saved = caches.estimate_tokens(text)
+        narration.narrative_cache(True, saved)
+        _step("Narrative cache", f"hit: SQL reran, the prose was reused, about {saved:,} tokens saved", status="hit")
     else:
         narration.narrative_cache(False)
         _step("Narrative cache", "miss: generating the narrative", status="miss")
@@ -248,7 +251,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     served = serving_regions(explain) or region
     _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""), ms=_since(t0),
           key="explain")
-    return {"answer": text, "cached": cached, "streamed": streamed,
+    return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
 
@@ -381,9 +384,9 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             log.warning("answer cache read skipped", exc_info=True)
         if hit:
             narration.answer_cache(True, hit["tokens"])
-            _step("Answer cache", f"hit, about {hit['tokens']} tokens saved", ms=_since(t0), status="hit",
+            _step("Answer cache", f"hit, about {hit['tokens']:,} tokens saved", ms=_since(t0), status="hit",
                   key="answer_cache")
-            return {"answer": hit["answer"], "cached": True}
+            return {"answer": hit["answer"], "cached": True, "saved_tokens": int(hit["tokens"])}
         narration.answer_cache(False)
         _step("Answer cache", "miss", ms=_since(t0), status="miss", key="answer_cache")
 
@@ -555,8 +558,8 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     # Everything the answer event needs, sent now: learn and the checkpoint
     # write still have to run, and nobody should wait for them.
     _emit({"type": "final", "answer": answer, "citations": citations, "proposals": proposals,
-           "cached": bool(state.get("cached")), "route": state.get("route") or {},
-           "meta": dict(state.get("meta") or {})})
+           "cached": bool(state.get("cached")), "saved_tokens": int(state.get("saved_tokens") or 0),
+           "route": state.get("route") or {}, "meta": dict(state.get("meta") or {})})
     return {"answer": answer, "citations": citations, "last_route": state["route"].get("kind"),
             "messages": [{"role": "user", "content": state["message"]},
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
@@ -648,7 +651,8 @@ def run_turn(user_id: str, thread_id: str, message: str, *, language_code: str |
             final = payload
     return {"answer": final.get("answer", ""), "citations": final.get("citations", []),
             "proposals": final.get("proposals", []), "meta": final.get("meta", {}),
-            "cached": bool(final.get("cached")), "route": final.get("route", {})}
+            "cached": bool(final.get("cached")), "saved_tokens": int(final.get("saved_tokens") or 0),
+            "route": final.get("route", {})}
 
 
 def set_active_receipt(thread_id: str, receipt_info: dict, *, graph=None) -> None:

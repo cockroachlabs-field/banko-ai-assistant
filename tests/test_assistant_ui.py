@@ -3,11 +3,13 @@ what the trace needs."""
 
 import json
 import os
+import re
 from datetime import date
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 
+from banko_ai.assistant import background
 from banko_ai.assistant import graph as G
 from banko_ai.services.seeding import seed_user
 from banko_ai.web import assistant_api
@@ -79,6 +81,25 @@ def test_running_steps_stream_but_never_land_in_the_trace(client):
     trace = dict(evs)["answer"]["meta"]["trace"]
     assert all(s["status"] != "running" for s in trace)
     assert not {d["label"] for d in running} & {s["label"] for s in trace}
+
+
+def test_the_answer_says_what_the_model_spent_and_what_the_cache_saved(client):
+    tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
+    q = "how much did I spend on restaurants in the last 41 days"
+    first = dict(_events(client.post(f"/api/v1/assistant/threads/{tid}/messages", json={"message": q})))["answer"]
+    (model,) = [s for s in first["meta"]["trace"] if s["kind"] == "llm"]
+    # The scripted model reports no usage, so the count is an estimate and says so.
+    assert re.search(r", 1 call, about [\d,]+ tokens \([\d,]+ in, [\d,]+ out\)$", model["detail"]), model["detail"]
+    tokens = first["meta"]["tokens"]
+    assert tokens["estimated"] is True and tokens["input"] > 0 and tokens["output"] > 0 and tokens["saved"] == 0
+    assert first["meta"]["model_calls"] == 1 and first["meta"]["answer_ms"] > 0
+    background.drain()
+    again = dict(_events(client.post(f"/api/v1/assistant/threads/{tid}/messages", json={"message": q})))["answer"]
+    assert again["cached"] and again["meta"]["cached"] and again["meta"]["model_calls"] == 0
+    (hit,) = [s for s in again["meta"]["trace"] if s["label"] == "Narrative cache"]
+    saved = int(re.search(r"about ([\d,]+) tokens saved", hit["detail"]).group(1).replace(",", ""))
+    assert hit["status"] == "hit" and saved > 0 and again["meta"]["tokens"]["saved"] == saved
+    assert not [s for s in again["meta"]["trace"] if s["kind"] == "llm"]
 
 
 def test_a_failed_turn_keeps_its_trace_and_names_nothing_internal(client, monkeypatch):

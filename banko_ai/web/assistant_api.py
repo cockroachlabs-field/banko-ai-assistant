@@ -150,29 +150,46 @@ def delete_thread(thread_id: str):
     return "", 204
 
 
-def _close_trace(chat: TimedChat, shown, *, stopped: bool = False) -> None:
+def _tokens_text(chat: TimedChat) -> str:
+    """", 2,950 tokens (2,600 in, 350 out)", with "about" when any call's
+    count was estimated; nothing when the model spent nothing."""
+    total = chat.input_tokens + chat.output_tokens
+    if not total:
+        return ""
+    about = "about " if chat.estimated else ""
+    return f", {about}{total:,} tokens ({chat.input_tokens:,} in, {chat.output_tokens:,} out)"
+
+
+def _close_trace(chat: TimedChat, shown, *, stopped: bool = False) -> float | None:
     """End the turn's trace the way the old chat page did: the model step,
-    only when the model really ran, then the total."""
+    only when the model really ran, then the total. Returns the total in ms."""
     if chat.calls:
         detail = f"{shown.name} · {shown.model}, {chat.calls} call{'s' if chat.calls > 1 else ''}"
-        trace_step("llm", "Model", detail + (f", {chat.failed} failed" if chat.failed else ""),
+        trace_step("llm", "Model", detail + _tokens_text(chat) + (f", {chat.failed} failed" if chat.failed else ""),
                    ms=chat.ms, status="warning" if chat.failed else "success")
+    elapsed = trace_elapsed_ms()
     if stopped:
         trace_step("error", "Answer stopped", "The answer failed here; details are in the server log",
                    status="error")
-        trace_step("total", "Total request time", ms=trace_elapsed_ms())
+        trace_step("total", "Total request time", ms=elapsed)
     else:
-        trace_step("total", "Time to answer", ms=trace_elapsed_ms())
+        trace_step("total", "Time to answer", ms=elapsed)
+    return elapsed
 
 
 def _answer_event(final: dict, chat: TimedChat, shown) -> dict:
     """The SSE answer event from the graph's final event: the trace closes
     here, with the model step and the time to answer."""
-    _close_trace(chat, shown)
+    elapsed = _close_trace(chat, shown)
     meta = dict(final.get("meta") or {})
     if meta.get("explain"):
         meta["explain"] = str(meta["explain"])[:20000]
     meta["trace"] = current_trace()
+    meta["tokens"] = {"input": chat.input_tokens, "output": chat.output_tokens, "estimated": chat.estimated,
+                      "saved": int(final.get("saved_tokens") or 0)}
+    meta["model_calls"] = chat.calls
+    meta["answer_ms"] = None if elapsed is None else round(elapsed)
+    meta["cached"] = bool(final.get("cached"))
     # Shaped like the proposal events, which drop their "type" key on the way out.
     proposals = [{k: v for k, v in p.items() if k != "type"} for p in final.get("proposals") or []]
     return {"type": "answer", "answer": final.get("answer") or "", "citations": final.get("citations") or [],
