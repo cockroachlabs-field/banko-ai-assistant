@@ -50,8 +50,8 @@
               </div>
             </template>
           </div>
-          <div class="b-skel" x-show="!m.answer && !m.error && !m.stopped" style="height:38px;width:60%"></div>
-          <div class="b-meta" x-show="m.answer || m.error">
+          <div class="b-skel" x-show="!m.done && !m.answer && !m.error && !m.stopped" style="height:38px;width:60%"></div>
+          <div class="b-meta" x-show="m.done || m.answer || m.error">
             <span x-show="m.ms" x-text="(m.ms / 1000).toFixed(1) + ' s' + (m.steps.length ? ' · ' + m.steps.length + ' steps' : '') + (m.cached ? ' · cached' : '')"></span>
             <span x-show="m.meta.region" x-text="'served from ' + m.meta.region + (m.meta.db_ms ? ' · ' + m.meta.db_ms + ' ms in the database' : '')"></span>
             <button type="button" class="link" @click="toggleTrace(m)">How this was answered</button>

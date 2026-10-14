@@ -383,6 +383,32 @@ def test_the_panel_trace_has_no_dangling_separator(server, browser):
         ctx.close()
 
 
+def test_a_failed_thread_keeps_the_question_and_an_empty_answer_stops_loading(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=_sse(("step", {"label": "Intent routing", "ms": 3, "status": "success"}), ("done", {})))
+        failing = "**/api/v1/assistant/threads"
+        page.route(failing, lambda route: route.fulfill(status=500, json={"error": "Something went wrong on our side."})
+                   if route.request.method == "POST" else route.fallback())
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        panel = page.locator(".b-panel")
+        expect(panel.locator("textarea")).to_have_value(TITLED)
+        expect(page.locator(".b-toast.err")).to_contain_text("Something went wrong on our side.")
+        expect(panel.locator(".b-msg-user")).to_have_count(0)
+
+        page.unroute(failing)
+        panel.get_by_role("button", name="Send").click()
+        bot = panel.locator(".b-msg-bot")
+        expect(bot.locator(".b-meta")).to_be_visible()
+        expect(bot.locator(".b-skel")).to_be_hidden()
+        expect(bot).to_contain_text(page.evaluate("() => Banko.FALLBACK"))
+        # The browser logs the 500 this test returns; nothing else may show up.
+        assert errors == ["Failed to load resource: the server responded with a status of 500 (Internal Server Error)"], errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

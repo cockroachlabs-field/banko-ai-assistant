@@ -21,7 +21,7 @@
     <div class="b-muted" style="margin-top:auto;font-size:11px;padding:8px 6px">Conversations are LangGraph checkpoints in CockroachDB. Restart the app and they're still here.</div>
   </div>
 
-  <div style="display:flex;flex-direction:column;min-width:0" @banko-new-thread.window="newThread(null); history.replaceState(null, '', '/assistant')">
+  <div style="display:flex;flex-direction:column;min-width:0" @banko-new-thread.window="ask({ fresh: true }); history.replaceState(null, '', '/assistant')">
     <div class="b-panel-h">
       <div><div class="t" x-text="threadTitle || 'New conversation'"></div><div class="b-muted" x-text="messages.length + ' messages'"></div></div>
       <span class="sp"></span>

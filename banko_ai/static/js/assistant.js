@@ -126,9 +126,14 @@ document.addEventListener("alpine:init", () => {
 
     async ask({ text, context, fresh }) {
       await this.show();
-      if (fresh || context) await this.newThread(context || null);
+      if (fresh || context) {
+        try { await this.newThread(context || null); }
+        catch (e) { if (text && !this.draft) this.draft = text; this.notify(e); return; }
+      }
       if (text) await this.send(text);
     },
+
+    notify(e) { Alpine.store("toasts").push({ title: "Assistant", text: Banko.explain(e), kind: "error" }); },
 
     remember(id, title) {
       this.threadId = id; this.threadTitle = title || this.threadTitle;
@@ -163,14 +168,14 @@ document.addEventListener("alpine:init", () => {
           this.remember(t.thread_id, t.title);
           this.messages = (t.messages || []).map((m) => m.role === "user"
             ? { id: ++seq, role: "user", text: m.content }
-            : { id: ++seq, role: "bot", answer: m.content, steps: [], citations: [], proposals: [], meta: {}, showTrace: false });
+            : { id: ++seq, role: "bot", answer: m.content, steps: [], citations: [], proposals: [], meta: {}, showTrace: false, done: true });
           this.scroll();
         } catch (e) {
           if (this.threadId !== id) return;
           // Gone (deleted, or not this user's): start fresh. A blip keeps
           // the thread, so the next question still continues it.
           if (e instanceof Banko.ApiError && e.status === 404) this.forget();
-          if (this.mode !== "panel") Alpine.store("toasts").push({ title: "Assistant", text: Banko.explain(e), kind: "error" });
+          if (this.mode !== "panel") this.notify(e);
         }
       })());
     },
@@ -182,11 +187,18 @@ document.addEventListener("alpine:init", () => {
       if (!text || this.streaming) return;
       this.draft = "";
       await this.settled();
-      const tid = await this.ensureThread();
+      let tid;
+      try { tid = await this.ensureThread(); }
+      catch (e) {
+        // Keep what they typed, so trying again is one click.
+        if (!this.draft) this.draft = text;
+        this.notify(e);
+        return;
+      }
       const lang = this.languages.find((l) => l.code === this.language);
       this.messages.push({ id: ++seq, role: "user", text, lang: lang ? lang.name : "" });
       const bot = Alpine.reactive({ id: ++seq, role: "bot", steps: [], answer: "", citations: [], proposals: [], meta: {},
-                                    route: "", cached: false, error: "", stopped: false, ms: 0, showTrace: false });
+                                    route: "", cached: false, error: "", stopped: false, ms: 0, showTrace: false, done: false });
       this.messages.push(bot);
       this.scroll();
       this.streaming = true;
@@ -202,6 +214,9 @@ document.addEventListener("alpine:init", () => {
         else bot.error = Banko.explain(e);
       } finally {
         bot.ms = Math.round(performance.now() - t0);
+        // A stream that ended with no answer and no error still failed.
+        if (!bot.answer && !bot.error && !bot.stopped) bot.error = Banko.FALLBACK;
+        bot.done = true;
         this.streaming = false; this.controller = null;
         this.scroll();
         Banko.emit("banko:answered", { thread: tid, bot });
