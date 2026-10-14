@@ -10,9 +10,9 @@
       <template x-for="a in agentNames" :key="a"><div class="b-row" style="padding:5px 0;border-top:1px solid var(--bd2)"><span x-text="a"></span><b x-text="(stats.today || {})[a] || 0"></b></div></template>
     </div>
     <div class="b-card b-s2">
-      <div class="b-lbl">Agents online</div>
-      <template x-for="a in (stats.agents || [])" :key="a.agent_type + a.region">
-        <div class="b-row" style="padding:5px 0;border-top:1px solid var(--bd2)"><span x-text="a.agent_type + ' · ' + a.region"></span><span class="b-muted" x-text="a.status + ' · ' + Banko.fmt.relative(a.last_heartbeat)"></span></div>
+      <div class="b-lbl">Agents</div>
+      <template x-for="a in (stats.agents || [])" :key="a.agent_type + '|' + a.region">
+        <div class="b-row" style="padding:5px 0;border-top:1px solid var(--bd2)"><span x-text="a.agent_type + ' · ' + a.region"></span><span class="b-muted" x-text="a.active ? 'Active now' : 'Last seen ' + Banko.fmt.relative(a.last_heartbeat)"></span></div>
       </template>
       <div class="b-muted" x-show="!(stats.agents || []).length">No agent has registered yet. Upload a receipt to wake them up.</div>
     </div>

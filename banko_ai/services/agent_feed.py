@@ -102,15 +102,23 @@ def activity(user_id: str, *, limit: int = 60, url: str | None = None) -> list[d
     return jsonable(items[:limit])
 
 
+ACTIVE_WITHIN = "10 minutes"
+
+
 def stats(user_id: str, *, url: str | None = None) -> dict:
+    """The agents seen, one row per type and region (every receipt starts
+    new instances, so agent_state keeps growing), active only when one
+    heartbeat is recent; and today's activity counts for this user."""
     with get_engine(url).connect() as conn:
-        agents = conn.execute(text("""
-            SELECT agent_type, region, status, last_heartbeat FROM agent_state ORDER BY agent_type, region
+        agents = conn.execute(text(f"""
+            SELECT agent_type, region, max(last_heartbeat), max(last_heartbeat) > now() - INTERVAL '{ACTIVE_WITHIN}'
+            FROM agent_state GROUP BY agent_type, region ORDER BY agent_type, region
         """)).fetchall()
     today: dict[str, int] = {}
     utc_today = datetime.now(timezone.utc).date().isoformat()
     for item in activity(user_id, limit=200, url=url):
         if str(item["at"])[:10] == utc_today:
             today[item["agent"]] = today.get(item["agent"], 0) + 1
-    return jsonable({"agents": [{"agent_type": a[0], "region": a[1], "status": a[2], "last_heartbeat": a[3]} for a in agents],
+    return jsonable({"agents": [{"agent_type": a[0], "region": a[1], "last_heartbeat": a[2], "active": bool(a[3])}
+                                for a in agents],
                      "today": today})

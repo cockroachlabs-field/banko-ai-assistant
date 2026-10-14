@@ -147,6 +147,26 @@ def test_api_and_stats(monkeypatch, member):
     assert {"agents", "today"} <= set(stats)
 
 
+def test_agents_list_one_row_per_type_and_region_with_its_latest_heartbeat(member):
+    # Every receipt starts new agent instances, so agent_state keeps growing.
+    kind = "probe-" + uuid.uuid4().hex[:8]
+    with get_engine().begin() as c:
+        c.execute(text("""INSERT INTO agent_state (agent_type, region, status, last_heartbeat) VALUES
+            (:k, 'us-east-1', 'active', now() - INTERVAL '3 days'),
+            (:k, 'us-east-1', 'idle', now() - INTERVAL '1 minute'),
+            (:k, 'us-west-2', 'active', now() - INTERVAL '2 hours')"""), {"k": kind})
+    try:
+        agents = agent_feed.stats(member)["agents"]
+        rows = [a for a in agents if a["agent_type"] == kind]
+        # An old heartbeat never reads as active, whatever status it stored.
+        assert [(a["region"], a["active"]) for a in rows] == [("us-east-1", True), ("us-west-2", False)]
+        keys = [(a["agent_type"], a["region"]) for a in agents]
+        assert len(keys) == len(set(keys))
+    finally:
+        with get_engine().begin() as c:
+            c.execute(text("DELETE FROM agent_state WHERE agent_type = :k"), {"k": kind})
+
+
 def test_old_page_has_no_invented_confidence():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1] / "banko_ai"
