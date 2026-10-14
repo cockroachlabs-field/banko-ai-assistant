@@ -60,7 +60,7 @@
           </div>
           <div class="b-trace" style="border:1px solid var(--bd);border-radius:12px" x-show="m.showTrace && mode === 'panel'">
             <div class="b-tl">
-              <template x-for="(s, i) in traceSteps(m)" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="(s.detail || '') + (s.ms ? ' · ' + Math.round(s.ms) + ' ms' : '')"></span></div></template>
+              <template x-for="(s, i) in traceSteps(m)" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="Banko.traceLine(s)"></span></div></template>
             </div>
             <div class="b-kv" x-show="m.meta.explain" x-text="m.meta.explain"></div>
           </div>

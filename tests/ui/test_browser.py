@@ -49,6 +49,15 @@ ANSWER = _sse(("step", {"label": "Intent routing", "ms": 3, "status": "success"}
               ("answer", {"answer": "You spent $42.10 on dining.", "citations": [], "proposals": [], "cached": False,
                           "route": "aggregate", "meta": {"trace": []}}),
               ("done", {}))
+TRACED = _sse(("step", {"label": "Intent routing", "ms": 3, "status": "success"}),
+              ("answer", {"answer": "You spent $42.10 on dining.", "citations": [], "proposals": [], "cached": False,
+                          "route": "aggregate", "meta": {"trace": [
+                              {"label": "Answer cache", "detail": "miss", "ms": None, "status": "miss", "kind": "cache"},
+                              {"label": "Model", "detail": "", "ms": 6339.4, "status": "success", "kind": "llm"},
+                              {"label": "Aggregation SQL", "detail": "$42.10 across 3 transactions", "ms": 23.6,
+                               "status": "success", "kind": "sql"}]}}),
+              ("done", {}))
+TITLED = "How much did I spend on dining?"
 RECEIPT = _sse(("step", {"step": "ocr", "status": "done", "detail": "120 characters", "ms": 400}),
                ("receipt", {"document_id": "66666666-6666-4666-8666-666666666666", "status": "posted",
                             "merchant": "Blue Bottle", "amount": 9.75, "category": "Coffee", "thread_id": OLD_THREAD}),
@@ -224,8 +233,8 @@ class _PanelApi:
     remembered thread is held until release(), so a test can let the user
     act first, which is what a slow checkpoint read looks like."""
 
-    def __init__(self, page):
-        self.held, self.fetched = [], []
+    def __init__(self, page, answer=ANSWER):
+        self.held, self.fetched, self.answer = [], [], answer
         page.route("**/api/v1/assistant/**", self._assistant)
         page.route("**/api/v1/receipts", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=RECEIPT))
         page.route("**/api/v1/receipts/*/thumbnail", lambda r: r.fulfill(status=200, content_type="image/gif", body=PIXEL))
@@ -241,9 +250,14 @@ class _PanelApi:
                 return None
             return route.fulfill(status=404, json={"error": "not_found"})
         if req.method == "POST" and path.endswith("/messages"):
-            return route.fulfill(status=200, content_type="text/event-stream", body=ANSWER)
+            return route.fulfill(status=200, content_type="text/event-stream", body=self.answer)
         if req.method == "POST" and path == "/api/v1/assistant/threads":
-            return route.fulfill(status=201, json={"thread_id": NEW_THREAD, "title": "New chat"})
+            return route.fulfill(status=201, json={"thread_id": NEW_THREAD, "title": "New chat", "message_count": 0})
+        if req.method == "GET" and path == "/api/v1/assistant/threads":
+            # The server titles a thread from its first question.
+            return route.fulfill(json={"threads": [{"thread_id": NEW_THREAD, "title": TITLED, "message_count": 2,
+                                                    "created_at": "2026-10-13T12:00:00+00:00",
+                                                    "last_message_at": "2026-10-13T12:00:05+00:00"}]})
         return route.fallback()
 
     def release(self):
@@ -324,6 +338,46 @@ def test_asking_about_a_nudge_opens_a_new_thread_even_when_the_history_answers_l
         expect(page.locator(".b-panel .b-panel-h")).to_contain_text("New chat")
         expect(page.locator(".b-panel .b-chat")).not_to_contain_text("What did I spend on coffee?")
         assert page.evaluate("(uid) => localStorage.getItem('banko.thread:' + uid)", uid) == NEW_THREAD
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_assistant_page_titles_the_thread_and_lists_its_trace(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TRACED)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        header = page.locator(".b-assist-page .b-panel-h .t")
+        expect(header).to_have_text("New conversation")
+        page.locator(".b-comp textarea").fill(TITLED.lower())
+        page.keyboard.press("Enter")
+        expect(page.locator(".b-chat")).to_contain_text("You spent $42.10 on dining.")
+        expect(header).to_have_text(TITLED)
+        rows = page.locator("aside.b-trace .b-tl > div")
+        expect(rows.filter(has_text="Answer cache")).to_have_text("Answer cachemiss")
+        expect(rows.filter(has_text="Model")).to_have_text("Model6339 ms")
+        expect(rows.filter(has_text="Aggregation SQL")).to_have_text("Aggregation SQL$42.10 across 3 transactions · 24 ms")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_panel_trace_has_no_dangling_separator(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TRACED)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        panel = page.locator(".b-panel")
+        expect(panel.locator(".b-chat")).to_contain_text("You spent $42.10 on dining.")
+        expect(panel.locator(".b-panel-h")).to_contain_text(TITLED)
+        panel.get_by_role("button", name="How this was answered").click()
+        rows = panel.locator(".b-trace .b-tl > div")
+        expect(rows.filter(has_text="Model")).to_have_text("Model6339 ms")
+        expect(rows.filter(has_text="Answer cache")).to_have_text("Answer cachemiss")
         assert not errors, errors
     finally:
         ctx.close()

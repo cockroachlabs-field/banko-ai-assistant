@@ -25,6 +25,8 @@ document.addEventListener("alpine:init", () => {
   });
   Banko.renderAnswer = (text) =>
     window.DOMPurify.sanitize(window.marked.parse(Banko.stripCitations(text), { breaks: true }), PURIFY);
+  // One trace row's detail and timing, with a separator only when both exist.
+  Banko.traceLine = (s) => [s.detail, s.ms ? Math.round(s.ms) + " ms" : ""].filter(Boolean).join(" · ");
   const RECEIPT_TYPES = /^(image\/|application\/pdf$)/;
   const STEP_LABELS = { ocr: "OCR", extract: "Extract", category: "Category", duplicate: "Dup check", post: "Posted", fraud: "Fraud", budget: "Budget" };
   // The panel remembers its thread per user, so after "Switch user" another
@@ -41,6 +43,8 @@ document.addEventListener("alpine:init", () => {
     pending = p;
     return p;
   };
+  // Threads whose title was read back after an answer in this page.
+  const titled = new Set();
   return {
     mode, open: mode === "page", threadId: null, threadTitle: "", messages: [], draft: "",
     streaming: false, controller: null,
@@ -201,7 +205,17 @@ document.addEventListener("alpine:init", () => {
         this.streaming = false; this.controller = null;
         this.scroll();
         Banko.emit("banko:answered", { thread: tid, bot });
+        if (!bot.error && !bot.stopped && !titled.has(tid)) { titled.add(tid); this.refreshTitle(tid); }
       }
+    },
+
+    // The server titles a thread from its first question, so read the
+    // title back once the first answer is in.
+    async refreshTitle(tid) {
+      try {
+        const found = ((await Banko.api("/api/v1/assistant/threads")).threads || []).find((t) => t.thread_id === tid);
+        if (found && this.threadId === tid) this.threadTitle = found.title;
+      } catch (e) { /* the title is only a label */ }
     },
 
     onAnswerEvent(bot, event, data) {
