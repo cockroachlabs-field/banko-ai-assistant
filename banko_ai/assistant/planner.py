@@ -59,9 +59,12 @@ def parse_plan(raw: str) -> Plan:
 
 
 def execute(steps: list[Step], ctx: ToolContext, *, budget: int,
-            on_step: Callable[[dict], None] | None = None) -> list[dict]:
+            on_step: Callable[[dict], None] | None = None,
+            on_start: Callable[[Step], None] | None = None) -> list[dict]:
     results = []
     for step in steps[:max(0, budget)]:
+        if on_start:
+            on_start(step)
         result = {**run_tool(step.tool, step.args, ctx), "args": step.args}
         results.append(result)
         if on_step:
@@ -71,7 +74,8 @@ def execute(steps: list[Step], ctx: ToolContext, *, budget: int,
 
 def plan_and_act(chat, message: str, ctx: ToolContext, *, history: list[dict], memories: list[dict],
                  context_facts: str = "", max_steps: int | None = None,
-                 on_step: Callable[[dict], None] | None = None) -> list[dict]:
+                 on_step: Callable[[dict], None] | None = None,
+                 on_start: Callable[[Step], None] | None = None) -> list[dict]:
     budget = max_steps or get_config().assistant_max_steps
     tools = describe_tools()
 
@@ -84,11 +88,11 @@ def plan_and_act(chat, message: str, ctx: ToolContext, *, history: list[dict], m
     # search of the question instead of letting the model guess.
     grounding = Step(tool="search_transactions", args={"query": message[:300]})
     plan = ask()
-    results = execute(plan.steps or [grounding], ctx, budget=budget, on_step=on_step)
+    results = execute(plan.steps or [grounding], ctx, budget=budget, on_step=on_step, on_start=on_start)
     if plan.steps and not any(r["ok"] for r in results):
-        results += execute([grounding], ctx, budget=1, on_step=on_step)
+        results += execute([grounding], ctx, budget=1, on_step=on_step, on_start=on_start)
     remaining = budget - len(results)
     if remaining > 0:
         more = ask(results)
-        results += execute(more.steps, ctx, budget=remaining, on_step=on_step)
+        results += execute(more.steps, ctx, budget=remaining, on_step=on_step, on_start=on_start)
     return results

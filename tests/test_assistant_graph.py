@@ -496,6 +496,35 @@ def test_an_empty_answer_is_not_cached(g, member, thread):
     assert _answer_rows(member, q) == 0
 
 
+def _phases(events) -> list[str]:
+    """The running labels a turn sent, in order, after checking that each
+    one finished later under its own key (the chip the bubble swaps)."""
+    steps = [e for e in events if e["type"] == "step"]
+    running = [e for e in steps if e["status"] == "running"]
+    assert len({r["key"] for r in running}) == len(running), "every running phase has its own key"
+    for r in running:
+        later = steps[steps.index(r) + 1:]
+        assert [e["status"] != "running" for e in later if e.get("key") == r["key"]] == [True], r
+    return [r["label"] for r in running]
+
+
+def test_long_phases_say_they_started_and_finish_under_the_same_key(g, member, thread):
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
+                        '{"steps": []}', "You buy coffee most mornings.")
+    _, events = _turn(g, member, thread, "where do I buy coffee before work most days?", chat)
+    assert _phases(events) == ["Recalling what you told me", "Checking the answer cache", "Planning the steps",
+                               "Searching your transactions", "Planning the steps", "Reading the query plan",
+                               "Writing the answer"]
+    done = {e["key"]: e["label"] for e in events if e["type"] == "step" and e.get("key") and e["status"] != "running"}
+    assert list(done.values()) == ["Memory recall", "Answer cache", "Planner", "Tool search_transactions", "Planner",
+                                   "EXPLAIN ANALYZE", "LLM answer"]
+    _, agg = _turn(g, member, thread, "how much did I spend on groceries in the last 37 days",
+                   ScriptedChat("- Groceries are steady."))
+    assert _phases(agg) == ["Recalling what you told me", "Running the numbers in CockroachDB", "Writing the answer",
+                            "Reading the query plan"]
+
+
 def test_cache_writes_leave_the_answer_path_and_drain_lands_them(g, member, thread, monkeypatch):
     """respond hands the answer cache write to the background, so the turn
     returns (and the answer goes out) while the write is still held."""

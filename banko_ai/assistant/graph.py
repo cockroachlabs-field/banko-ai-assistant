@@ -35,7 +35,7 @@ from ..services import caches, ledger, memories, receipts, reports, threads
 from ..services import transactions as txns
 from ..utils.request_trace import serving_regions, trace_step
 from . import answers, background, narration
-from .planner import first_object, plan_and_act
+from .planner import first_object, parse_plan, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
 from .router import reads_as_follow_up
 from .router import route as decide
@@ -84,10 +84,60 @@ def _emit(event: dict) -> None:
         pass
 
 
-def _step(label: str, detail: str = "", ms: float | None = None, status: str = "info") -> None:
+def _step(label: str, detail: str = "", ms: float | None = None, status: str = "info",
+          key: str | None = None) -> None:
+    """A finished piece of work: a trace step, and a step event. key names
+    the running phase it closes, so the bubble swaps that chip for this one."""
     trace_step("assistant", label, detail, ms=ms, status=status)
-    _emit({"type": "step", "label": label, "detail": detail, "ms": None if ms is None else round(ms, 1),
-           "status": status})
+    event = {"type": "step", "label": label, "detail": detail, "ms": None if ms is None else round(ms, 1),
+             "status": status}
+    if key:
+        event["key"] = key
+    _emit(event)
+
+
+def _running(key: str, label: str) -> None:
+    """A long phase starting, for the bubble's status line ("Planning the
+    steps..."). Only an event: the trace records what finished."""
+    _emit({"type": "step", "key": key, "label": label, "detail": "", "ms": None, "status": "running"})
+
+
+def _since(t0: float) -> float:
+    return (time.perf_counter() - t0) * 1000
+
+
+# The tools that search the user's history get a phase of their own.
+_TOOL_PHASES = {"search_transactions": "Searching your transactions",
+                "similar_transactions": "Searching your transactions",
+                "duplicate_check": "Searching your transactions",
+                "merchant_history": "Searching your transactions",
+                "spend_summary": "Running the numbers in CockroachDB"}
+
+
+class _Planning:
+    """The planner's model, with each call shown as a phase while it runs
+    and a Planner step when it returns."""
+
+    def __init__(self, chat: Chat):
+        self.chat, self.calls = chat, 0
+
+    def complete(self, messages: list[dict], *, temperature: float = 0.3) -> str:
+        self.calls += 1
+        key = f"planner:{self.calls}"
+        _running(key, "Planning the steps")
+        t0 = time.perf_counter()
+        try:
+            raw = self.chat.complete(messages, temperature=temperature)
+        except Exception:
+            _step("Planner", "the model did not answer", ms=_since(t0), status="warning", key=key)
+            raise
+        tools = [s.tool for s in parse_plan(raw).steps]
+        empty = "no tools picked" if self.calls == 1 else "nothing more to look up"
+        _step("Planner", ", ".join(tools) or empty, ms=_since(t0), status="success", key=key)
+        return raw
+
+    def stream(self, messages: list[dict], *, temperature: float = 0.3):
+        return self.chat.stream(messages, temperature=temperature)
 
 
 def _ctx(state: TurnState, deps: TurnDeps) -> ToolContext:
@@ -101,13 +151,16 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     deps = runtime.context
     user_id, message = state["user_id"], state["message"]
     recalled: list[dict] = []
+    _running("ingest", "Recalling what you told me")
     t0 = time.perf_counter()
     try:
         recalled = memories.recall(user_id, message, url=deps.url)
     except Exception:
         log.warning("memory recall skipped", exc_info=True)
     if recalled:
-        _step("Memory recall", f"{len(recalled)} memories", ms=(time.perf_counter() - t0) * 1000, status="success")
+        _step("Memory recall", f"{len(recalled)} memories", ms=_since(t0), status="success", key="ingest")
+    else:
+        _step("Memory recall", "none that fit this question", ms=_since(t0), key="ingest")
     facts = ""
     ctx = state.get("context") or {}
     if ctx.get("kind") == "nudge":
@@ -154,12 +207,14 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     narration.aggregation(intent, region)
     if region:
         _step("Region pruning", f"Scoped to {region} (REGIONAL BY ROW)")
+    _running("sql", "Running the numbers in CockroachDB")
     t0 = time.perf_counter()
     agg = run_aggregation(intent, user_id, url, region=region, merchant=merchant)
-    db_ms = (time.perf_counter() - t0) * 1000
+    db_ms = _since(t0)
     narration.aggregation_sql(agg, db_ms)
     _step("Aggregation SQL", f"${agg.total:,.2f} across {agg.count} transactions "
-          f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success")
+          f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success",
+          key="sql")
     language = state.get("language") or "English"
     key, hit = None, None
     try:
@@ -176,15 +231,23 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     else:
         narration.narrative_cache(False)
         _step("Narrative cache", "miss: generating the narrative", status="miss")
+        # An English card with no purchases goes out without the model.
+        writes = bool(agg.count) or language != "English"
+        if writes:
+            _running("answer", "Writing the answer")
+        t0 = time.perf_counter()
         text, cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
+        if writes:
+            _step("LLM answer", "narrative streamed", ms=_since(t0), status="success", key="answer")
         if key is not None:
             background.submit("narrative cache write", caches.put_search, user_id, key, [{"answer": text}],
                               url=deps.url, stat="narrative")
+    _running("explain", "Reading the query plan")
     t0 = time.perf_counter()
     explain = explain_aggregation(intent, user_id, url, region=region, merchant=merchant)
     served = serving_regions(explain) or region
-    _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""),
-          ms=(time.perf_counter() - t0) * 1000)
+    _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""), ms=_since(t0),
+          key="explain")
     return {"answer": text, "cached": cached, "streamed": streamed,
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
@@ -308,6 +371,8 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     language = state.get("language") or "English"
     if _cacheable(state):
         hit = None
+        _running("answer_cache", "Checking the answer cache")
+        t0 = time.perf_counter()
         try:
             from ..services._vector import embed
             hit = caches.get_answer(user_id, version=ledger.data_version(user_id, deps.url), language=language,
@@ -316,18 +381,27 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             log.warning("answer cache read skipped", exc_info=True)
         if hit:
             narration.answer_cache(True, hit["tokens"])
-            _step("Answer cache", f"hit, about {hit['tokens']} tokens saved", status="hit")
+            _step("Answer cache", f"hit, about {hit['tokens']} tokens saved", ms=_since(t0), status="hit",
+                  key="answer_cache")
             return {"answer": hit["answer"], "cached": True}
         narration.answer_cache(False)
-        _step("Answer cache", "miss", status="miss")
+        _step("Answer cache", "miss", ms=_since(t0), status="miss", key="answer_cache")
+
+    tools_run = 0
+
+    def on_start(step) -> None:
+        nonlocal tools_run
+        tools_run += 1
+        if step.tool in _TOOL_PHASES:
+            _running(f"tool:{tools_run}", _TOOL_PHASES[step.tool])
 
     def on_step(result: dict) -> None:
         _step(f"Tool {result['tool']}", "ok" if result["ok"] else result.get("error", "failed"),
-              ms=result["ms"], status="success" if result["ok"] else "warning")
+              ms=result["ms"], status="success" if result["ok"] else "warning", key=f"tool:{tools_run}")
 
-    results = plan_and_act(deps.chat, state["message"], _ctx(state, deps),
+    results = plan_and_act(_Planning(deps.chat), state["message"], _ctx(state, deps),
                            history=state.get("messages") or [], memories=state.get("memories") or [],
-                           context_facts=state.get("context_facts") or "", on_step=on_step)
+                           context_facts=state.get("context_facts") or "", on_step=on_step, on_start=on_start)
     # Kept in event shape, so the streamed proposal and the returned one match.
     proposals = [{"type": "proposal", **r["result"]} for r in results
                  if r["ok"] and r["tool"].startswith("propose_")]
@@ -345,12 +419,14 @@ def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
         home = money_region(conn, state["user_id"], url)
     if not query:
         return {"region": home, "db_ms": db_ms}
+    _running("explain", "Reading the query plan")
+    t0 = time.perf_counter()
     try:
-        t0 = time.perf_counter()
         explain = txns.explain_semantic(state["user_id"], query, url=deps.url)
-        _step("EXPLAIN ANALYZE", "plan captured", ms=(time.perf_counter() - t0) * 1000)
+        _step("EXPLAIN ANALYZE", "plan captured", ms=_since(t0), key="explain")
     except Exception:
         log.warning("semantic EXPLAIN skipped", exc_info=True)
+        _step("EXPLAIN ANALYZE", "plan not captured", ms=_since(t0), status="warning", key="explain")
         return {"region": home, "db_ms": db_ms}
     return {"region": serving_regions(explain) or home, "db_ms": db_ms, "explain": explain}
 
@@ -447,6 +523,7 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                facts=_facts(state.get("results") or []),
                                context_facts=state.get("context_facts") or "")
         narration.generating(language)
+        _running("answer", "Writing the answer")
         t0 = time.perf_counter()
         parts = []
         for piece in deps.chat.stream(msgs, temperature=0.3):
@@ -454,7 +531,7 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             _emit({"type": "token", "text": piece})
         answer = "".join(parts).strip()
         generated = True
-        _step("LLM answer", "streamed", ms=(time.perf_counter() - t0) * 1000, status="success")
+        _step("LLM answer", "streamed", ms=_since(t0), status="success", key="answer")
     results = state.get("results") or []
     citations = _cited(answer, results) if results else _cited_from_ledger(state["user_id"], answer, deps)
     # From here on the answer holds canonical markers for real purchases only.

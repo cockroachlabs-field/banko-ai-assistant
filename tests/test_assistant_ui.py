@@ -69,6 +69,18 @@ def test_answer_event_carries_the_plan_and_the_whole_trace(client):
     assert "llm" in kinds and kinds[-1] == "total"
 
 
+def test_running_steps_stream_but_never_land_in_the_trace(client):
+    tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
+    evs = _events(client.post(f"/api/v1/assistant/threads/{tid}/messages",
+                              json={"message": "how much did I spend on restaurants in the last 33 days"}))
+    running = [d for k, d in evs if k == "step" and d["status"] == "running"]
+    assert running and all(d["key"] for d in running)
+    assert "Running the numbers in CockroachDB" in [d["label"] for d in running]
+    trace = dict(evs)["answer"]["meta"]["trace"]
+    assert all(s["status"] != "running" for s in trace)
+    assert not {d["label"] for d in running} & {s["label"] for s in trace}
+
+
 def test_a_failed_turn_keeps_its_trace_and_names_nothing_internal(client, monkeypatch):
     class Down:
         def complete(self, messages, *, temperature=0.3):
