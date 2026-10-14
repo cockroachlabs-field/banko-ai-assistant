@@ -29,6 +29,11 @@ from .seed_plan import SeedPlan, build_plan, history_start
 
 log = logging.getLogger("banko.seeding")
 ProgressFn = Callable[[str, int, int, str], None]
+# A person who just signed up watches their setup bar; on a 3-region cluster
+# one SEED_BATCH_SIZE batch is a long transaction, so their history goes in
+# smaller batches and the count moves. Personas and admin seeding keep the
+# setting.
+SIGNUP_BATCH_SIZE = 50
 
 _status: dict[str, dict] = {}
 _status_lock = threading.Lock()
@@ -265,10 +270,11 @@ def _history_start(user_id: str, meta: dict | None, today: date, months: int, ur
 
 def seed_user(user_id: str, style: str | None = None, *, months: int | None = None,
               today: date | None = None, on_progress: ProgressFn | None = None,
-              url: str | None = None) -> int:
+              url: str | None = None, batch_size: int | None = None) -> int:
     """Seed or catch up one user's history through today. Returns the number
     of ledger entries written this run (0 when already current, or when
-    another run holds this user's seeding lease)."""
+    another run holds this user's seeding lease). batch_size overrides
+    SEED_BATCH_SIZE for this run (signup uses SIGNUP_BATCH_SIZE)."""
     url = url or get_config().database_url  # seeding always writes as the admin role
     today = today or datetime.now(timezone.utc).date()
     style, profile = _profile_for(user_id, style, url)
@@ -277,7 +283,7 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
         return _wait_for_owner(user_id, today, on_progress, url)
     try:
         return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
-                           today, on_progress, url, owner)
+                           today, on_progress, url, owner, batch_size=batch_size)
     finally:
         _release_lease(user_id, owner, url)
 
@@ -296,7 +302,8 @@ def _profile_for(user_id: str, style: str | None, url: str | None):
 
 
 def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
-                on_progress: ProgressFn | None, url: str | None, owner: str) -> int:
+                on_progress: ProgressFn | None, url: str | None, owner: str, *,
+                batch_size: int | None = None) -> int:
     from ..utils.embeddings import load_embedding_model
 
     catalog = get_catalog()
@@ -322,7 +329,7 @@ def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
         total = len(todo)
         _report(user_id, 0, total, "running", on_progress)
         model = load_embedding_model(wait_seconds=600) if any(e.is_purchase for e in todo) else None
-        size = _batch_size()
+        size = max(1, batch_size) if batch_size else _batch_size()
         for i in range(0, total, size):
             batch = todo[i:i + size]
             purchases = [e for e in batch if e.is_purchase]

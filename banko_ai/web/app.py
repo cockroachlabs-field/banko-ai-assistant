@@ -574,9 +574,10 @@ def create_app() -> Flask:
         try:
             user = um.create(username, spending_style, home_region, demo_user=True)
             def _seed_then_welcome(new_user=user):
-                from ..services.seeding import seed_user
+                from ..services.seeding import SIGNUP_BATCH_SIZE, seed_user
                 try:
-                    seed_user(new_user["user_id"], on_progress=_emit_seeding)
+                    # Small batches, so the person watching sees the count move.
+                    seed_user(new_user["user_id"], on_progress=_emit_seeding, batch_size=SIGNUP_BATCH_SIZE)
                     _emit_welcome_signal(new_user)
                 except Exception as exc:
                     print(f"⚠️  seeding {new_user['username']} failed: {exc}")
