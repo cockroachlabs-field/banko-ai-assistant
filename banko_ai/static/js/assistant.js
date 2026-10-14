@@ -36,12 +36,21 @@ document.addEventListener("alpine:init", () => {
   const threadKey = () => "banko.thread:" + Banko.shell.user.user_id;
   const newBot = () => Alpine.reactive({ id: ++seq, role: "bot", steps: [], answer: "", citations: [], proposals: [], meta: {},
                                          route: "", cached: false, error: "", stopped: false, ms: 0, showTrace: false,
-                                         answered: false, done: false, unsent: false });
+                                         answered: false, done: false, unsent: false, more: [], next: null, paging: false });
+  // An answer that searched can page on: meta.search names the search and
+  // the cursor of its next page, and a typed "show more" brings that page
+  // along as items.
+  const paged = (bot) => {
+    const s = (bot.meta && bot.meta.search) || {};
+    bot.more = (s.items || []).slice(); bot.next = s.next || null;
+    return bot;
+  };
   // A saved message as the chat shows it. An answer this server sent keeps
   // its meta (trace, plan, tokens) until the server restarts.
   const fromServer = (m) => m.role === "user"
     ? { id: ++seq, role: "user", text: m.content }
-    : { ...newBot(), answer: m.content, meta: m.meta || {}, cached: !!(m.meta && m.meta.cached), answered: true, done: true };
+    : paged(Object.assign(newBot(), { answer: m.content, meta: m.meta || {}, cached: !!(m.meta && m.meta.cached),
+                                      answered: true, done: true }));
   // A history read after the new turn landed already ends with it: keep the
   // exchange on screen and drop its copy from the history.
   function before(history, added) {
@@ -309,6 +318,7 @@ document.addEventListener("alpine:init", () => {
         bot.answer = data.answer || bot.answer;
         bot.citations = data.citations && data.citations.length ? data.citations : bot.citations;
         bot.meta = data.meta || {}; bot.route = data.route || ""; bot.cached = !!data.cached;
+        paged(bot);
         this.finish(bot, t0, tid);
       } else if (event === "error") {
         bot.error = data.message || Banko.FALLBACK;
@@ -408,6 +418,24 @@ document.addEventListener("alpine:init", () => {
       return { running: "run", warning: "warn", error: "warn", hit: "hit", miss: "miss" }[s.status] || "ok";
     },
     openCitation(c) { Banko.emit("banko:open-transaction", { id: c.expense_id }); },
+    // The next page of the answer's search, straight from the API: no model,
+    // no tokens.
+    async showMore(m) {
+      const s = m.meta.search;
+      if (!s || !m.next || m.paging) return;
+      m.paging = true;
+      try {
+        const p = new URLSearchParams({ q: s.q, limit: String(Banko.shell.search_page_size), cursor: m.next });
+        if (s.category) p.set("category", s.category);
+        if (s.from) p.set("from", s.from);
+        if (s.to) p.set("to", s.to);
+        const data = await Banko.api("/api/v1/transactions?" + p);
+        m.more = m.more.concat(data.items.map((i) => ({ expense_id: i.expense_id, merchant: i.merchant,
+                                                         amount: Math.abs(i.amount), date: i.posted_at })));
+        m.next = data.next_cursor;
+      } catch (e) { this.notify(e); }
+      finally { m.paging = false; }
+    },
 
     async startPage(threadId) {
       if (!threadId) return;

@@ -11,6 +11,7 @@ from flask import current_app, g, request, session, url_for
 from ..assistant.answers import LANGUAGES
 from ..config.settings import get_config
 from ..services.profile import get_profile
+from ..services.transactions import search_page_size
 
 log = logging.getLogger("banko.shell")
 _UNREAD = object()
@@ -105,6 +106,7 @@ def _shell(profile: dict) -> dict:
         "brand": {"name": cfg.brand_name, "accent": cfg.brand_accent},
         "theme": cfg.ui_theme,
         "languages": [{"code": c, "name": LANGUAGES[c]} for c in cfg.ui_languages.split(",")],
+        "search_page_size": search_page_size(),
         "provider": {"name": shown.name, "model": shown.model,
                      "icon_url": url_for("static", filename=shown.icon_file)},
         "user": {"user_id": profile["user_id"], "username": profile["username"],

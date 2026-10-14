@@ -279,6 +279,8 @@ button { font: inherit; color: inherit; }
 .b-ans table { border-collapse: collapse; font-size: 12px; margin: 6px 0; }
 .b-ans th, .b-ans td { border-bottom: 1px solid var(--bd2); padding: 3px 8px; text-align: left; }
 .b-cites { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.b-more { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
+.b-more .b-cites { margin-top: 0; }
 .b-cite { font-size: 11px; border: 1px solid var(--bd); border-radius: 8px; padding: 3px 8px; background: var(--side); cursor: pointer; }
 .b-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: var(--mu); flex-wrap: wrap; }
 .b-meta button { background: none; border: 0; padding: 0; color: var(--mu); cursor: pointer; display: inline-flex; gap: 4px; align-items: center; }

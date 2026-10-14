@@ -1,7 +1,7 @@
 """The assistant: one LangGraph StateGraph per turn, one checkpointed thread
 per conversation.
 
-    START -> ingest -> route -> aggregate | receipt | memory | offtopic | plan
+    START -> ingest -> route -> aggregate | receipt | memory | offtopic | plan | more
           -> respond -> learn -> END
 
 Nodes push events (steps, tokens, citations, proposals) through LangGraph's
@@ -39,7 +39,7 @@ from .planner import first_object, parse_plan, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
 from .router import reads_as_follow_up
 from .router import route as decide
-from .tools import ToolContext, run_tool
+from .tools import SearchArgs, ToolContext, run_tool
 
 log = logging.getLogger("banko.assistant")
 _IMPLICIT = re.compile(r"\b(i'?m saving for|i am saving for|my goal is|i prefer|i usually|i always|i never)\b", re.I)
@@ -70,6 +70,8 @@ class TurnState(TypedDict, total=False):
     meta: dict
     proposals: list[dict]
     citations: list[dict]
+    page: dict | None  # the search this turn showed: q, category, from, to and the next cursor
+    last_search: dict | None  # the previous turn's page, which "show more" continues
 
 
 @dataclass
@@ -171,13 +173,15 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         detail = txns.transaction_detail(user_id, str(ctx.get("id")), url=deps.url)
         facts = f"Transaction: {json.dumps(detail, default=str)}" if detail else ""
     return {"memories": recalled, "context_facts": facts, "results": [], "answer": "", "streamed": False,
-            "cached": False, "saved_tokens": 0, "meta": {}, "proposals": [], "citations": [], "route": {}}
+            "cached": False, "saved_tokens": 0, "meta": {}, "proposals": [], "citations": [], "route": {},
+            "page": None}
 
 
 def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
     r = decide(state["message"], active_receipt=state.get("active_receipt"), context=state.get("context"),
-               last_route=state.get("last_route"), has_history=bool(state.get("messages")))
+               last_route=state.get("last_route"), has_history=bool(state.get("messages")),
+               last_search=state.get("last_search"))
     _step("Intent routing", f"{r.kind}: {r.detail}", ms=(time.perf_counter() - t0) * 1000)
     return {"route": r.as_dict()}
 
@@ -408,7 +412,53 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     # Kept in event shape, so the streamed proposal and the returned one match.
     proposals = [{"type": "proposal", **r["result"]} for r in results
                  if r["ok"] and r["tool"].startswith("propose_")]
-    return {"results": results, "proposals": proposals, "meta": _search_meta(state, deps, results)}
+    meta, page = _search_meta(state, deps, results), _page(results)
+    if page and page["next"]:
+        meta["search"] = page  # the chat's Show more pages it
+    return {"results": results, "proposals": proposals, "meta": meta, "page": page}
+
+
+def _page(results: list[dict]) -> dict | None:
+    """The turn's semantic search as "show more" continues it: the same
+    search _search_meta explains, with the cursor of its next page."""
+    found = next((r for r in results if r["tool"] == "search_transactions" and r["ok"]), None)
+    if found is None:
+        return None
+    a = SearchArgs.model_validate(found.get("args") or {})
+    return {"q": a.query, "category": a.category, "from": a.date_from.isoformat() if a.date_from else None,
+            "to": a.date_to.isoformat() if a.date_to else None, "next": (found.get("result") or {}).get("next_cursor")}
+
+
+MORE_LINE = "Here are {n} more matches for “{q}”."
+ALL_SHOWN = "That's every match I found for “{q}”."
+
+
+def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
+    """The next page of the previous turn's search, straight from the
+    database: no planner and no model, a fixed line plus the purchases."""
+    deps, last = runtime.context, state.get("last_search") or {}
+    language = state.get("language") or "English"
+    if not last.get("next"):
+        _step("Next page", f"nothing after the last page of '{last.get('q', '')}'")
+        return {"answer": answers.translate(ALL_SHOWN.format(q=last.get("q", "")), language, deps.chat),
+                "page": last}
+    _running("tool:1", _TOOL_PHASES["search_transactions"])
+    t0 = time.perf_counter()
+    found = txns.semantic_search(state["user_id"], last["q"], limit=txns.search_page_size(), cursor=last["next"],
+                                 category=last.get("category"),
+                                 date_from=date.fromisoformat(last["from"]) if last.get("from") else None,
+                                 date_to=date.fromisoformat(last["to"]) if last.get("to") else None, url=deps.url)
+    db_ms = _since(t0)
+    items = [{"expense_id": i["expense_id"], "merchant": i["merchant"], "amount": _positive(i["amount"]),
+              "date": i["posted_at"]} for i in found["items"]]
+    _step("Next page", f"{len(items)} more for '{last['q']}'", ms=db_ms, status="success", key="tool:1")
+    page = {**last, "next": found["next_cursor"]}
+    url = deps.url or get_config().database_url
+    with get_engine(url).connect() as conn:
+        home = money_region(conn, state["user_id"], url)
+    line = MORE_LINE.format(n=len(items), q=last["q"]) if items else ALL_SHOWN.format(q=last["q"])
+    return {"answer": answers.translate(line, language, deps.chat), "page": page,
+            "meta": {"region": home, "db_ms": int(db_ms), "search": {**page, "items": items}}}
 
 
 def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
@@ -461,6 +511,8 @@ def _facts(results: list[dict]) -> str:
             # No action id: the model cited it as a purchase. And not done yet.
             result = {"proposal": result.get("summary"), "status": PROPOSAL_STATUS}
         else:
+            if isinstance(result, dict):  # the page cursor is for the chat, not the model
+                result = {k: v for k, v in result.items() if k != "next_cursor"}
             result = _with_cites(result)
         useful.append({"tool": r["tool"], "result": result})
     return json.dumps(useful, default=str)[:8000] if useful else "[]"
@@ -561,6 +613,7 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
            "cached": bool(state.get("cached")), "saved_tokens": int(state.get("saved_tokens") or 0),
            "route": state.get("route") or {}, "meta": dict(state.get("meta") or {})})
     return {"answer": answer, "citations": citations, "last_route": state["route"].get("kind"),
+            "last_search": state.get("page"),
             "messages": [{"role": "user", "content": state["message"]},
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
 
@@ -604,13 +657,13 @@ def _branch(state: TurnState) -> str:
 def build_graph(checkpointer):
     g = StateGraph(TurnState, context_schema=TurnDeps)
     for name, fn in (("ingest", ingest), ("route", route_node), ("aggregate", aggregate), ("receipt", receipt),
-                     ("memory", memory), ("offtopic", offtopic), ("plan", plan), ("respond", respond),
-                     ("learn", learn)):
+                     ("memory", memory), ("offtopic", offtopic), ("plan", plan), ("more", more),
+                     ("respond", respond), ("learn", learn)):
         g.add_node(name, fn)
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "route")
-    g.add_conditional_edges("route", _branch, ["aggregate", "receipt", "memory", "offtopic", "plan"])
-    for name in ("aggregate", "receipt", "memory", "offtopic", "plan"):
+    g.add_conditional_edges("route", _branch, ["aggregate", "receipt", "memory", "offtopic", "plan", "more"])
+    for name in ("aggregate", "receipt", "memory", "offtopic", "plan", "more"):
         g.add_edge(name, "respond")
     g.add_edge("respond", "learn")
     g.add_edge("learn", END)

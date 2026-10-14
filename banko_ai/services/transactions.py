@@ -27,6 +27,12 @@ MAX_LIMIT = 200
 # Every page of one semantic search is cut from the same nearest neighbours,
 # so a next page starts exactly where the one before it stopped.
 SEARCH_WINDOW = 100
+SEARCH_PAGE_MAX = 25
+
+
+def search_page_size() -> int:
+    """Purchases per page of an assistant search (SEARCH_PAGE_SIZE)."""
+    return max(1, min(int(get_config().search_page_size), SEARCH_PAGE_MAX))
 
 # Ledger entries, plus expenses that never got a ledger entry (receipts and
 # imports from before the ledger existed), as one ordered stream.

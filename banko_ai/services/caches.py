@@ -43,23 +43,23 @@ def search_key(user_id: str, version: int, payload: dict) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def get_search(user_id: str, key: str, *, url: str | None = None, stat: str = "search") -> list | None:
+def get_search(user_id: str, key: str, *, url: str | None = None, stat: str = "search") -> list | dict | None:
     url = request_url(url)
 
-    def fn(conn) -> list | None:
+    def fn(conn) -> list | dict | None:
         row = conn.execute(text("""
             UPDATE search_cache SET hits = hits + 1
             WHERE cache_key = :k AND user_id = CAST(:u AS UUID) AND expires_at > now()
             RETURNING results
         """), {"k": key, "u": user_id}).fetchone()
-        return None if row is None else (row[0] if isinstance(row[0], list) else json.loads(row[0]))
+        return None if row is None else (row[0] if isinstance(row[0], (list, dict)) else json.loads(row[0]))
 
     results = run_transaction(fn, url=url)
     record_stat(stat, "hit" if results is not None else "miss")
     return results
 
 
-def put_search(user_id: str, key: str, results: list, *, url: str | None = None,
+def put_search(user_id: str, key: str, results: list | dict, *, url: str | None = None,
                stat: str = "search") -> None:
     url = request_url(url)
     minutes = get_config().search_cache_ttl_minutes

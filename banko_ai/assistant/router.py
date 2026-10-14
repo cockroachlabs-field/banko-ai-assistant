@@ -30,11 +30,28 @@ _ITEM_WITH_DETERMINER = re.compile(r"\b(the|that|this|my)\s+([a-z]{4,})", re.I)
 # Words that lean on the turn before: such a message means nothing alone.
 _FOLLOW_UP = re.compile(r"\b(what about|and|also|that|those|it|them|this one|that one|how about)\b", re.I)
 _SHORT_WORDS = 8
+# "show more", "next 10", "keep going": a message made only of these words
+# asks for the next page of the search before it. A question that merely
+# contains "more" or "next" ("how can I save more?", "next month") carries
+# other words too.
+_PAGING_WORDS = {"show", "me", "more", "next", "page", "load", "see", "get", "give", "keep", "going", "continue",
+                 "results", "result", "matches", "match", "transactions", "purchases", "ones", "of", "those",
+                 "them", "these", "the", "some", "any", "anymore", "please", "pls", "ok", "okay", "yes", "sure",
+                 "and", "then", "ten", "twenty"}
+_PAGING_CUES = {"more", "next", "continue", "going", "anymore"}
+_TOKEN = re.compile(r"[a-z]+|\d+")
 
 
 def reads_as_follow_up(message: str) -> bool:
     """True when a message leans on the conversation before it."""
     return bool(_FOLLOW_UP.search(message or ""))
+
+
+def asks_for_more(message: str) -> bool:
+    """True when a message only asks for more results ("show me 10 more")."""
+    words = _TOKEN.findall((message or "").lower())
+    return (0 < len(words) <= _SHORT_WORDS and bool(_PAGING_CUES.intersection(words))
+            and all(w in _PAGING_WORDS or w.isdigit() for w in words))
 
 
 @dataclass(frozen=True)
@@ -97,14 +114,18 @@ def _about_receipt(message: str, receipt: dict, last_route: str | None) -> bool:
 
 
 def route(message: str, *, active_receipt: dict | None = None, context: dict | None = None,
-          today: date | None = None, last_route: str | None = None, has_history: bool = False) -> Route:
+          today: date | None = None, last_route: str | None = None, has_history: bool = False,
+          last_search: dict | None = None) -> Route:
     """last_route is the route of the thread's previous turn ("receipt" right
-    after an upload); has_history says whether the thread has messages."""
+    after an upload); has_history says whether the thread has messages;
+    last_search is the search the previous turn showed, if it ran one."""
     text = (message or "").strip()
     if (m := _REMEMBER.match(text)):
         return Route("remember", "memory command", payload=m.group(1).strip().rstrip("."))
     if (m := _FORGET.match(text)):
         return Route("forget", "memory command", payload=m.group(1).strip().rstrip("."))
+    if last_search is not None and asks_for_more(text):
+        return Route("more", "next page of the last search", follow_up=True)
     intent = classify_aggregation(text, today=today)
     if active_receipt and _about_receipt(text, active_receipt, last_route):
         # Strong references always win

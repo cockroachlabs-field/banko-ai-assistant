@@ -258,6 +258,9 @@ class Settings(BaseSettings):
         description="Hours a proposed change waits for Confirm before it expires.")
     search_cache_ttl_minutes: int = _field(10, group="assistant", env="SEARCH_CACHE_TTL_MINUTES",
         description="Minutes a semantic search result stays cached for the same user and data version.")
+    search_page_size: int = _field(10, group="assistant", env="SEARCH_PAGE_SIZE",
+        description="Purchases per page of an assistant search: the page an answer is written from, and each "
+                    "Show more or typed \"show more\" after it (1 to 25).")
     receipt_default_card_limit: float = _field(5000.0, group="assistant", env="RECEIPT_DEFAULT_CARD_LIMIT",
         description="Credit limit of the card opened for a user who uploads a receipt before having any account.")
     receipt_duplicate_max_distance: float = _field(0.2, group="assistant", env="RECEIPT_DUPLICATE_MAX_DISTANCE",

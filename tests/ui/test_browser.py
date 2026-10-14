@@ -712,6 +712,87 @@ def test_the_trace_panel_follows_the_conversation_on_screen(server, browser):
         ctx.close()
 
 
+def _paged_answer(text, route, search):
+    return _sse(("token", {"text": text}),
+                ("answer", {"answer": text, "citations": [], "proposals": [], "cached": False, "route": route,
+                            "meta": {"trace": [], "search": search}}),
+                ("done", {}))
+
+
+def _page_item(n: int) -> dict:
+    """One purchase of a typed "show more" page, as the answer meta carries it."""
+    return {"expense_id": f"99999999-9999-4999-8999-{n:012d}", "merchant": f"Roaster {n}", "amount": 6.25,
+            "date": "2026-10-01"}
+
+
+def test_show_more_under_an_answer_lists_the_next_matches(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=_paged_answer("Here are your coffee stops.", "plan", {
+            "q": "coffee", "category": None, "from": "2026-09-01", "to": None, "next": "bzEw"}))
+        asked = []
+
+        def search(route):
+            asked.append(urllib.parse.parse_qs(urllib.parse.urlparse(route.request.url).query))
+            route.fulfill(json={"items": [_match(1), _match(2)], "next_cursor": None})
+
+        page.route("**/api/v1/transactions?q=*", search)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "where do I get coffee?")
+        bot = page.locator(".b-panel .b-msg-bot")
+        more = bot.get_by_role("button", name="Show 10 more")
+        more.click()
+        chips = bot.locator(".b-more .b-cite")
+        expect(chips).to_have_count(2)
+        expect(chips.nth(0)).to_contain_text("Cafe 1")
+        expect(chips.nth(0)).to_contain_text("$5.50")
+        expect(more).to_be_hidden()
+        sent = asked[-1]
+        assert sent["q"] == ["coffee"] and sent["cursor"] == ["bzEw"] and sent["limit"] == ["10"], sent
+        assert sent["from"] == ["2026-09-01"] and "category" not in sent and "to" not in sent, sent
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_typed_show_more_lists_its_page_and_offers_the_next(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=_paged_answer("Here are 2 more matches for “coffee”.", "more", {
+            "q": "coffee", "category": None, "from": None, "to": None, "next": "bzEy",
+            "items": [_page_item(7), _page_item(8)]}))
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "show more")
+        bot = page.locator(".b-panel .b-msg-bot")
+        expect(bot.locator(".b-more .b-cite")).to_have_count(2)
+        expect(bot.locator(".b-more .b-cite").nth(1)).to_contain_text("Roaster 8")
+        expect(bot.get_by_role("button", name="Show 10 more")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_reloaded_page_of_matches_is_still_there(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        user, _ = HISTORY["messages"]
+        kept = {**HISTORY, "messages": [user, {"role": "assistant", "content": "Here are 1 more matches for “coffee”.",
+                                               "meta": {"search": {"q": "coffee", "category": None, "from": None,
+                                                                   "to": None, "next": None,
+                                                                   "items": [_page_item(3)]}}}]}
+        api = _PanelApi(page, history=kept)
+        _remember_a_thread(page, server, "sam")
+        _open_panel(page)
+        api.release()
+        bot = page.locator(".b-panel .b-msg-bot")
+        expect(bot.locator(".b-more .b-cite")).to_have_count(1)
+        expect(bot.locator(".b-more .b-cite")).to_contain_text("Roaster 3")
+        expect(bot.get_by_role("button", name="Show 10 more")).to_have_count(0)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_the_meta_line_says_what_was_spent_or_saved(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

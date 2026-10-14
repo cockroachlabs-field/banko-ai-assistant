@@ -56,7 +56,7 @@ class SearchArgs(BaseModel):
     category: str | None = None
     date_from: date | None = None
     date_to: date | None = None
-    limit: int = Field(10, ge=1, le=25)
+    limit: int = Field(default_factory=txns.search_page_size, ge=1, le=txns.SEARCH_PAGE_MAX)
 
 
 class SpendArgs(BaseModel):
@@ -111,24 +111,28 @@ def _search(ctx: ToolContext, a: SearchArgs) -> dict:
     except Exception:  # a cache outage is a miss, never a failed search
         log.warning("search cache read skipped", exc_info=True)
     if cached is not None:
-        narration.vector_cache(len(cached))
+        # An entry kept before searches paged is the bare list of rows.
+        page = cached if isinstance(cached, dict) else {"items": cached, "next_cursor": None}
+        narration.vector_cache(len(page["items"]))
         trace_step("cache", "Search cache", f"hit for '{a.query}'", status="hit")
-        return {"items": cached}
+        return page
     narration.vector_cache(None)
     trace_step("cache", "Search cache", f"miss for '{a.query}'", status="miss")
     t0 = time.perf_counter()
     found = txns.semantic_search(ctx.user_id, a.query, limit=a.limit, category=a.category,
-                                 date_from=a.date_from, date_to=a.date_to, url=ctx.url)["items"]
-    narration.vector_rows(len(found), (time.perf_counter() - t0) * 1000)
-    items = [{"expense_id": i["expense_id"], "date": i["posted_at"], "merchant": i["merchant"],
-              "amount": abs(i["amount"]), "category": i["category"], "description": i["description"]}
-             for i in found]
+                                 date_from=a.date_from, date_to=a.date_to, url=ctx.url)
+    narration.vector_rows(len(found["items"]), (time.perf_counter() - t0) * 1000)
+    # next_cursor is the chat's Show more; the answer model never sees it.
+    page = {"items": [{"expense_id": i["expense_id"], "date": i["posted_at"], "merchant": i["merchant"],
+                       "amount": abs(i["amount"]), "category": i["category"], "description": i["description"]}
+                      for i in found["items"]],
+            "next_cursor": found["next_cursor"]}
     if key is not None:
         try:
-            caches.put_search(ctx.user_id, key, items, url=ctx.url)
+            caches.put_search(ctx.user_id, key, page, url=ctx.url)
         except Exception:
             log.warning("search cache write skipped", exc_info=True)
-    return {"items": items}
+    return page
 
 
 def _spend(ctx: ToolContext, a: SpendArgs) -> dict:

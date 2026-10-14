@@ -61,6 +61,25 @@ def test_search_returns_own_rows_and_caches(ctx, trace):
     assert any(s["kind"] == "cache" and s["status"] == "hit" for s in current_trace())
 
 
+def test_search_returns_the_cursor_of_its_next_page(ctx):
+    from banko_ai.services import transactions as txns
+    first = T.run_tool("search_transactions", {"query": "dinner", "limit": 3}, ctx)["result"]
+    assert len(first["items"]) == 3 and first["next_cursor"]
+    nxt = txns.semantic_search(ctx.user_id, "dinner", limit=3, cursor=first["next_cursor"])["items"]
+    assert nxt and {i["expense_id"] for i in nxt}.isdisjoint({i["expense_id"] for i in first["items"]})
+
+
+def test_a_search_without_a_limit_takes_the_page_size_setting(ctx, monkeypatch):
+    from banko_ai.config.settings import reset_config
+    monkeypatch.setenv("SEARCH_PAGE_SIZE", "4")
+    reset_config()
+    try:
+        assert len(T.run_tool("search_transactions", {"query": "groceries"}, ctx)["result"]["items"]) == 4
+    finally:
+        monkeypatch.delenv("SEARCH_PAGE_SIZE")
+        reset_config()
+
+
 def test_a_broken_search_cache_is_a_miss(ctx, monkeypatch):
     from banko_ai.services import caches
 

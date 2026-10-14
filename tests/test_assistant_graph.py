@@ -617,3 +617,54 @@ def test_checkpoints_survive_a_new_process(member, thread):
     assert state["active_receipt"]["merchant"] == "REI"
     checkpoint.delete_checkpoints(thread)
     assert fresh.get_state({"configurable": {"thread_id": thread}}).values == {}
+
+
+def test_the_model_never_sees_the_page_cursor():
+    facts = G._facts([{"tool": "search_transactions", "ok": True,
+                       "result": {"items": [{"expense_id": "e1", "merchant": "Blue Bottle"}], "next_cursor": "bzEw"}}])
+    assert "Blue Bottle" in facts and "next_cursor" not in facts and "bzEw" not in facts
+
+
+def _searched(g, member, thread, question, query):
+    chat = ScriptedChat(json.dumps({"steps": [{"tool": "search_transactions", "args": {"query": query}}]}),
+                        '{"steps": []}', "Here are your purchases.")
+    return _turn(g, member, thread, question, chat)[0]
+
+
+def test_a_search_answer_carries_its_next_page(g, member, thread):
+    out = _searched(g, member, thread, "find my dinners out", "dinner")
+    search = out["meta"]["search"]
+    assert search["q"] == "dinner" and search["next"]
+    assert search["category"] is None and search["from"] is None and search["to"] is None
+
+
+def test_show_more_pages_the_last_search_without_the_model(g, member, thread):
+    from banko_ai.services import transactions as txns
+    _searched(g, member, thread, "show my grocery runs", "groceries")
+    quiet = ScriptedChat("the model should not be asked")
+    out, events = _turn(g, member, thread, "show more", quiet)
+    assert out["route"]["kind"] == "more" and quiet.calls == []
+    first = [i["expense_id"] for i in txns.semantic_search(member, "groceries", limit=10)["items"]]
+    shown = out["meta"]["search"]["items"]
+    assert len(shown) == 10 and not {i["expense_id"] for i in shown} & set(first)
+    assert all(i["amount"] > 0 and i["date"] and i["merchant"] for i in shown)
+    assert out["answer"] == "Here are 10 more matches for “groceries”."
+    assert any(e["type"] == "step" and e["label"] == "Next page" for e in events)
+    again, _ = _turn(g, member, thread, "next 10", quiet)
+    assert again["route"]["kind"] == "more"
+    assert not {i["expense_id"] for i in again["meta"]["search"]["items"]} & {i["expense_id"] for i in shown}
+
+
+def test_show_more_after_the_last_page_says_so(g, member, thread):
+    g.update_state(G._config(thread), {"last_search": {"q": "pizza", "category": None, "from": None, "to": None,
+                                                       "next": None}}, as_node="learn")
+    out, _ = _turn(g, member, thread, "show more", ScriptedChat("unused"))
+    assert out["route"]["kind"] == "more"
+    assert out["answer"] == "That's every match I found for “pizza”."
+
+
+def test_a_turn_without_a_search_ends_the_paging(g, member, thread):
+    _searched(g, member, thread, "list my coffee stops", "coffee")
+    _turn(g, member, thread, "how much did I spend on groceries in the last 30 days", ScriptedChat("- Steady."))
+    out, _ = _turn(g, member, thread, "show more", ScriptedChat('{"steps": []}', '{"steps": []}', "Sure."))
+    assert out["route"]["kind"] != "more"

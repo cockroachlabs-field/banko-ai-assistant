@@ -39,6 +39,13 @@
             <div class="b-cites" x-show="m.citations.length">
               <template x-for="c in m.citations" :key="c.expense_id"><button type="button" class="b-cite" @click="openCitation(c)" x-text="Banko.fmt.date(c.date) + ' · ' + c.merchant + ' · ' + Banko.fmt.money(c.amount)"></button></template>
             </div>
+            <div class="b-more" x-show="m.more.length || m.next">
+              <div class="b-lbl" x-show="m.more.length">More matches</div>
+              <div class="b-cites" x-show="m.more.length">
+                <template x-for="c in m.more" :key="c.expense_id"><button type="button" class="b-cite" @click="openCitation(c)" x-text="Banko.fmt.date(c.date) + ' · ' + c.merchant + ' · ' + Banko.fmt.money(c.amount)"></button></template>
+              </div>
+              <button type="button" class="b-btn sm" x-show="m.next" @click="showMore(m)" :disabled="m.paging" x-text="'Show ' + Banko.shell.search_page_size + ' more'"></button>
+            </div>
             <template x-for="p in m.proposals" :key="p.action_id">
               <div class="b-proposal">
                 <span x-text="p.summary"></span>

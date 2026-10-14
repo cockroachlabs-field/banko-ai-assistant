@@ -100,3 +100,23 @@ def test_item_words_in_idioms_not_hijacked():
 def test_remember_to_is_not_a_memory_command():
     r = route("remember to pay rent on Friday")
     assert r.kind != "remember"
+
+
+SEARCHED = {"q": "coffee", "category": None, "from": None, "to": None, "next": "bzEw"}
+
+
+def test_asking_for_more_pages_the_last_search():
+    for text in ("show more", "more", "More please", "next", "next page", "show me 10 more", "next 10",
+                 "keep going", "load more results", "any more?", "show more of those", "ok, show more."):
+        r = route(text, last_search=SEARCHED, has_history=True, today=TODAY)
+        assert r.kind == "more" and r.follow_up, text
+
+
+def test_more_inside_a_real_question_is_not_paging():
+    for text in ("how can I save more?", "next month", "did I spend more on coffee than tea?",
+                 "more coffee purchases", "tell me more about my budget", "what's next on my bills?"):
+        assert route(text, last_search=SEARCHED, has_history=True, today=TODAY).kind != "more", text
+
+
+def test_more_with_no_search_before_it_goes_to_the_planner():
+    assert route("show more", has_history=True, today=TODAY).kind == "plan"
