@@ -1170,16 +1170,38 @@ def test_the_palette_shortcut_reads_right_on_each_platform(server, browser, plat
 
 
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
+    """While a new user's history is written, the dashboard shows the setup
+    card and its count instead of a grid of zeros, and draws the figures
+    once seeding reports done. The test database writes a new history
+    faster than a check can look, so /api/v1/me is held at "running" and
+    the live socket is left out until the test sends done itself."""
     ctx, page, errors = _page(browser, "light")
     try:
+        page.add_init_script("Object.defineProperty(window, 'io', { get: () => undefined, set: () => {} });")
+
+        def running(route):
+            me = route.fetch().json()
+            route.fulfill(json={**me, "seeding": {"user_id": me.get("user_id"), "state": "running",
+                                                  "done": 50, "total": 232}})
+
+        page.route("**/api/v1/me", running)
         page.goto(server + "/login")
         page.fill('#name-form input[name="username"]', f"ui-{int(time.time())}")
         page.locator("#name-form button[type=submit]").click()
         page.wait_for_selector("#signup-section", state="visible")
         page.locator("#name-form button[type=submit]").click()
         page.wait_for_url(server + "/")
-        page.wait_for_selector("text=Setting up your accounts", state="visible", timeout=15000)
-        assert page.locator('section[x-data="dashboardPage"] > .b-grid').first.is_hidden()
+        dashboard = page.locator('section[x-data="dashboardPage"]')
+        card = dashboard.locator(".b-card", has_text="Setting up your accounts")
+        expect(card).to_be_visible()
+        expect(card).to_contain_text("Writing your history: 50 of 232 ledger entries")
+        expect(dashboard.locator(":scope > .b-grid").first).to_be_hidden()
+
+        page.unroute("**/api/v1/me")
+        page.wait_for_function("async () => ((await Banko.api('/api/v1/me')).seeding || {}).state !== 'running'")
+        page.evaluate("() => Banko.emit('banko:seeding', { user_id: Banko.shell.user.user_id, state: 'done' })")
+        expect(card).to_be_hidden()
+        expect(dashboard.locator(":scope > .b-grid").first).to_be_visible()
         assert not errors, errors
     finally:
         ctx.close()
