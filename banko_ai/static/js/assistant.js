@@ -184,7 +184,11 @@ document.addEventListener("alpine:init", () => {
           if (mine === epoch) this.remember(thread.thread_id, thread.title);
           return thread.thread_id;
         } catch (e) {
-          if (replace && mine === epoch) { this.messages = shown.messages.concat(this.messages); this.threadTitle = shown.title; }
+          if (replace && mine === epoch) {
+            this.messages = shown.messages.concat(this.messages); this.threadTitle = shown.title;
+            // Its history was still on the way when the screen cleared: ask again.
+            if (this.threadId && !shown.messages.length) this.loadThread(this.threadId);
+          }
           throw e;
         }
       })());

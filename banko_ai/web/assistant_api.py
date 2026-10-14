@@ -277,8 +277,9 @@ def _turn_stream(user_id: str, thread_id: str, message: str, language: str | Non
             if event.get("type") != "final":
                 events.put(event)
             elif not answered:  # one answer per turn, never two
+                answer = _answer_event(thread_id, event, chat, shown)
                 answered = True
-                events.put(_answer_event(thread_id, event, chat, shown))
+                events.put(answer)
 
         try:
             out = _graph().run_turn(user_id, thread_id, message, language_code=language, chat=chat,
