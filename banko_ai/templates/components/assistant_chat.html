@@ -60,8 +60,8 @@
             <button type="button" x-show="canSpeak" @click="speak(m.answer)">{{ icon('volume-2') }}read aloud</button>
           </div>
           <div class="b-explain" x-show="m.answered && m.meta.explain">
-            <div class="b-lbl">How CockroachDB ran it<span x-show="m.meta.explain_cut"> · plan shortened</span></div>
-            <pre class="b-plan" x-text="m.meta.explain"></pre>
+            <button type="button" class="b-lbl b-fold" @click="togglePlans()" :aria-expanded="plansOpen ? 'true' : 'false'">{{ icon('chevron-down') }}How CockroachDB ran it<span x-show="m.meta.explain_cut"> · plan shortened</span></button>
+            <pre class="b-plan" x-show="plansOpen" x-text="m.meta.explain"></pre>
           </div>
           <div class="b-trace" style="border:1px solid var(--bd);border-radius:12px" x-show="m.showTrace && mode === 'panel'">
             <div class="b-tl">

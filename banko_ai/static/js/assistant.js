@@ -77,6 +77,9 @@ document.addEventListener("alpine:init", () => {
     canSpeak: "speechSynthesis" in window,
     listening: false, recognition: null,
     autoRead: localStorage.getItem("banko.autoread") === "1",
+    // "How CockroachDB ran it" folds to its heading for every answer at once,
+    // and stays that way across answers and reloads until opened again.
+    plansOpen: localStorage.getItem("banko.plans") !== "closed",
 
     init() {
       if (this.mode === "panel") {
@@ -399,6 +402,7 @@ document.addEventListener("alpine:init", () => {
       Alpine.store("toasts").push({ title: "Copied", text: "The answer is on your clipboard." });
     },
     toggleTrace(m) { m.showTrace = !m.showTrace; Banko.emit("banko:trace", { message: m }); },
+    togglePlans() { this.plansOpen = !this.plansOpen; localStorage.setItem("banko.plans", this.plansOpen ? "open" : "closed"); },
     traceSteps(m) { return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps; },
     stepClass(s) {
       return { running: "run", warning: "warn", error: "warn", hit: "hit", miss: "miss" }[s.status] || "ok";

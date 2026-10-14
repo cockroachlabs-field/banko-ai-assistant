@@ -35,6 +35,7 @@ OLD_THREAD = "22222222-2222-4222-8222-222222222222"
 NEW_THREAD = "33333333-3333-4333-8333-333333333333"
 LEGACY_THREAD = "44444444-4444-4444-8444-444444444444"
 OTHER_USERS_THREAD = "55555555-5555-4555-8555-555555555555"
+LATER_THREAD = "77777777-7777-4777-8777-777777777777"
 HISTORY = {"thread_id": OLD_THREAD, "title": "Yesterday's chat", "active_receipt": None,
            "messages": [{"role": "user", "content": "What did I spend on coffee?"},
                         {"role": "assistant", "content": "You spent $12.40 on coffee."}]}
@@ -253,11 +254,13 @@ class _PanelApi:
     """The assistant API the panel talks to, mocked. The history of the
     remembered thread is held until release(), so a test can let the user
     act first, which is what a slow checkpoint read looks like. With
-    hold_threads, creating a thread is held too, until release_threads()."""
+    hold_threads, creating a thread is held too, until release_threads().
+    New threads take their ids from thread_ids in order, then NEW_THREAD."""
 
-    def __init__(self, page, answer=ANSWER, history=HISTORY, hold_threads=False):
+    def __init__(self, page, answer=ANSWER, history=HISTORY, hold_threads=False, thread_ids=()):
         self.held, self.fetched, self.answer, self.history = [], [], answer, history
         self.hold_threads, self.creating, self.asked = hold_threads, [], []
+        self.thread_ids = list(thread_ids)
         page.route("**/api/v1/assistant/**", self._assistant)
         page.route("**/api/v1/receipts", lambda r: r.fulfill(status=200, content_type="text/event-stream", body=RECEIPT))
         page.route("**/api/v1/receipts/*/thumbnail", lambda r: r.fulfill(status=200, content_type="image/gif", body=PIXEL))
@@ -279,7 +282,8 @@ class _PanelApi:
             if self.hold_threads:
                 self.creating.append(route)
                 return None
-            return route.fulfill(status=201, json={"thread_id": NEW_THREAD, "title": "New chat", "message_count": 0})
+            made = self.thread_ids.pop(0) if self.thread_ids else NEW_THREAD
+            return route.fulfill(status=201, json={"thread_id": made, "title": "New chat", "message_count": 0})
         if req.method == "GET" and path == "/api/v1/assistant/threads":
             # The server titles a thread from its first question.
             return route.fulfill(json={"threads": [{"thread_id": NEW_THREAD, "title": TITLED, "message_count": 2,
@@ -632,6 +636,76 @@ def test_the_plan_shows_under_every_answer_without_a_click(server, browser):
         on_page = page.locator(".b-assist-page .b-chat .b-explain")
         expect(on_page).to_be_visible()
         expect(on_page.locator("pre")).to_contain_text("regions: us-east-1")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_plan_folds_to_its_heading_and_stays_folded(server, browser):
+    """"How CockroachDB ran it" folds down to its heading so the answer gets
+    the room; the next answer and a reload keep it folded until it is
+    opened again."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=PLANNED)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        plans = page.locator(".b-assist-page .b-chat .b-explain")
+        page.locator(".b-comp textarea").fill(TITLED.lower())
+        page.keyboard.press("Enter")
+        expect(plans.nth(0).locator("pre")).to_be_visible()
+        plans.nth(0).get_by_role("button", name="How CockroachDB ran it").click()
+        expect(plans.nth(0).locator("pre")).to_be_hidden()
+        expect(plans.nth(0)).to_contain_text("How CockroachDB ran it")
+
+        page.locator(".b-comp textarea").fill("and the week before?")
+        page.keyboard.press("Enter")
+        expect(plans.nth(1)).to_be_visible()
+        expect(plans.nth(1).locator("pre")).to_be_hidden()
+
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        page.locator(".b-comp textarea").fill(TITLED.lower())
+        page.keyboard.press("Enter")
+        expect(plans.nth(0)).to_be_visible()
+        expect(plans.nth(0).locator("pre")).to_be_hidden()
+        plans.nth(0).get_by_role("button", name="How CockroachDB ran it").click()
+        expect(plans.nth(0).locator("pre")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_trace_panel_follows_the_conversation_on_screen(server, browser):
+    """New conversation clears "How this was answered" at once, and an
+    answer that lands for the conversation put away never shows in it."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TRACED, thread_ids=[NEW_THREAD, LATER_THREAD])
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        aside = page.locator("aside.b-trace")
+        rows = aside.locator(".b-tl > div")
+        page.locator(".b-comp textarea").fill(TITLED.lower())
+        page.keyboard.press("Enter")
+        expect(rows.filter(has_text="Aggregation SQL")).to_be_visible()
+
+        push, close = _hold_the_stream(page)
+        page.locator(".b-comp textarea").fill("and the month before?")
+        page.keyboard.press("Enter")
+        page.get_by_role("button", name="New conversation").click()
+        expect(aside.get_by_text("Ask something and each step shows up here")).to_be_visible()
+        expect(rows).to_have_count(0)
+        push("answer", {"answer": "You spent $38.00 on dining.", "citations": [], "proposals": [], "cached": False,
+                        "route": "aggregate", "meta": {"trace": [{"label": "Late SQL", "detail": "", "ms": 9.0,
+                                                                  "status": "success", "kind": "sql"}]}})
+        push("done", {})
+        close()
+        page.wait_for_timeout(300)
+        expect(aside).not_to_contain_text("Late SQL")
+        expect(rows).to_have_count(0)
         assert not errors, errors
     finally:
         ctx.close()

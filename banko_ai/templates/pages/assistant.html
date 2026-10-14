@@ -31,10 +31,12 @@
     {% include "components/assistant_chat.html" %}
   </div>
 
+  {# Only a message in the conversation on screen: New conversation clears
+     the panel, and an answer that lands for a thread put away never shows. #}
   <aside class="b-trace" x-data="tracePanel">
     <h3>How this was answered</h3>
-    <div class="b-muted" x-show="!message">Ask something and each step shows up here: the route, the index, the region and the timings.</div>
-    <template x-if="message">
+    <div class="b-muted" x-show="!(message && messages.includes(message))">Ask something and each step shows up here: the route, the index, the region and the timings.</div>
+    <template x-if="message && messages.includes(message)">
       <div style="display:flex;flex-direction:column;gap:10px">
         <div class="b-tl">
           <template x-for="(s, i) in steps()" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="Banko.traceLine(s)"></span></div></template>
