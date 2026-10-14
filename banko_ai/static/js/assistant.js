@@ -7,6 +7,24 @@ document.addEventListener("alpine:init", () => {
   // The same shape answers.strip_citations removes: any [txn:...] marker, well formed or not.
   const MARKER = /[ \t]*\[\s*txn\s*:[^\]]*\]/gi;
   Banko.stripCitations = (text) => String(text || "").replace(MARKER, "");
+  // Model answers are Markdown, so only the tags Markdown makes survive: no
+  // style (one answer could blank the app), no forms and no images (an
+  // image would fetch an outside URL). Links open in a new tab, without the
+  // opener.
+  const PURIFY = {
+    ALLOWED_TAGS: ["p", "br", "hr", "strong", "b", "em", "i", "del", "s", "code", "pre", "blockquote",
+                   "ul", "ol", "li", "a", "h1", "h2", "h3", "h4", "table", "thead", "tbody", "tr", "th", "td"],
+    ALLOWED_ATTR: ["href", "title", "align", "start"],
+    ALLOW_DATA_ATTR: false,
+  };
+  window.DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A" && node.hasAttribute("href")) {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+    }
+  });
+  Banko.renderAnswer = (text) =>
+    window.DOMPurify.sanitize(window.marked.parse(Banko.stripCitations(text), { breaks: true }), PURIFY);
   const RECEIPT_TYPES = /^(image\/|application\/pdf$)/;
   const STEP_LABELS = { ocr: "OCR", extract: "Extract", category: "Category", duplicate: "Dup check", post: "Posted", fraud: "Fraud", budget: "Budget" };
   // The panel remembers its thread per user, so after "Switch user" another
@@ -241,10 +259,7 @@ document.addEventListener("alpine:init", () => {
     confirm(p) { return this.decide(p, "confirm"); },
     cancel(p) { return this.decide(p, "cancel"); },
 
-    render(text) {
-      const clean = Banko.stripCitations(text);
-      return window.DOMPurify.sanitize(window.marked.parse(clean, { breaks: true }));
-    },
+    render(text) { return Banko.renderAnswer(text); },
     async copy(text) {
       const plain = Banko.stripCitations(text);
       try { await navigator.clipboard.writeText(plain); }

