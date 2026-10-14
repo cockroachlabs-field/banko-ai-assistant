@@ -688,6 +688,36 @@ def test_no_data_and_failed_seeding_show_real_next_steps(server, browser):
         ctx.close()
 
 
+def test_midnight_takes_its_accent_shades_from_the_brand_accent(server, browser):
+    ctx, page, errors = _page(browser, "dark")
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/accounts")
+        page.wait_for_load_state("networkidle")
+        assert page.evaluate("() => document.documentElement.dataset.theme") == "dark"
+
+        def shades():
+            return page.evaluate("""() => {
+                const card = document.createElement('div');
+                card.className = 'b-card b-ins';
+                document.body.appendChild(card);
+                const out = { chart: Banko.charts.css('--chart-1'), insight: getComputedStyle(card).backgroundImage };
+                card.remove();
+                return out;
+            }""")
+
+        brand = shades()
+        page.evaluate("() => document.documentElement.style.setProperty('--ac', '#E5484D')")  # BRAND_ACCENT, red
+        red = shades()
+        assert brand["chart"].startswith("#") and red["chart"].startswith("#")
+        assert red["chart"] != brand["chart"] and red["insight"] != brand["insight"]
+        r, g, b = (int(red["chart"][i:i + 2], 16) for i in (1, 3, 5))
+        assert r > g and r > b, red["chart"]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

@@ -51,10 +51,12 @@
   --track: #1D2238;
   --chip: #1A1F33;
   --sh: 0 10px 28px rgba(0, 0, 0, .35);
-  --ins: linear-gradient(140deg, #24195C, #3A2A92);
-  --instx: #EDE9FF;
-  --insbd: 1px solid #3A2F80;
-  --chart-1: #22D3EE;
+  /* Accent shades mix --ac into the night background or white, so
+     BRAND_ACCENT recolors Midnight too. */
+  --ins: linear-gradient(140deg, color-mix(in srgb, var(--ac) 30%, #090B12), color-mix(in srgb, var(--ac) 52%, #090B12));
+  --instx: color-mix(in srgb, var(--ac) 10%, #FFFFFF);
+  --insbd: 1px solid color-mix(in srgb, var(--ac) 45%, #090B12);
+  --chart-1: color-mix(in srgb, var(--ac) 70%, #FFFFFF);
   --chart-2: #5B6380;
   --chart-grid: #212741;
   color-scheme: dark;

@@ -4,7 +4,28 @@
   "use strict";
   const live = new Set();
 
-  function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  // Some tokens are color-mix() expressions (the accent shades derive from
+  // BRAND_ACCENT), which Chart.js cannot read. The browser resolves the
+  // color on a swatch, and a 1x1 canvas turns it back into hex.
+  const swatch = document.createElement("span");
+  const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+  function resolve(value) {
+    if (!value || /^#[0-9a-f]{6}$/i.test(value)) return value;
+    swatch.style.color = "";
+    swatch.style.color = value;
+    if (!swatch.style.color) return value;
+    document.documentElement.appendChild(swatch);
+    const computed = getComputedStyle(swatch).color;
+    swatch.remove();
+    probe.clearRect(0, 0, 1, 1);
+    probe.fillStyle = "#000000";
+    probe.fillStyle = computed;
+    probe.fillRect(0, 0, 1, 1);
+    const [r, g, b] = probe.getImageData(0, 0, 1, 1).data;
+    return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  }
+
+  function css(name) { return resolve(getComputedStyle(document.documentElement).getPropertyValue(name).trim()); }
 
   function alpha(color, a) {
     const m = /^#([0-9a-f]{6})$/i.exec(color);
