@@ -37,7 +37,6 @@ from ..ai_providers.display import (
     display_label,
     display_models,
     neutral_error,
-    ui_context,
 )
 from ..ai_providers.factory import AIProviderFactory
 from ..coach.handler import SignalHandler
@@ -49,9 +48,8 @@ from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..services.profile import get_profiles
 from ..utils.cache_manager import BankoCacheManager
-from ..utils.db_retry import TRANSIENT_ERRORS, get_database_url
+from ..utils.db_retry import get_database_url
 from ..utils.embeddings import ModelWarmingUp
-from ..utils.request_trace import trace_step
 from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
@@ -197,9 +195,6 @@ def create_app() -> Flask:
 
     def _shown():
         return display_identity(config, _actual(), selected_model=app.config.get("DISPLAY_MODEL_OVERRIDE"))
-
-    def _provider_ui():
-        return ui_context(_shown(), status="connected" if ai_provider else "disconnected")
 
     def _switch_model(model: str) -> tuple[dict, int]:
         """Switch the model, or the persona's shown model. Returns the JSON
