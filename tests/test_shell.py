@@ -162,7 +162,10 @@ def test_per_user_socket_events_reach_only_that_users_sockets(monkeypatch):
         with app.test_request_context():
             _activity("receipt", "completed", "extract: Blue Bottle $9.75", a)
         app.extensions["banko_emit_seeding"](a, 10, 20, "running")
-        assert names(sockets["a"]) == [("agent_activity", a), ("seeding", a)]
+        received = sockets["a"].get_received()
+        assert [(e["name"], e["args"][0]["user_id"]) for e in received] == [("agent_activity", a), ("seeding", a)]
+        # Live lines are stamped in UTC, like the stored rows they sort among.
+        assert received[0]["args"][0]["timestamp"].endswith("+00:00")
         assert names(sockets["b"]) == [] and names(sockets["anon"]) == []
 
         # Demo users created from Settings report to the person who asked.

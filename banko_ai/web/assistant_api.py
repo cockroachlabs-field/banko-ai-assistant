@@ -12,7 +12,7 @@ import queue
 import tempfile
 import threading
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, Response, current_app, jsonify, request, session, stream_with_context
@@ -80,7 +80,7 @@ def _activity(agent_type: str, status: str, message: str, user_id: str) -> None:
         socketio.emit("agent_activity", {"source": "activity", "agent_type": agent_type,
                                          "region": agent_home_region(get_config().database_url),
                                          "status": status, "message": message, "user_id": user_id,
-                                         "timestamp": datetime.now().isoformat()},
+                                         "timestamp": datetime.now(timezone.utc).isoformat()},
                       to=user_room(user_id))
     except Exception:
         log.debug("agent activity not sent", exc_info=True)

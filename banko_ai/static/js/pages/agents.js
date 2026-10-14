@@ -1,4 +1,8 @@
 document.addEventListener("alpine:init", () => {
+  // Stored rows and live events carry ISO timestamps with different offsets
+  // and precision, so order them by the instant, never by the string.
+  const instant = (v) => { const t = Date.parse(String(v || "").replace(/(\.\d{3})\d+/, "$1")); return Number.isNaN(t) ? 0 : t; };
+
   Alpine.data("agentsPage", () => ({
     items: [], stats: {}, filter: "all", loaded: false, live: false, timer: null,
     agentNames: ["receipt", "fraud", "budget", "coach", "assistant"],
@@ -18,7 +22,7 @@ document.addEventListener("alpine:init", () => {
     merge(list) {
       const seen = new Map(this.items.map((i) => [i.id, i]));
       for (const i of list) seen.set(i.id, i);
-      this.items = Array.from(seen.values()).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 200);
+      this.items = Array.from(seen.values()).sort((a, b) => instant(b.at) - instant(a.at)).slice(0, 200);
     },
     onEvent(ev) {
       // Live receipt and assistant steps for this user show at once; anything

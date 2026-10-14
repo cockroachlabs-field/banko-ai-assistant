@@ -483,6 +483,32 @@ def test_forms_send_what_their_selects_show(server, browser):
         ctx.close()
 
 
+def test_the_agents_feed_orders_live_and_stored_items_by_time(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        stored = [{"id": "receipt:1", "agent": "receipt", "kind": "posted", "title": "Stored at ten", "detail": "Posted",
+                   "confidence": None, "region": None, "at": "2026-10-13T10:00:00.123456+00:00"}]
+        page.route("**/api/v1/agents/activity", lambda r: r.fulfill(json={"items": stored}))
+        page.route("**/api/v1/agents/stats", lambda r: r.fulfill(json={"agents": [], "today": {}}))
+        _login(page, server, "maya")
+        page.goto(server + "/agents")
+        page.wait_for_load_state("networkidle")
+        page.evaluate("""() => {
+            const live = (message, timestamp) => Banko.emit('banko:agent', { source: 'activity', agent_type: 'fraud',
+                status: 'completed', message, user_id: Banko.shell.user.user_id, timestamp });
+            live('Live at half past ten', '2026-10-13T06:30:00-04:00');
+            live('Live at nine', '2026-10-13T09:00:00+00:00');
+        }""")
+        rows = page.locator("section .b-s3 .b-bill")
+        expect(rows).to_have_count(3)
+        order = [next(t for t in ("half past ten", "Stored at ten", "Live at nine") if t in text)
+                 for text in rows.all_inner_texts()]
+        assert order == ["half past ten", "Stored at ten", "Live at nine"]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
