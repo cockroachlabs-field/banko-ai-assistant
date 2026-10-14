@@ -63,9 +63,16 @@ def _chat():
     return ProviderChat(model=current() if current else None)
 
 
+def user_room(user_id: str) -> str:
+    """The Socket.IO room of one user's browsers. coach.join puts a socket in
+    its signed-in user's room, so per-user events never reach anyone else."""
+    return f"{get_config().coach_socketio_room_prefix}{user_id}"
+
+
 def _activity(agent_type: str, status: str, message: str, user_id: str) -> None:
-    """One line on the Agents page. The page shows "agent (region)", so the
-    region rides along the way every other agent_activity event sends it."""
+    """One line on the user's Agents page. Receipt steps name merchants and
+    amounts, so it goes to that user's room only. The page shows "agent
+    (region)", so the region rides along."""
     socketio = current_app.extensions.get("socketio")
     if socketio is None:
         return
@@ -73,7 +80,8 @@ def _activity(agent_type: str, status: str, message: str, user_id: str) -> None:
         socketio.emit("agent_activity", {"source": "activity", "agent_type": agent_type,
                                          "region": agent_home_region(get_config().database_url),
                                          "status": status, "message": message, "user_id": user_id,
-                                         "timestamp": datetime.now().isoformat()})
+                                         "timestamp": datetime.now().isoformat()},
+                      to=user_room(user_id))
     except Exception:
         log.debug("agent activity not sent", exc_info=True)
 

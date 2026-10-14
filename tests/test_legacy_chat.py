@@ -124,7 +124,9 @@ def _upload(client):
 
 def test_upload_steps_reach_the_agent_feed_with_their_region(client, monkeypatch):
     app = client.application
-    feed = app.extensions["socketio"].test_client(app)
+    # The signed-in user's browser: the shell joins its own room on connect.
+    feed = app.extensions["socketio"].test_client(app, flask_test_client=client)
+    feed.emit("coach.join", {})
     _hooks(monkeypatch, {"merchant": "Feed Street Bakery", "amount": 7.35, "date": str(date.today()),
                          "category": "Groceries", "items": ["Rye loaf"], "payment_method": "debit card"})
     assert _upload(client).status_code == 200

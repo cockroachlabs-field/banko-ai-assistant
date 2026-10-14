@@ -193,7 +193,9 @@ def test_thread_opened_from_a_nudge_keeps_its_context(client):
 
 def test_turns_and_receipt_steps_show_in_the_agent_feed(client, chat, monkeypatch):
     app = client.application
-    feed = app.extensions["socketio"].test_client(app)
+    # The signed-in user's browser: the shell joins its own room on connect.
+    feed = app.extensions["socketio"].test_client(app, flask_test_client=client)
+    feed.emit("coach.join", {})
 
     def lines():
         return [e["args"][0] for e in feed.get_received() if e["name"] == "agent_activity"]

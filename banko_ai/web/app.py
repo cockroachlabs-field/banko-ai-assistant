@@ -14,7 +14,6 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
 
 import requests
 from flask import (
@@ -403,8 +402,12 @@ def create_app() -> Flask:
             msg = 'Request body too large'
         return jsonify({'success': False, 'error': msg}), 413
 
-    def _emit_seeding(user_id: str, done: int, total: int, state: str) -> None:
-        socketio.emit("seeding", {"user_id": user_id, "done": done, "total": total, "state": state})
+    def _emit_seeding(user_id: str, done: int, total: int, state: str, to: str | None = None) -> None:
+        """Seeding progress for one user, sent to the room of `to` (the
+        person who started the job) or else of the user being seeded."""
+        from .assistant_api import user_room
+        socketio.emit("seeding", {"user_id": user_id, "done": done, "total": total, "state": state},
+                      to=user_room(to or user_id))
 
     app.extensions["banko_emit_seeding"] = _emit_seeding
 
@@ -921,8 +924,8 @@ def create_app() -> Flask:
         from pathlib import Path
 
         from ..assistant.graph import set_active_receipt
-        from ..db.regions import agent_home_region
         from ..services import receipts as receipt_service
+        from .assistant_api import _activity
         file = request.files.get('receipt')
         if file is None or file.filename == '':
             return jsonify({'success': False, 'error': 'No receipt file provided'}), 400
@@ -934,24 +937,16 @@ def create_app() -> Flask:
         try:
             file.save(handle.name)
             hooks = receipt_service.default_hooks(getattr(ai_provider, 'current_model', None))
-            # The dashboard shows "agent (region)", like every other agent_activity event.
-            agent_region = agent_home_region(config.database_url)
             checks: dict[str, str] = {}
             final: dict = {}
             for event in receipt_service.process_receipt(current_demo_user(), handle.name, file.filename,
                                                          hooks=hooks):
                 if event['type'] == 'step' and event['status'] != 'start':
                     checks[event['step']] = event['detail']
-                    try:
-                        socketio.emit('agent_activity', {
-                            'agent_type': {'fraud': 'fraud', 'budget': 'budget'}.get(event['step'], 'receipt'),
-                            'region': agent_region,
-                            'status': 'completed' if event['status'] == 'done' else event['status'],
-                            'message': f"{event['step']}: {event['detail']}",
-                            'user_id': current_demo_user(),
-                            'timestamp': datetime.now().isoformat()})
-                    except Exception:
-                        pass
+                    # The same line the assistant's receipt route sends, to this user's room only.
+                    _activity({'fraud': 'fraud', 'budget': 'budget'}.get(event['step'], 'receipt'),
+                              'completed' if event['status'] == 'done' else event['status'],
+                              f"{event['step']}: {event['detail']}", current_demo_user())
                 elif event['type'] in ('receipt', 'error'):
                     final = event
             if final.get('type') != 'receipt':
@@ -1374,10 +1369,14 @@ def create_app() -> Flask:
 
     @socketio.on("coach.join")
     def _coach_join(data=None):
+        # The room comes from the session, never from the client, and is the
+        # one every per-user event (nudges, agent activity, seeding) goes to.
         from flask_socketio import join_room
+
+        from .assistant_api import user_room
         user_id = session.get("user_id")
         if user_id:
-            join_room(f"{config.coach_socketio_room_prefix}{user_id}")
+            join_room(user_room(user_id))
 
     @app.route("/health/coach", methods=["GET"])
     def health_coach():

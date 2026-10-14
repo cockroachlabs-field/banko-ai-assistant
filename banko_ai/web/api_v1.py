@@ -289,6 +289,13 @@ def make_transfer():
                                               idempotency_key=_key(body), kind=kind))
 
 
+def _progress_to(requester: str):
+    """Seeding progress for an admin job goes to the person who started it,
+    whoever is being seeded, so the Settings page can count it."""
+    emit = current_app.extensions["banko_emit_seeding"]
+    return lambda user_id, done, total, state: emit(user_id, done, total, state, to=requester)
+
+
 @api_v1.post("/admin/reset")
 def admin_reset():
     body = _body()
@@ -301,7 +308,7 @@ def admin_reset():
         if not targets:
             return jsonify({"error": "not_found"}), 404
     url = get_config().database_url
-    emit = current_app.extensions["banko_emit_seeding"]
+    emit = _progress_to(_uid())
 
     def run():
         for uid in targets:
@@ -324,7 +331,7 @@ def admin_seed():
     if not 1 <= users <= 200 or not 1 <= months <= 24:
         raise _BadRequest("users must be 1 to 200 and months 1 to 24")
     url = get_config().database_url
-    emit = current_app.extensions["banko_emit_seeding"]
+    emit = _progress_to(_uid())
     threading.Thread(target=lambda: seeding.seed_generated_users(users, months=months, url=url, on_progress=emit),
                      daemon=True, name="banko-seed-users").start()
     return jsonify({"status": "started", "users": users}), 202

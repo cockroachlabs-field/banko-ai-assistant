@@ -133,6 +133,53 @@ def test_error_pages_render_when_the_profile_lookup_fails(monkeypatch, member):
     assert client.get("/").status_code == 200
 
 
+def test_per_user_socket_events_reach_only_that_users_sockets(monkeypatch):
+    """Receipt steps carry merchants and amounts, so agent_activity and
+    seeding go to the user's room, never to every connected browser."""
+    import time
+
+    from banko_ai.services import seeding
+    from banko_ai.web.assistant_api import _activity
+
+    a, b = make_user(), make_user()
+    try:
+        client_a = app_client(monkeypatch)
+        app = client_a.application
+        client_b, anon = app.test_client(), app.test_client()
+        for client, uid in ((client_a, a), (client_b, b)):
+            with client.session_transaction() as s:
+                s["user_id"] = uid
+        io = app.extensions["socketio"]
+        sockets = {name: io.test_client(app, flask_test_client=c)
+                   for name, c in (("a", client_a), ("b", client_b), ("anon", anon))}
+        for sock in sockets.values():
+            sock.emit("coach.join", {"user_id": a})  # a client-supplied id is ignored
+            sock.get_received()
+
+        def names(sock):
+            return [(e["name"], e["args"][0].get("user_id")) for e in sock.get_received()]
+
+        with app.test_request_context():
+            _activity("receipt", "completed", "extract: Blue Bottle $9.75", a)
+        app.extensions["banko_emit_seeding"](a, 10, 20, "running")
+        assert names(sockets["a"]) == [("agent_activity", a), ("seeding", a)]
+        assert names(sockets["b"]) == [] and names(sockets["anon"]) == []
+
+        # Demo users created from Settings report to the person who asked.
+        monkeypatch.setattr(seeding, "seed_generated_users",
+                            lambda count, months=None, url=None, on_progress=None: on_progress("someone-new", 1, 1, "done"))
+        assert client_b.post("/api/v1/admin/seed", json={"users": 1, "months": 1}).status_code == 202
+        deadline, got = time.monotonic() + 5, []
+        while not got and time.monotonic() < deadline:
+            got = names(sockets["b"])
+            time.sleep(0.05)
+        assert got == [("seeding", "someone-new")]
+        assert names(sockets["a"]) == [] and names(sockets["anon"]) == []
+    finally:
+        drop_user(a)
+        drop_user(b)
+
+
 def test_profile_service(member):
     from banko_ai.services.profile import get_profile
     p = get_profile(member)
