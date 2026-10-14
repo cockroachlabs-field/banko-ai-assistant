@@ -34,7 +34,7 @@
           </template>
         </div>
 
-        <div class="b-sec">
+        <div class="b-sec" x-show="t.kind === 'purchase'">
           <div class="l">Agent checks</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <span class="b-tag" :class="t.checks.duplicates.length ? 'warn' : 'ok'" x-text="t.checks.duplicates.length ? 'Possible duplicate of ' + t.checks.duplicates[0].merchant + ' on ' + Banko.fmt.date(t.checks.duplicates[0].date) : '✓ Not a duplicate'"></span>
@@ -57,7 +57,7 @@
         </div>
 
         <button class="b-btn primary" type="button" @click="Banko.emit('banko:ask', { context: { kind: 'transaction', id: t.expense_id || t.id } })">✦ Ask {{ shell.brand.name }} about this</button>
-        <div class="b-muted" x-show="t.residency" x-text="t.residency ? 'Row lives in ' + t.residency.stored_in + ' (REGIONAL BY ROW), your home region is ' + t.residency.home_region + ' · read in ' + readMs + ' ms' : ''"></div>
+        <div class="b-muted" x-show="t.residency" x-text="t.residency ? 'Row lives in ' + t.residency.stored_in + ' (REGIONAL BY ROW), your home region is ' + t.residency.home_region + ' · loaded in ' + readMs + ' ms' : ''"></div>
       </div>
     </template>
     <div class="b-skel" x-show="!t" style="height:200px"></div>

@@ -552,6 +552,34 @@ def test_a_fraud_check_shows_its_fraud_score_not_a_confidence(server, browser):
         ctx.close()
 
 
+def test_the_drawer_shows_purchase_checks_only_on_purchases(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        income_id = "99999999-9999-4999-8999-999999999999"
+        residency = {"stored_in": "us-east-1", "home_region": "us-east-1"}
+        page.route(f"**/api/v1/transactions/{PURCHASE_ID}", lambda r: r.fulfill(json=_purchase(residency=residency)))
+        page.route(f"**/api/v1/transactions/{income_id}", lambda r: r.fulfill(json={
+            "id": income_id, "kind": "income", "posted_at": "2026-10-10", "amount": 2500.0, "description": "Payroll deposit",
+            "merchant": None, "category": None, "account_id": None, "similar": [], "residency": residency,
+            "receipt": None, "checks": {"duplicates": [], "decisions": []}}))
+        _login(page, server, "maya")
+        page.goto(server + "/transactions")
+        page.wait_for_load_state("networkidle")
+        drawer = page.locator("aside.b-drawer")
+        page.evaluate("(id) => Banko.emit('banko:open-transaction', { id })", income_id)
+        expect(drawer).to_contain_text("Payroll deposit")
+        expect(drawer.get_by_text("Agent checks")).to_be_hidden()
+        expect(drawer.get_by_text("Not a duplicate")).to_be_hidden()
+        expect(drawer).to_contain_text("loaded in")
+        page.evaluate("(id) => Banko.emit('banko:open-transaction', { id })", PURCHASE_ID)
+        expect(drawer.get_by_text("Agent checks")).to_be_visible()
+        expect(drawer.get_by_text("✓ Not a duplicate")).to_be_visible()
+        expect(drawer).not_to_contain_text("read in")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
