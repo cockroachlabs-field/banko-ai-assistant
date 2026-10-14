@@ -435,6 +435,54 @@ def test_text_pasted_into_a_field_stays_text_even_with_an_image_along(server, br
         ctx.close()
 
 
+def test_forms_send_what_their_selects_show(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        sent = {}
+
+        def capture(name, reply):
+            def handler(route):
+                if route.request.method in ("PUT", "POST"):
+                    sent[name] = route.request.post_data_json
+                    return route.fulfill(**reply)
+                return route.fallback()
+            return handler
+
+        page.route("**/api/v1/budgets", capture("budget", {"json": {}}))
+        page.route("**/api/v1/transfers", capture("transfer", {"status": 201, "json": {"status": "ok", "transfer_id": NEW_THREAD}}))
+        _login(page, server, "riley")
+
+        # Add a budget without touching the category select.
+        page.goto(server + "/budget")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("button", name="Add a budget").click()
+        form = page.locator("section form.b-card")
+        shown = form.locator("select").input_value()
+        form.locator("input").fill("120")
+        form.get_by_role("button", name="Add", exact=True).click()
+        expect(form).to_be_hidden()
+        assert shown and sent["budget"]["category"] == shown
+
+        # Move money: pick, as From, the account that To was showing.
+        page.goto(server + "/accounts")
+        page.wait_for_load_state("networkidle")
+        page.get_by_role("button", name="Move money").click()
+        dialog = page.locator("form.b-dialog")
+        expect(dialog).to_be_visible()
+        source, target = dialog.locator("select").nth(0), dialog.locator("select").nth(1)
+        was_to = target.input_value()
+        source.select_option(was_to)
+        now_to = target.input_value()
+        dialog.locator("input").fill("1.00")
+        dialog.get_by_role("button", name="Move", exact=True).click()
+        expect(dialog).to_be_hidden()
+        assert sent["transfer"]["from_account"] == was_to
+        assert sent["transfer"]["to_account"] == now_to != was_to
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

@@ -12,6 +12,12 @@ document.addEventListener("alpine:init", () => {
       const have = new Set((this.data ? this.data.items : []).map((b) => b.key));
       return this.categories.filter((c) => (c.group === "needs" || c.group === "wants") && !have.has(c.key));
     },
+    toggleAdd() {
+      this.adding = !this.adding;
+      // A select with no matching option shows its first one; start the
+      // model there, so the category sent is the one on screen.
+      if (this.adding) { this.newCategory = (this.addable()[0] || {}).label || ""; this.newAmount = ""; this.saveError = ""; }
+    },
     edit(b) { this.editing = b.key; this.draft = String(b.budget); this.saveError = ""; },
     async put(category, amount) {
       this.saveError = "";

@@ -4,7 +4,7 @@
 {% block content %}
 <section x-data="budgetPage" x-init="load()">
   <div class="b-page-h"><h1>Budget</h1><span class="b-muted" x-text="data ? 'Day ' + data.day + ' of ' + data.days_in_month : ''"></span><div class="sp"></div>
-    <button class="b-btn" type="button" @click="adding = !adding">{{ icon('plus') }}Add a budget</button></div>
+    <button class="b-btn" type="button" x-show="addable().length" @click="toggleAdd()">{{ icon('plus') }}Add a budget</button></div>
   <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong></div></template>
   <form class="b-card" x-show="adding" x-cloak style="margin-top:12px;display:flex;gap:10px;align-items:flex-end" @submit.prevent="add()">
     <label class="b-field" style="flex:1">Category

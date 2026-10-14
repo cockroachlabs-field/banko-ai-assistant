@@ -1,12 +1,18 @@
 document.addEventListener("alpine:init", () => {
   Alpine.data("moveMoney", () => ({
     shown: false, accounts: [], from: "", to: "", amount: "", key: "", busy: false, error: "",
+    init() {
+      // To never lists the From account. When From takes the account To
+      // held, To moves to its first option, the one the select now shows.
+      this.$watch("from", () => { if (this.to === this.from) this.to = this.firstTo(); });
+    },
+    firstTo() { return (this.accounts.find((a) => a.account_id !== this.from) || {}).account_id || ""; },
     async open({ from = "", to = "" }) {
       this.error = ""; this.amount = ""; this.key = Banko.newKey();
       const data = await Banko.api("/api/v1/accounts");
       this.accounts = data.accounts;
       this.from = from || (this.accounts.find((a) => a.kind === "checking") || this.accounts[0] || {}).account_id || "";
-      this.to = to || (this.accounts.find((a) => a.account_id !== this.from) || {}).account_id || "";
+      this.to = to && to !== this.from ? to : this.firstTo();
       this.shown = true;
     },
     close() { this.shown = false; },
