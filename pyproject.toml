@@ -55,7 +55,7 @@ dependencies = [
     "google-genai>=1.0.0",
     
     # CockroachDB LangChain Integration (vectorstore, chat history, checkpointer)
-    "langchain-cockroachdb>=0.2.1",
+    "langchain-cockroachdb>=0.4.0",  # 0.4.0: the checkpointer retries a dropped connection, 40001 and friends
     
     # Agent Framework / LangGraph (1.x ecosystem, langchain-core>=1.2.11 for CVE fix)
     "langgraph>=1.0.0",

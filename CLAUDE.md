@@ -26,7 +26,7 @@ Flask + SocketIO web app
   │     ├── AWS Bedrock (internally identified as "aws", not "bedrock")
   │     ├── Google Gemini
   │     └── Ollama (local models; airgap default granite3.3:8b)
-  ├── Vector RAG (langchain-cockroachdb 0.2.x, C-SPANN cosine indexes,
+  ├── Vector RAG (langchain-cockroachdb 0.4.x, C-SPANN cosine indexes,
   │     384-dim all-MiniLM-L6-v2 embeddings — local, no API key)
   ├── Cache layer (3 tiers: query, embedding, vector_search, all in CRDB)
   ├── CDC intake (spending signals through the /api/cdc/signals webhook
@@ -70,7 +70,7 @@ Schema for `expenses` table is **shared** between both repos — keep them in sy
 - **CockroachDB**: 25.4.0+ (vector indexes are GA)
 - **Embeddings**: `all-MiniLM-L6-v2` via sentence-transformers 6.x (384-dim, local). Each major jump (3 to 5 in July 2026, 5 to 6 in October 2026) landed only after `tests/test_embedding_parity.py` showed identical vectors, so nothing stored in CRDB needed re-embedding.
 - **Agent framework**: LangGraph 1.x
-- **Vector store / chat history / checkpointer**: `langchain-cockroachdb` 0.2.x
+- **Vector store / chat history / checkpointer**: `langchain-cockroachdb` 0.4.x. Its calls retry transient errors themselves (40001, dropped connections, the i/o timeout after a canceled session), so never wrap them in banko's `@db_retry`, or the attempts multiply. The assistant's checkpointer pool connects as `banko-checkpointer` in `SHOW SESSIONS`.
 - **Web**: Flask 3.1.3 + Flask-SocketIO + eventlet (prod) / threading (dev)
 - **Dep manager**: `uv` (lockfile is `uv.lock`; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API). `make audit` checks the lock and the vendored browser libraries for known vulnerabilities; CI runs it on every PR, on pushes to main and weekly. Dependabot uses the uv ecosystem, so its PRs re-lock; they still get a local rebase and smoke before merge.
 - **Testing**: pytest, ruff, mypy (mypy is advisory, see Open bugs)

@@ -13,6 +13,8 @@ from ..config.settings import get_config
 log = logging.getLogger("banko.assistant")
 _lock = threading.Lock()
 _saver = None
+# The pool's connections show up under this name in SHOW SESSIONS.
+APPLICATION_NAME = "banko-checkpointer"
 
 
 def _ttl_already_on(pool) -> bool:
@@ -34,7 +36,8 @@ def get_saver():
         from ..utils.db_retry import to_libpq_url
         cfg = get_config()
         pool = ConnectionPool(to_libpq_url(cfg.database_url), min_size=1, max_size=8, open=True,
-                              kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+                              kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+                                      "application_name": APPLICATION_NAME})
         saver = CockroachDBSaver(pool)
         saver.setup()
         if cfg.checkpoint_ttl_days > 0 and not _ttl_already_on(pool):
