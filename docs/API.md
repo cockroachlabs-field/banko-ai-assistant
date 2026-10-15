@@ -35,7 +35,7 @@
 | `/api/cdc/signals` | POST | CDC webhook receiver. Body is a CockroachDB changefeed wrapped envelope; requires an `X-Banko-Signature` header (hex HMAC-SHA256 of the raw body with `CDC_WEBHOOK_HMAC_SECRET`). Returns 202 with queued and replayed signal ids |
 | `/api/coach/nudges` | GET | Recent nudges for the current persona (`?limit=N`) |
 | `/api/coach/nudges/<nudge_id>` | GET | One nudge with its tool trace (the evidence panel) |
-| `/api/coach/chat` | POST | Conversational coach; JSON body `{"message": ..., "nudge_id": ...}`, where `nudge_id` (optional) is the nudge the question follows up on |
+| `/api/coach/chat` | POST | Conversational coach; JSON body `{"message": ..., "nudge_id": ...}`, where `nudge_id` (optional) is the nudge the question follows up on. It answers for the signed-in user, or the default persona without a session |
 | `/health/coach` | GET | Coach subsystem health: DB reachability, webhook secret, Kafka flag, last nudge time |
 
 The same signals can arrive over Kafka instead of the webhook: set

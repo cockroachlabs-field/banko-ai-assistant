@@ -1288,8 +1288,9 @@ def create_app() -> Flask:
         message = (body.get("message") or "").strip()
         if not message:
             return jsonify({"error": "message is required"}), 400
-        user_id = (body.get("user_id") or session.get("user_id")
-                   or cfg.coach_default_user_id)
+        # Never a user id from the body: /api/ enforces no sign-in, so that
+        # would answer about anyone's spending.
+        user_id = session.get("user_id") or cfg.coach_default_user_id
         context = ({"nudge_id": body["nudge_id"]}
                    if body.get("nudge_id") else None)
 
