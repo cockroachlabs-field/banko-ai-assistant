@@ -44,3 +44,16 @@ def test_old_links_redirect(monkeypatch):
     finally:
         drop_user(uid)
         stop_apps()
+
+
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
+def test_the_unscoped_legacy_apis_are_gone(monkeypatch):
+    """No sign-in and no user scope: these read and cleared any session's
+    chat history and searched every user's expense vectors."""
+    try:
+        client = app_client(monkeypatch)
+        assert client.get("/api/chat-history/default").status_code == 404
+        assert client.delete("/api/chat-history/default").status_code == 404
+        assert client.post("/api/vectorstore-search", json={"query": "coffee"}).status_code == 404
+    finally:
+        stop_apps()

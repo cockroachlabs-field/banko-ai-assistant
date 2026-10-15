@@ -20,7 +20,6 @@
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/search` | POST | Vector search expenses (SQL-based) |
-| `/api/vectorstore-search` | POST | Vector search via langchain-cockroachdb VectorStore |
 | `/api/rag` | POST | RAG-based Q&A with AI insights |
 
 ### Receipt & Agent Workflows
@@ -36,19 +35,17 @@
 | `/api/cdc/signals` | POST | CDC webhook receiver. Body is a CockroachDB changefeed wrapped envelope; requires an `X-Banko-Signature` header (hex HMAC-SHA256 of the raw body with `CDC_WEBHOOK_HMAC_SECRET`). Returns 202 with queued and replayed signal ids |
 | `/api/coach/nudges` | GET | Recent nudges for the current persona (`?limit=N`) |
 | `/api/coach/nudges/<nudge_id>` | GET | One nudge with its tool trace (the evidence panel) |
-| `/api/coach/chat` | POST | Conversational coach; JSON body `{"message": ..., "thread_id": ...}`, state checkpointed in CockroachDB |
+| `/api/coach/chat` | POST | Conversational coach; JSON body `{"message": ..., "nudge_id": ...}`, where `nudge_id` (optional) is the nudge the question follows up on |
 | `/health/coach` | GET | Coach subsystem health: DB reachability, webhook secret, Kafka flag, last nudge time |
 
 The same signals can arrive over Kafka instead of the webhook: set
 `COACH_KAFKA_ENABLED=true` and `KAFKA_BOOTSTRAP_SERVERS`, topic
 `banko.spending_signals`. See PIPELINE_CONTRACT.md for the full contract.
 
-### Chat History
+### Spending Summary
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/chat-history/<session_id>` | GET | Retrieve persistent chat history |
-| `/api/chat-history/<session_id>` | DELETE | Clear chat history for a session |
 | `/api/user-summary` | GET | Spending summary for the current persona |
 
 ### Data Management

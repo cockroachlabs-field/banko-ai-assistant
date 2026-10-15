@@ -728,51 +728,6 @@ def create_app() -> Flask:
     
     # OLD ROUTE REMOVED - replaced by /api/generate-data with SocketIO support below
     
-    # ── langchain-cockroachdb powered vectorstore search ──────────────────
-    @app.route('/api/vectorstore-search', methods=['POST'])
-    def api_vectorstore_search():
-        """Semantic search via langchain-cockroachdb CockroachDBVectorStore."""
-        try:
-            data = request.get_json()
-            query = data.get('query', '')
-            limit = data.get('limit', 5)
-            metadata_filter = data.get('filter')
-
-            from banko_ai.vector_search.crdb_vectorstore import search_expenses_via_vectorstore
-            results = search_expenses_via_vectorstore(query, limit=limit, metadata_filter=metadata_filter)
-
-            return jsonify({'success': True, 'results': results, 'query': query, 'source': 'cockroachdb-vectorstore'})
-        except ModelWarmingUp:
-            raise
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
-
-    # ── langchain-cockroachdb chat history ─────────────────────────────────
-    @app.route('/api/chat-history/<session_id>', methods=['GET'])
-    def api_chat_history(session_id):
-        """Retrieve persistent chat history for a session."""
-        try:
-            from banko_ai.utils.crdb_chat_history import get_chat_history
-            history = get_chat_history(session_id, database_url=config.database_url)
-            messages = [
-                {"role": m.type, "content": m.content}
-                for m in history.messages
-            ]
-            return jsonify({'success': True, 'session_id': session_id, 'messages': messages})
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
-
-    @app.route('/api/chat-history/<session_id>', methods=['DELETE'])
-    def api_clear_chat_history(session_id):
-        """Clear chat history for a session."""
-        try:
-            from banko_ai.utils.crdb_chat_history import get_chat_history
-            history = get_chat_history(session_id, database_url=config.database_url)
-            history.clear()
-            return jsonify({'success': True, 'cleared': session_id})
-        except Exception as e:
-            return jsonify({'success': False, 'error': str(e)}), 500
-
     @app.route('/api/user-summary')
     def api_user_summary():
         """API endpoint for user spending summary. Served with a follower
@@ -1335,7 +1290,6 @@ def create_app() -> Flask:
             return jsonify({"error": "message is required"}), 400
         user_id = (body.get("user_id") or session.get("user_id")
                    or cfg.coach_default_user_id)
-        thread_id = body.get("thread_id")
         context = ({"nudge_id": body["nudge_id"]}
                    if body.get("nudge_id") else None)
 
@@ -1347,8 +1301,7 @@ def create_app() -> Flask:
         )
         try:
             reply = agent.converse(user_id=user_id, message=message,
-                                   history=[], context=context,
-                                   thread_id=thread_id)
+                                   history=[], context=context)
         except ModelWarmingUp:
             raise
         except Exception as e:

@@ -54,13 +54,14 @@ Five layers, one database:
 | **Web** | Flask + SocketIO UI, REST API, real-time agent status | `banko_ai/web/` |
 | **Agents** | A LangGraph assistant graph (routing, SQL aggregation, receipts, memories, a tool planner), each conversation checkpointed by `CockroachDBSaver`; receipt, fraud and budget agents check every upload | `banko_ai/assistant/`, `banko_ai/agents/` |
 | **AI providers** | One abstraction over watsonx, OpenAI, Bedrock, Gemini — all LLM calls go through it | `banko_ai/ai_providers/` |
-| **Vector search** | `CockroachDBVectorStore` with C-SPANN cosine indexes, 384-dim `all-MiniLM-L6-v2` embeddings (local, no API key) | `banko_ai/vector_search/` |
+| **Vector search** | SQL on per-user C-SPANN cosine indexes, with an exact scan when the index comes back short; 384-dim `all-MiniLM-L6-v2` embeddings (local, no API key) | `banko_ai/services/`, `banko_ai/vector_search/` |
 | **Persistence** | CockroachDB stores SQL rows, vectors, and agent state in one cluster | `banko_ai/utils/` |
 
-All CockroachDB-specific pieces come from
-[`langchain-cockroachdb`](https://github.com/cockroachdb/langchain-cockroachdb):
-`CockroachDBEngine` (psycopg3 pool), `CockroachDBVectorStore`,
-`CockroachDBChatMessageHistory`, and `CockroachDBSaver`.
+Each conversation is checkpointed by `CockroachDBSaver` from
+[`langchain-cockroachdb`](https://github.com/cockroachdb/langchain-cockroachdb),
+which retries a dropped connection or a 40001 on its own. Everything else
+is plain SQL through SQLAlchemy: the ledger, the aggregations and the
+vector search.
 
 ## Run it
 
@@ -293,7 +294,6 @@ coach and the rest) as Markdown.
 | `/api/rag` | POST | RAG-based Q&A |
 | `/api/upload-receipt` | POST | Run a receipt through the agent pipeline |
 | `/api/agents/status` | GET | Agent dashboard data |
-| `/api/chat-history/<id>` | GET / DELETE | Persistent chat per session |
 
 The banking data has its own JSON API under `/api/v1`: dashboard, accounts
 with statements and CSV export, paged and semantic transaction search, cash

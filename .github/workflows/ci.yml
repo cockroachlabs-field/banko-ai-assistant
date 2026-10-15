@@ -63,15 +63,13 @@ jobs:
       - name: Verify all modules import cleanly
         run: |
           python -c "
-          from banko_ai.utils.crdb_engine import get_crdb_engine, close_crdb_engine, normalize_crdb_url
-          print('crdb_engine OK')
-          from banko_ai.vector_search.crdb_vectorstore import get_vectorstore, search_expenses_via_vectorstore, index_expense_document, bulk_index_expenses
-          print('crdb_vectorstore OK')
-          from banko_ai.utils.crdb_chat_history import get_chat_history
-          print('crdb_chat_history OK')
-          from banko_ai.agents.receipt_workflow import build_receipt_graph, run_receipt_workflow, ReceiptWorkflowState
+          from banko_ai.assistant.checkpoint import get_saver, delete_checkpoints
+          print('assistant checkpoint OK')
+          from banko_ai.assistant.graph import build_graph, run_turn
+          print('assistant graph OK')
+          from banko_ai.agents.receipt_workflow import build_receipt_graph, ReceiptWorkflowState
           print('receipt_workflow OK')
-          from langchain_cockroachdb import CockroachDBEngine, CockroachDBVectorStore, CockroachDBChatMessageHistory, CockroachDBSaver, CSPANNIndex, DistanceStrategy
+          from langchain_cockroachdb import CockroachDBSaver
           print('langchain_cockroachdb OK')
           "
 
@@ -83,6 +81,11 @@ jobs:
           nodes = list(graph.nodes.keys())
           assert 'receipt' in nodes and 'fraud' in nodes and 'budget' in nodes
           print(f'LangGraph OK: {nodes}')
+          from langgraph.checkpoint.memory import InMemorySaver
+          from banko_ai.assistant.graph import build_graph
+          nodes = set(build_graph(InMemorySaver()).nodes)
+          assert {'route', 'aggregate', 'visits', 'plan', 'more', 'respond'} <= nodes, nodes
+          print(f'assistant graph OK: {sorted(nodes)}')
           "
 
   test:

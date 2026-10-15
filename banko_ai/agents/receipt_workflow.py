@@ -1,17 +1,13 @@
-"""LangGraph receipt processing workflow with CockroachDB checkpointer.
+"""LangGraph receipt processing workflow.
 
 Defines a multi-agent graph:
     receipt_node -> fraud_node -> budget_node -> done
-
-State is persisted via CockroachDBSaver so the workflow survives
-restarts and can be inspected / replayed.
 """
 
 import uuid
 from datetime import datetime
 from typing import Any, TypedDict
 
-from langchain_cockroachdb import CockroachDBSaver
 from langgraph.graph import END, StateGraph
 
 # ---------------------------------------------------------------------------
@@ -178,48 +174,3 @@ def build_receipt_graph() -> StateGraph:
     graph.add_edge("budget", END)
 
     return graph
-
-
-def run_receipt_workflow(
-    file_path: str,
-    user_id: str,
-    database_url: str,
-    expense_id: str | None = None,
-) -> dict[str, Any]:
-    """Execute the full receipt workflow synchronously.
-
-    Uses CockroachDBSaver as a context-managed checkpointer so the
-    workflow can be inspected, replayed, or resumed after a crash.
-
-    Returns the final state dict.
-    """
-    from ..utils.db_retry import get_database_url
-    url = get_database_url(database_url)
-
-    with CockroachDBSaver.from_conn_string(url) as checkpointer:
-        checkpointer.setup()
-
-        from ..config.settings import get_config
-        cfg = get_config()
-        if cfg.checkpoint_ttl_days > 0:
-            checkpointer.enable_ttl(
-                ttl_interval=f"{cfg.checkpoint_ttl_days} days", cron="@daily"
-            )
-
-        graph = build_receipt_graph()
-        workflow = graph.compile(checkpointer=checkpointer)
-
-        thread_id = str(uuid.uuid4())
-        config = {"configurable": {"thread_id": thread_id}}
-
-        initial_state: ReceiptWorkflowState = {
-            "file_path": file_path,
-            "user_id": user_id,
-            "database_url": database_url,
-            "expense_id": expense_id or "",
-            "workflow_id": thread_id,
-            "started_at": datetime.utcnow().isoformat(),
-        }
-
-        result = workflow.invoke(initial_state, config)
-        return dict(result)

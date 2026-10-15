@@ -5,7 +5,7 @@ plan; executor calls tools; synthesizer drafts a nudge.
 
 Conversational mode (Task 6): entry receives user message + thread history;
 planner decomposes into tool calls; executor iterates with a hard cap;
-reply is returned (and persisted to checkpointer in Task 6).
+the reply is returned.
 """
 
 from __future__ import annotations
@@ -122,7 +122,6 @@ class CoachAgent:
     provider_name: str = "unknown"
     tool_overrides: dict[str, Callable[..., Any]] = field(default_factory=dict)
     max_steps: int = 5
-    checkpointer: Any | None = None
 
     def react(self, signal: Signal) -> dict[str, Any]:
         """Reactive mode: signal in, nudge out."""
@@ -204,8 +203,7 @@ class CoachAgent:
 
     def converse(self, user_id: str, message: str,
                  history: list[dict[str, str]] | None = None,
-                 context: dict[str, Any] | None = None,
-                 thread_id: str | None = None) -> dict[str, Any]:
+                 context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Conversational mode: user message in, reply text out.
 
         `history` is a list of {role, content} dicts (oldest first).
@@ -245,22 +243,6 @@ class CoachAgent:
         raw = self._invoke_llm(synth_msgs)
         text = raw.content if hasattr(raw, "content") else str(raw)
 
-        if self.checkpointer is not None and thread_id is not None:
-            try:
-                self.checkpointer.put(
-                    config={"configurable": {"thread_id": thread_id}},
-                    checkpoint={"v": 1, "ts": text[:200],
-                                "channel_values": {"messages": history + [
-                                    {"role": "user", "content": message},
-                                    {"role": "assistant", "content": text}
-                                ]}},
-                    metadata={"source": "coach", "user_id": user_id},
-                    new_versions={},
-                )
-            except Exception as e:
-                log.warning("checkpoint write failed",
-                            extra={"thread_id": thread_id, "error": str(e)})
-
         return {
             "message": text.strip(),
             "tool_trace": tool_trace,
@@ -278,37 +260,3 @@ def default_llm_invoker(messages: list, temperature: float = 0.3) -> Any:
     from banko_ai.agents.llm_factory import get_llm_for_agent
     llm = get_llm_for_agent(temperature=temperature)
     return llm.invoke(messages)
-
-
-def build_checkpointer(database_url: str):
-    """Return a CockroachDBSaver bound to a long-lived psycopg connection.
-    Returns None when langchain-cockroachdb (or its psycopg dep) isn't
-    importable so tests in environments without the extra don't crash.
-
-    The library ships `from_conn_string` as a contextmanager; we want a
-    process-lifetime saver, so we open the connection ourselves and pass
-    it to the constructor, then call setup() once to create the
-    checkpoint tables if they don't exist."""
-    try:
-        from langchain_cockroachdb import CockroachDBSaver
-        from psycopg import Connection
-        from psycopg.rows import dict_row
-    except ImportError as e:
-        log.warning("langchain-cockroachdb not installed; checkpointing "
-                    "disabled: %s", e)
-        return None
-
-    from ..utils.db_retry import to_libpq_url
-    pg_url = to_libpq_url(database_url)
-
-    try:
-        conn = Connection.connect(
-            pg_url, autocommit=True, prepare_threshold=5, row_factory=dict_row,
-        )
-        saver = CockroachDBSaver(conn)
-        saver.setup()
-        return saver
-    except Exception as e:
-        log.warning("checkpointer setup failed; checkpointing disabled",
-                    extra={"error": str(e)})
-        return None
