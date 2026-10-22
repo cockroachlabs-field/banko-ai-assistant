@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -38,7 +39,14 @@ narration = logging.getLogger("banko.migration")  # the lines the demo console s
 REGISTRY_VERSION = 2
 FINGERPRINT_KEY = "schema_fingerprint"
 LOCK_KEY = "schema_lock"
-LOCK_TTL_SECONDS = 300
+# The schema lease. A LeaseHeartbeat keeps it fresh while a boot applies the
+# schema, so a lease nobody has touched for LOCK_TTL_SECONDS belongs to a
+# dead process and the next boot takes it over. A live apply can run far
+# longer than that (six minutes on a three-region cluster): other boots wait
+# for it up to APPLY_WAIT_SECONDS.
+LOCK_TTL_SECONDS = 60
+LEASE_HEARTBEAT_SECONDS = 15
+APPLY_WAIT_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -659,7 +667,7 @@ def _release_lock(conn: Connection, owner: str) -> None:
 def _wait_for(conn: Connection, want: str, owner: str) -> bool:
     """Wait for another process to finish applying the schema, or take over
     a stale lease. Returns True if we took over and should apply ourselves."""
-    deadline = time.monotonic() + LOCK_TTL_SECONDS
+    deadline = time.monotonic() + APPLY_WAIT_SECONDS
     while time.monotonic() < deadline:
         stored = _stored(conn)
         if stored and stored.get("fingerprint") == want:
@@ -679,6 +687,41 @@ def _refresh_lease(conn: Connection, owner: str) -> None:
         {"k": LOCK_KEY, "owner": owner})
     if result.rowcount == 0:
         raise RuntimeError(f"lease was taken over by another process (owner {owner} no longer holds it)")
+
+
+class LeaseHeartbeat:
+    """Keeps the schema lease fresh from a thread of its own while the
+    applier runs statements that take minutes (an index backfill on a
+    populated table, the RLS phase on a three-region cluster). `lost` is
+    set when another process holds the lease; the applier's next refresh
+    between statements raises on that too."""
+
+    def __init__(self, engine, owner: str):
+        self._engine, self._owner = engine, owner
+        self._stop = threading.Event()
+        self.lost = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="banko-schema-lease", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop.wait(LEASE_HEARTBEAT_SECONDS):
+            try:
+                with self._engine.connect() as conn:
+                    conn.execution_options(isolation_level="AUTOCOMMIT")
+                    _refresh_lease(conn, self._owner)
+            except RuntimeError:
+                log.warning("schema: the lease was taken over by another process")
+                self.lost.set()
+                return
+            except Exception:  # a transient error; the next beat tries again
+                log.debug("schema: lease heartbeat skipped", exc_info=True)
 
 
 def _apply_policies_in_parallel(conn: Connection, per_table: dict[str, list[str]]) -> int:
@@ -865,6 +908,8 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
             if not should_apply:
                 return SchemaResult(changed=False, fingerprint=want, seconds=time.monotonic() - started)
             # We took over a stale lease, proceed to apply
+        heartbeat = LeaseHeartbeat(conn.engine, owner)
+        heartbeat.start()
         try:
             stored = None if force else _stored(conn)
             if stored and stored.get("fingerprint") == want:
@@ -895,6 +940,7 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
             return SchemaResult(changed=True, fingerprint=want, statements=count,
                                 pending_conversions=conversions, seconds=time.monotonic() - started)
         finally:
+            heartbeat.stop()
             _release_lock(conn, owner)
 
 

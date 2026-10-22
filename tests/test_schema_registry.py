@@ -1,6 +1,7 @@
 """The schema registry: inline DDL, a fingerprint so normal boots run no
 DDL, a safe upgrade path, and one applier when processes race."""
 
+import json
 import os
 import threading
 import time
@@ -273,7 +274,7 @@ def test_stale_lease_takeover(scratch_url):
     elapsed = time.monotonic() - started
 
     assert result.changed
-    assert elapsed < 30  # well under the 300s TTL
+    assert elapsed < 30  # well under the lease TTL
     assert {t.name for t in S.tables()} <= _tables(scratch_url)
 
 
@@ -388,3 +389,84 @@ def test_money_region_waits_until_every_money_table_has_crdb_region(monkeypatch)
             assert regions.money_region(c, uid) is None  # single node: no money table has crdb_region
     finally:
         drop_user(uid)
+
+
+def _meta_with_lease(url: str, owner: str, age_seconds: int) -> None:
+    with get_engine(url).connect() as conn:
+        conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS banko_meta (
+                key STRING NOT NULL PRIMARY KEY,
+                value STRING NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(text("UPSERT INTO banko_meta (key, value, updated_at) "
+                          "VALUES ('schema_lock', :o, now() - :age * INTERVAL '1 second')"),
+                     {"o": owner, "age": age_seconds})
+
+
+def _lease_age_seconds(url: str) -> float:
+    with get_engine(url).connect() as conn:
+        return float(conn.execute(text(
+            "SELECT extract(epoch FROM now() - updated_at) FROM banko_meta WHERE key = 'schema_lock'")).scalar())
+
+
+def test_a_lease_a_dead_process_left_is_taken_over_within_a_minute(scratch_url):
+    """A boot killed mid-apply leaves its lease behind. The next boot waits
+    for it to go stale, so that wait is what a dead process costs."""
+    _meta_with_lease(scratch_url, "dead-owner", age_seconds=90)
+    with get_engine(scratch_url).connect() as conn:
+        conn.execution_options(isolation_level="AUTOCOMMIT")
+        assert S._acquire_lock(conn, "me") is True
+        assert conn.execute(text("SELECT value FROM banko_meta WHERE key = 'schema_lock'")).scalar() == "me"
+
+
+def test_the_lease_stays_fresh_while_one_statement_runs_long(scratch_url, monkeypatch):
+    """An index backfill on a populated database can run for minutes inside
+    one statement. The lease is kept fresh beside it, so a short TTL never
+    hands the schema to a second process mid-apply."""
+    monkeypatch.setattr(S, "LEASE_HEARTBEAT_SECONDS", 0.2)
+    _meta_with_lease(scratch_url, "me", age_seconds=50)
+    heartbeat = S.LeaseHeartbeat(get_engine(scratch_url), "me")
+    heartbeat.start()
+    try:
+        time.sleep(1.0)
+        assert _lease_age_seconds(scratch_url) < 5
+        assert not heartbeat.lost.is_set()
+        with get_engine(scratch_url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            conn.execute(text("UPDATE banko_meta SET value = 'other' WHERE key = 'schema_lock'"))
+        assert heartbeat.lost.wait(5), "the heartbeat never noticed the takeover"
+    finally:
+        heartbeat.stop()
+
+
+def test_a_boot_waits_for_a_live_apply_longer_than_the_lease_ttl(scratch_url, monkeypatch):
+    """A live apply can outlast the lease TTL many times over (six minutes on
+    a three-region cluster). The waiter keeps waiting while the lease is
+    fresh, and takes the finished schema when the fingerprint lands."""
+    monkeypatch.setattr(S, "LOCK_TTL_SECONDS", 2)
+    monkeypatch.setattr(S, "LEASE_HEARTBEAT_SECONDS", 0.5)
+    monkeypatch.setattr(S, "APPLY_WAIT_SECONDS", 30)
+    _meta_with_lease(scratch_url, "holder", age_seconds=0)
+    heartbeat = S.LeaseHeartbeat(get_engine(scratch_url), "holder")
+    heartbeat.start()
+
+    def finish():
+        time.sleep(5)  # longer than the TTL: only the heartbeat keeps the lease alive
+        with get_engine(scratch_url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            conn.execute(text("UPSERT INTO banko_meta (key, value, updated_at) VALUES ('schema_fingerprint', :v, now())"),
+                         {"v": json.dumps({"fingerprint": "fp-1"})})
+        heartbeat.stop()
+
+    threading.Thread(target=finish, daemon=True).start()
+    try:
+        with get_engine(scratch_url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            took_over = S._wait_for(conn, "fp-1", "me")
+            assert took_over is False
+            assert conn.execute(text("SELECT value FROM banko_meta WHERE key = 'schema_lock'")).scalar() == "holder"
+    finally:
+        heartbeat.stop()
