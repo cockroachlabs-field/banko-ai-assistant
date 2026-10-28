@@ -246,18 +246,15 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         if writes:
             _running("answer", "Writing the answer")
         t0 = time.perf_counter()
-        text, cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
+        (text, finished), cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
         if writes:
-            _step("LLM answer", "narrative streamed", ms=_since(t0), status="success", key="answer")
-        if key is not None:
+            _step("LLM answer", "narrative streamed" if finished else "the model stopped early; its words are kept",
+                  ms=_since(t0), status="success" if finished else "warning", key="answer")
+        if key is not None and finished:  # a narrative the model never finished is never replayed
             background.submit("narrative cache write", caches.put_search, user_id, key, [{"answer": text}],
                               url=deps.url, stat="narrative")
-    _running("explain", "Reading the query plan")
-    t0 = time.perf_counter()
-    explain = explain_aggregation(intent, user_id, url, region=region, merchant=merchant)
-    served = serving_regions(explain) or region
-    _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""), ms=_since(t0),
-          key="explain")
+    explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region, merchant=merchant),
+                                  region)
     return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
@@ -289,14 +286,28 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     _step("Visits SQL", f"{found['visits']} visits to {found['merchant']}, ${found['total']:,.2f}, computed by "
           "CockroachDB", ms=db_ms, status="success", key="sql")
     card = answers.render_visits_markdown(found, window=window, last_ever=last_ever)
+    explain, served = _query_plan(
+        lambda: txns.explain_merchant_visits(user_id, found["merchant"], url=deps.url, **days), region)
+    return {"answer": answers.translate(card, state.get("language") or "English", deps.chat),
+            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+
+
+def _query_plan(explain_fn, region: str | None) -> tuple[str | None, str | None]:
+    """EXPLAIN ANALYZE for the trace, and the region that served the query.
+    The answer is already written, so a database that can't give the plan
+    (a node going away mid-demo) costs the plan, never the answer."""
     _running("explain", "Reading the query plan")
     t0 = time.perf_counter()
-    explain = txns.explain_merchant_visits(user_id, found["merchant"], url=deps.url, **days)
+    try:
+        explain = explain_fn()
+    except Exception:
+        log.warning("EXPLAIN skipped", exc_info=True)
+        _step("EXPLAIN ANALYZE", "plan not captured", ms=_since(t0), status="warning", key="explain")
+        return None, region
     served = serving_regions(explain) or region
     _step("EXPLAIN ANALYZE", "plan captured" + (f", served by {served}" if served else ""), ms=_since(t0),
           key="explain")
-    return {"answer": answers.translate(card, state.get("language") or "English", deps.chat),
-            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+    return explain, served
 
 
 def _emit_text(text: str) -> None:
@@ -304,11 +315,12 @@ def _emit_text(text: str) -> None:
         _emit({"type": "token", "text": text[i:i + 48]})
 
 
-def _relay(open_stream, prefix: str = "") -> str:
+def _relay(open_stream, prefix: str = "") -> tuple[str, bool]:
     """Send a model stream out as token events and return exactly what was
-    sent. Whitespace at either end is held back, and prefix goes out just
-    before the first real text, so nothing dangles when the stream is empty.
-    A stream that fails to open or breaks keeps what already went out."""
+    sent, and whether the stream finished. Whitespace at either end is held
+    back, and prefix goes out just before the first real text, so nothing
+    dangles when the stream is empty. A stream that fails to open or breaks
+    keeps what already went out."""
     sent: list[str] = []
     held, started = "", False
     try:
@@ -327,35 +339,38 @@ def _relay(open_stream, prefix: str = "") -> str:
             sent.append(chunk)
     except Exception:
         log.warning("model stream stopped early", exc_info=True)
-    return "".join(sent)
+        return "".join(sent), False
+    return "".join(sent), True
 
 
-def _narrate(agg, question: str, language: str, chat: Chat) -> str:
+def _narrate(agg, question: str, language: str, chat: Chat) -> tuple[str, bool]:
     """The aggregation answer, streamed as it is produced. In English the SQL
     card goes out at once and the insights stream after it. In another
     language the insights come first (one call), then the translation of
-    card and insights streams. Returns exactly the text sent."""
+    card and insights streams. Returns exactly the text sent, and whether
+    the model finished all of it (only a finished narrative is cached)."""
     card = answers.render_aggregation_markdown(agg)
     if language == "English":
         _emit_text(card)
         if not agg.count:
-            return card
-        insights = _relay(lambda: chat.stream(answers.insights_messages(agg, question), temperature=0.4),
-                          prefix="\n\n")
+            return card, True
+        insights, finished = _relay(lambda: chat.stream(answers.insights_messages(agg, question), temperature=0.4),
+                                    prefix="\n\n")
         if insights:
             narration.insights()
-        return card + insights
+        return card + insights, finished
     notes = answers.aggregation_insights(agg, question, chat) if agg.count else None
     if notes:
         narration.insights()
     english = card + (f"\n\n{notes}" if notes else "")
-    translated = _relay(lambda: chat.stream(answers.translation_messages(english, language), temperature=0.1))
-    if not translated:  # no translation came back: the English, figures and all
+    translated, finished = _relay(lambda: chat.stream(answers.translation_messages(english, language),
+                                                      temperature=0.1))
+    if not translated:  # no translation came back: the English, figures and all, never cached as the translation
         _emit_text(english)
-        return english
+        return english, False
     if translated != english:
         narration.rendered(language)
-    return translated
+    return translated, finished and (notes is not None or not agg.count)
 
 
 RECEIPT_KEYS = ("document_id", "merchant", "amount", "date", "category", "items", "expense_id")

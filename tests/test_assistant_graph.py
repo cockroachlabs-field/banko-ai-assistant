@@ -114,6 +114,55 @@ def test_a_spanish_aggregation_streams_the_translation(g, member, thread, monkey
     assert tokens == out["answer"] == translated
 
 
+def _unreachable(*args, **kwargs):
+    raise ConnectionError("the gateway node went away")
+
+
+def test_a_query_plan_the_database_cannot_give_keeps_the_answer(g, member, thread, monkeypatch):
+    from banko_ai.utils import aggregations
+
+    monkeypatch.setattr(aggregations, "explain_aggregation", _unreachable)
+    out, events = _turn(g, member, thread, "how much did I spend on groceries in the last 33 days",
+                        ScriptedChat("- Groceries are steady."))
+    assert out["route"]["kind"] == "aggregate" and "You spent **$" in out["answer"]
+    assert [e for e in events if e["type"] == "error"] == []
+    assert {e["label"]: e for e in events if e["type"] == "step"}["EXPLAIN ANALYZE"]["status"] == "warning"
+    assert out["meta"]["explain"] is None and "db_ms" in out["meta"]
+
+
+class _BreaksMidStream(ScriptedChat):
+    """A model whose stream drops after its first words."""
+
+    def stream(self, messages, *, temperature=0.3):
+        self.calls.append(("stream", messages))
+        yield "- Groceries are"
+        raise ConnectionError("the model went away")
+
+
+def test_an_answer_cut_short_keeps_its_words_but_is_never_cached(g, member, thread):
+    question = "how much did I spend on groceries in the last 37 days"
+    out, events = _turn(g, member, thread, question, _BreaksMidStream())
+    assert out["answer"].endswith("- Groceries are")
+    assert "".join(e["text"] for e in events if e["type"] == "token") == out["answer"]
+    again, _ = _turn(g, member, thread, question, ScriptedChat("- Groceries are steady."))
+    assert not again["cached"] and again["answer"].endswith("- Groceries are steady.")
+
+
+def test_a_translation_cut_short_is_never_cached(g, member, thread):
+    class TranslationBreaks(ScriptedChat):
+        def stream(self, messages, *, temperature=0.3):
+            self.calls.append(("stream", messages))
+            yield "Gastaste **$"
+            raise ConnectionError("the model went away")
+
+    question = "how much did I spend on groceries in the last 39 days"
+    out, _ = _turn(g, member, thread, question, TranslationBreaks("- Steady."), language_code="es-ES")
+    assert out["answer"] == "Gastaste **$"
+    again, _ = _turn(g, member, thread, question, ScriptedChat("- Estable.", "Gastaste **$1** en Groceries."),
+                     language_code="es-ES")
+    assert not again["cached"] and again["answer"] == "Gastaste **$1** en Groceries."
+
+
 def test_a_regional_aggregation_traces_pruning_and_the_serving_region(g, member, thread, monkeypatch):
     from banko_ai.utils import aggregations
     from banko_ai.utils.aggregations import AggregationResult
@@ -685,6 +734,16 @@ def test_a_visit_question_is_answered_from_sql_without_the_model(g, member, thre
     assert f"**{merchant}** {visits} times" in out["answer"] and f"${total:,.2f}" in out["answer"]
     assert out["meta"]["explain"] and "db_ms" in out["meta"]
     assert any(e["type"] == "step" and e["label"] == "Visits SQL" for e in events)
+
+
+def test_a_visit_answer_survives_a_query_plan_the_database_cannot_give(g, member, thread, monkeypatch):
+    monkeypatch.setattr(G.txns, "explain_merchant_visits", _unreachable)
+    merchant, visits, _ = _top_merchant(member)
+    out, events = _turn(g, member, thread, f"did I go to {merchant.lower()}?", ScriptedChat("unused"))
+    assert out["route"]["kind"] == "visits" and f"**{merchant}** {visits} times" in out["answer"]
+    assert [e for e in events if e["type"] == "error"] == []
+    assert {e["label"]: e for e in events if e["type"] == "step"}["EXPLAIN ANALYZE"]["status"] == "warning"
+    assert out["meta"]["explain"] is None
 
 
 def _kite_shop(member):
