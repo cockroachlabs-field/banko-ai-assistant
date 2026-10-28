@@ -187,7 +187,9 @@ def test_topology_changes_become_events(monkeypatch):
         time.sleep(0.05)
     assert any(e["level"] == "bad" and e["text"] == "Node 3 in us-west-2 is down" for e in events.since(before))
     body = client.get("/api/v1/platform/cluster").get_json()
-    assert body["leases"] == {"source": "nodes", "by_region": {"us-west-2": 4}}
+    # A node that is down holds no leases, whatever it last reported; its
+    # region stays on the card at zero while the survivors take them.
+    assert body["leases"] == {"source": "nodes", "by_region": {"us-west-2": 0}}
 
 
 def test_the_data_card_reports_users_residency_vectors_cdc_and_integrity(monkeypatch):

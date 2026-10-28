@@ -151,6 +151,29 @@ def error_class_of(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
+class _Settled:
+    """A yes or no reading that changes only once two samples in a row agree,
+    so a failover's sampled reads landing on different survivors don't flap."""
+
+    def __init__(self) -> None:
+        self.value: bool | None = None
+        self._candidate: bool | None = None
+        self._seen = 0
+
+    def observe(self, value: bool) -> bool:
+        """Take one sample; True when the settled value just changed (the
+        first settled value is a baseline, not a change)."""
+        if value == self._candidate:
+            self._seen += 1
+        else:
+            self._candidate, self._seen = value, 1
+        if self._seen < 2 or value == self.value:
+            return False
+        first = self.value is None
+        self.value = value
+        return not first
+
+
 class _Run:
     def __init__(self, config: LoadConfig):
         self.config = config
@@ -197,6 +220,7 @@ class TrafficSimulator:
         self._error: str | None = None
         self._last_config: LoadConfig | None = None
         self._serving: dict[str, dict] = {}
+        self._at_home: dict[str, _Settled] = {}
         self._vectors: VectorCache | None = None
         self._ctx: OpContext | None = None
 
@@ -483,14 +507,22 @@ class TrafficSimulator:
                 except Exception:
                     log.debug("serving region sample failed", exc_info=True)
                     continue
-                if not served:
-                    continue
-                with self._lock:
-                    before = (self._serving.get(region) or {}).get("served_by")
-                    self._serving[region] = {"served_by": served, "at": self._wall()}
-                if before and before != served:
-                    self.events.publish(f"Reads for {region} customers now served by {served}", level="warn",
-                                        source="load")
+                if served:
+                    self._observe_serving(region, served)
+
+    def _observe_serving(self, region: str, served: str) -> None:
+        """Record which regions served a sampled read of this region's
+        customers. The feed says when their reads leave home and when they
+        are back, not every survivor in between."""
+        with self._lock:
+            self._serving[region] = {"served_by": served, "at": self._wall()}
+            at_home = self._at_home.setdefault(region, _Settled())
+            changed = at_home.observe(served == region)
+        if changed and at_home.value:
+            self.events.publish(f"Reads for {region} customers are served in {region} again", level="good",
+                                source="load")
+        elif changed:
+            self.events.publish(f"Reads for {region} customers now served by {served}", level="warn", source="load")
 
 
 _simulator: TrafficSimulator | None = None

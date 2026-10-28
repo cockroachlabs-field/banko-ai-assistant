@@ -220,3 +220,19 @@ def test_the_simulator_connects_as_the_database_owner(monkeypatch):
     monkeypatch.setattr(rls, "app_url", lambda: "postgresql://banko_app@db:26257/defaultdb?sslmode=disable")
     url = T.get_simulator().url
     assert "banko_app" not in url and "application_name=banko-load" in url
+
+
+def test_serving_events_mark_leaving_home_and_coming_back_not_each_survivor():
+    """During a failover the sampled read lands on different survivors from
+    one sample to the next; the feed says once that the region's reads left
+    home and once that they are back, each after two samples agree."""
+    sim, _, ev = _sim(_instant)
+    samples = ["us-west-2", "us-west-2",
+               "us-east-1", "eu-west-1, us-east-1", "us-east-1", "eu-west-1, us-east-1",
+               "us-east-1, us-west-2", "us-east-1, us-west-2", "us-east-1", "us-west-2", "us-west-2"]
+    for served in samples:
+        sim._observe_serving("us-west-2", served)
+    texts = [(e["level"], e["text"]) for e in ev.since(None)]
+    assert texts == [("warn", "Reads for us-west-2 customers now served by eu-west-1, us-east-1"),
+                     ("good", "Reads for us-west-2 customers are served in us-west-2 again")]
+    assert sim.status()["serving"]["us-west-2"]["served_by"] == "us-west-2"

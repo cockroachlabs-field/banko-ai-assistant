@@ -176,7 +176,8 @@ def _node_leases(topology: dict | None) -> dict | None:
     for n in nodes:
         if n.get("leases") is not None:
             key = n.get("region") or "all"
-            by_region[key] = by_region.get(key, 0) + int(n["leases"])
+            # A node that is down holds none, whatever it last reported.
+            by_region[key] = by_region.get(key, 0) + (0 if n.get("live") is False else int(n["leases"]))
     return {"source": "nodes", "by_region": by_region}
 
 
