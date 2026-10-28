@@ -34,12 +34,19 @@ CockroachDB cluster.
   happen, streamed from the backend (no canned activity).
 - **Three-layer semantic cache** — query / embedding / vector-search caches
   with tunable similarity thresholds.
+- **Put it under load and break it**: the Platform page runs simulated
+  customers (purchases, transfers, card payments, deposits, page loads,
+  vector searches, reports) through the same services at the rate you set,
+  and shows throughput, p50/p95/p99, errors, which region serves each home
+  region and money integrity as it happens. With the cockroach-chaos-demo
+  control plane connected, take a region down from the same page and watch
+  it recover. `banko-ai load run` does the same in a terminal.
 
 ## The interface
 
 The UI has no build step: templates plus Alpine.js bind data from the JSON API.
 
-Pages: dashboard (net worth, spending, budgets, coach insight, upcoming bills), accounts (balances, net worth history, monthly statements with a CSV download, and Move money), transactions (a filtered list, semantic search, and a drawer with the receipt, similar purchases, the agent checks and recategorize), cash flow (income vs spending), budget (set and track spending limits), recurring bills, goals, the assistant (full conversational AI with explanations of how each answer was built), the coach inbox (every nudge with the signal behind it and the coach agent's tool trace, plus presenter-only simulated signals built from your own data), the agents feed (receipts, nudges, fraud and budget checks, and the assistant's proposals as they happen), and settings (language, theme, model, demo data with live progress, memories, and system health).
+Pages: dashboard (net worth, spending, budgets, coach insight, upcoming bills), accounts (balances, net worth history, monthly statements with a CSV download, and Move money), transactions (a filtered list, semantic search, and a drawer with the receipt, similar purchases, the agent checks and recategorize), cash flow (income vs spending), budget (set and track spending limits), recurring bills, goals, the assistant (full conversational AI with explanations of how each answer was built), the coach inbox (every nudge with the signal behind it and the coach agent's tool trace, plus presenter-only simulated signals built from your own data), the agents feed (receipts, nudges, fraud and budget checks, and the assistant's proposals as they happen), the platform view (the load simulator, live throughput and latency, topology, leases, chaos, integrity, residency, vectors and CDC), and settings (language, theme, model, demo data with live progress, memories, and system health).
 
 The theme button in the header cycles through Daylight, Midnight and your system setting, and remembers your choice; `UI_THEME` sets the default. The identity pill in the top right shows the AI provider and model on screen; drop a receipt anywhere and the assistant panel opens on the right to scan it. Switching models happens from Settings and takes effect immediately. Switching providers requires a restart with the new `AI_SERVICE` value.
 
@@ -269,6 +276,9 @@ The important knobs:
 | `REPORTING_FOLLOWER_READS` | Read cash flow, net worth history and statements with follower reads, a few seconds stale | `true` |
 | `RECURRING_MIN_OCCURRENCES` | Charges needed before a merchant counts as a recurring bill | `3` |
 | `RECURRING_PRICE_CHANGE_PCT` | Price change, in percent, that flags a subscription as changed | `5` |
+| `CHAOS_CONTROL_URL`, `CHAOS_CONTROL_TOKEN` | The cockroach-chaos-demo control plane and its token, for the Platform page's chaos card | empty |
+| `CRDB_ADMIN_URL` | CockroachDB's HTTP API (the DB Console address) for node liveness; `CRDB_ADMIN_USER` and `CRDB_ADMIN_PASSWORD` sign in on a secure cluster | derived on an insecure cluster |
+| `PLATFORM_CONTROLS` | Off makes the Platform page read-only (no load or chaos controls) | `true` |
 
 ### Make the demo yours
 
@@ -309,6 +319,30 @@ curl -X POST http://localhost:5000/api/rag \
   -H "Content-Type: application/json" \
   -d '{"query": "What are my biggest expenses this month?"}'
 ```
+
+## Load and chaos
+
+Open **Platform**, pick a profile (balanced, payments for heavy writes,
+browsing, search, or your own weights), the number of customers and
+operations per second, and press Start load. The simulator creates its own
+`load-` customers across the database's regions and drives them through the
+real ledger, so money integrity is checked while it runs. Latency counts
+from when each operation was due, so a struggling cluster shows up as
+latency and dropped operations instead of quietly less load.
+
+With the chaos control plane running, set `CHAOS_CONTROL_URL` (and
+`CHAOS_CONTROL_TOKEN` if it has one) and the chaos card appears: take a
+region down, watch the per-region latency and serving region move, recover
+it. The same load runs without the UI:
+
+```bash
+banko-ai load run --profile payments --users 500 --rate 200 --duration 5m
+banko-ai load start --url http://localhost:5000 --rate 200   # shows up on that app's Platform page
+banko-ai load users clear                                     # remove the load customers
+```
+
+`LOAD_DEFAULT_*` and `LOAD_MAX_*` set the defaults and limits;
+`banko-ai config --docs` lists them.
 
 ## The Spending Coach (streaming + agentic)
 

@@ -131,6 +131,34 @@ is still running, the reset waits up to 30 seconds for it and tries again.
 If the lease is still taken, it skips that persona without deleting anything,
 and the server log says so. One persona failing doesn't stop the others.
 
+#### Platform (load simulator, cluster, chaos)
+
+Every `/api/v1/platform` route needs a signed-in session (401 without one).
+The writes also need a JSON body (400 otherwise) and `PLATFORM_CONTROLS` on
+(403 otherwise). Errors carry a plain sentence in `error` and a `code`
+beside it (`bad_request`, `busy`, `read_only`, `sign_in`, `not_configured`,
+`unavailable`, `refused`, `needs_confirm`).
+
+| Method | Path | Purpose | Success | Errors |
+|--------|------|---------|---------|--------|
+| GET | `/api/v1/platform/live?since=<event id>` | From memory only, never the database: the simulator's `load` status (`state` idle, preparing, running or stopping; `config`; `elapsed_s`; `users_ready`; `error`; `serving`, the regions that served each home region's sampled read), `summary` of the last 10 complete seconds (`ops_s`, `errors_s`, `ok`, `errors`, `declined`, `dropped`, client `retries`, `p50`, `p95`, `p99` in ms, `error_classes`), the same per operation (`ops`) and per home region (`regions`), `series` per second for 5 minutes (`t`, `ops`, `errors`, `dropped`, `p50`, `p95`, `p99`), `http` request timings, `db` retry and failure rates, `events` newer than `since`, and `controls` (`load`, `chaos`, the load `defaults` and `limits`) | 200 | 401 |
+| GET | `/api/v1/platform/cluster` | `topology` (`source` chaos, status_api or sql; `regions`; `nodes` with region, zone, `live`, status, replicas, leases), the chaos plane's state when one is configured (`chaos`), `leases` per region, `as_of` and `stale` | 200 | 401 |
+| GET | `/api/v1/platform/data` | `users` per home region (personas, load and other users), `residency` (each table's locality and RLS, whether `users` is GLOBAL, RLS status), `vectors` (count, customers with vectors, index), `cdc` (changefeed jobs, signals and nudges per minute), the latest `integrity` report, `as_of` and `stale` | 200 | 401 |
+| POST | `/api/v1/platform/load` | `{"action": "start"}` with any of `profile` (balanced, payments, browsing, search or custom with `weights`), `users`, `rate`, `workers`, `duration_s` (0 or none runs until stopped), `ramp_s`; `{"action": "apply", ...}` changes a running load; `{"action": "stop"}` | 202 start, 200 | 400, 409 busy |
+| POST | `/api/v1/platform/load/users` | `{"action": "prepare", "count": N}` creates load customers up to N; `{"action": "clear"}` removes them and every row they own (409 while load runs) | 200 | 400, 409 |
+| POST | `/api/v1/platform/chaos` | `{"action", "kind", "value", "confirm"}` for the chaos control plane (actions crash, outage, stop, start, partition, heal, brownout, isolate, recover; kinds node, zone, region, all). 409 `needs_confirm` carries the plane's warning that data would become unavailable; send again with `"confirm": true` | 200 | 400, 404 not configured, 409, 502, 503 |
+| POST | `/api/v1/platform/chaos/latency` | `{"setting": "off"}` or `"realistic"` | 200 | 400, 404, 502, 503 |
+| POST | `/api/v1/platform/integrity/check` | Check money integrity now; returns the report (`ok`, `drift`, `accounts`, `checked_at`, `follower_reads`, `skipped`) | 200 | 401 |
+
+`/cluster` and `/data` answer from snapshots that a background refresh keeps
+fresh while someone asks (every 2 s and every 30 s), so a slow source makes
+a section `stale` instead of a request slow. Node facts come from the chaos
+control plane when `CHAOS_CONTROL_URL` is set, else from CockroachDB's HTTP
+API (`CRDB_ADMIN_URL`, or `http://<database host>:8080` on an insecure
+cluster when that console's nodes have this cluster's regions), else from
+SQL, which knows regions and replica holders but not liveness: CockroachDB
+v26 restricts `crdb_internal`.
+
 #### Session and real-time updates
 
 Every `/api/v1` response includes an `X-Banko-User` header with the persona
