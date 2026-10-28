@@ -331,11 +331,17 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
             return TransferResult("replay", str(prior[0]) if prior else None)
         transfer_id = str(row[0])
         params["tid"] = transfer_id
-        accounts = {str(r[0]): r for r in conn.execute(text("""
-            SELECT account_id, kind, balance, credit_limit FROM accounts
-            WHERE account_id IN (CAST(:f AS UUID), CAST(:t AS UUID)) AND user_id = CAST(:u AS UUID)
-            FOR UPDATE
-        """), params)}
+        # One lock per account, in a fixed order: a lookup by one key reads the
+        # home region first, while one lock over both keys reads every region.
+        accounts = {}
+        for acct in sorted({from_acct, actual_to_acct}):
+            row = conn.execute(text("""
+                SELECT account_id, kind, balance, credit_limit FROM accounts
+                WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)
+                FOR UPDATE
+            """), {"a": acct, "u": user_id}).fetchone()
+            if row is not None:
+                accounts[str(row[0])] = row
         if from_acct not in accounts or actual_to_acct not in accounts:
             raise NotFound("That account was not found")
         _, src_kind, src_balance, src_limit = accounts[from_acct]

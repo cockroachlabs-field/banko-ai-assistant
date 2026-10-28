@@ -362,8 +362,8 @@ def test_a_deposit_without_an_entry_id_lets_the_database_pick_it(user):
 
 
 def test_a_transfer_updates_each_account_by_its_own_key(user):
-    """One update per account finds it in the home region first; one update
-    over both ids reads every region."""
+    """One lock and one update per account find it in the home region first;
+    one statement over both ids reads every region."""
     a = _checking(user)
     b = L.open_account(user, kind="savings", name="Savings", institution="Test Bank",
                        mask="0004", opening_balance="0")
@@ -371,5 +371,7 @@ def test_a_transfer_updates_each_account_by_its_own_key(user):
         assert L.transfer(user, a, b, "40.00", idempotency_key="t-split").status == "ok"
     updates = [s for s in seen if s.startswith("UPDATE accounts")]
     assert len(updates) == 2 and not any(" IN (" in s for s in updates)
+    locks = [s for s in seen if s.startswith("SELECT") and s.endswith("FOR UPDATE") and "FROM accounts" in s]
+    assert len(locks) == 2 and not any(" IN (" in s for s in locks)
     assert (_balance(a), _balance(b)) == (Decimal("60.00"), Decimal("40.00"))
     assert invariant_violations(user) == []
