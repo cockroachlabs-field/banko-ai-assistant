@@ -101,6 +101,7 @@ def test_reads_pinned_to_the_home_region_return_what_unpinned_reads_do(mr_db):
     is only right because every row a load customer owns lives there."""
     import random
 
+    from banko_ai.db import regions
     from banko_ai.db.engine import with_gateway_region
     from banko_ai.services import accounts, transactions
     from banko_ai.services.platform import sample_serving
@@ -112,6 +113,7 @@ def test_reads_pinned_to_the_home_region_return_what_unpinned_reads_do(mr_db):
         for op in ("purchase", "purchase", "deposit", "transfer"):
             run_op(op, user, ctx, rng)
         uid, region, card = user.user_id, user.region, user.accounts["card"]
+        assert regions.read_region(uid, url) == region  # every row of a load customer is home
         assert accounts.list_accounts(uid, url=url, region=region) == accounts.list_accounts(uid, url=url)
         assert accounts.get_account(uid, card, url=url, region=region) == accounts.get_account(uid, card, url=url)
         pinned = transactions.list_transactions(uid, limit=20, url=url, region=region)
@@ -119,6 +121,51 @@ def test_reads_pinned_to_the_home_region_return_what_unpinned_reads_do(mr_db):
         assert (transactions.semantic_search(uid, "coffee", limit=10, url=url, region=region)
                 == transactions.semantic_search(uid, "coffee", limit=10, url=url))
         assert region in (sample_serving(uid, url=with_gateway_region(url, region), region=region) or "")
+
+
+@needs_mr
+def test_region_scoped_keys_keep_writes_idempotent(mr_db):
+    """With the region leading the keys, a replayed transfer still finds its
+    first attempt and a reposted history still writes nothing twice."""
+    from datetime import datetime, timezone
+
+    from banko_ai.services import ledger
+
+    url, users = mr_db
+    user = users[1]
+    first = ledger.transfer(user.user_id, user.accounts["checking"], user.accounts["savings"], "5.00",
+                            idempotency_key="scoped-1", url=url)
+    again = ledger.transfer(user.user_id, user.accounts["checking"], user.accounts["savings"], "5.00",
+                            idempotency_key="scoped-1", url=url)
+    assert first.status == "ok" and again.status == "replay" and again.transfer_id == first.transfer_id
+    row = ledger.HistoryRow(entry_id="6a2b0c1d-0000-4000-8000-00000000e001", account_id=user.accounts["checking"],
+                            posted_at=datetime.now(timezone.utc), amount=-3, kind="purchase", description="Scoped",
+                            expense={"expense_id": "6a2b0c1d-0000-4000-8000-00000000e002",
+                                     "expense_date": datetime.now(timezone.utc).date(), "expense_amount": 3,
+                                     "shopping_type": "Coffee", "merchant": "Scoped Cafe",
+                                     "payment_method": "Debit Card", "recurring": False, "tags": ["coffee", "scoped_cafe"],
+                                     "embedding": None})
+    assert ledger.post_history(user.user_id, [row], url=url) == 1
+    assert ledger.post_history(user.user_id, [row], url=url) == 0
+
+
+@needs_mr
+def test_a_customer_with_a_row_away_from_home_is_not_pinned(mr_db):
+    """One row outside the home region (written before the money tables were
+    regional, say) and a pinned read would miss it: that customer's reads
+    stay unpinned."""
+    from banko_ai.db import regions
+
+    url, users = mr_db
+    user = users[2]
+    elsewhere = next(r for r in regions.detect_database_regions(url) if r != user.region)
+    with get_engine(url).begin() as c:
+        c.execute(text("UPDATE accounts SET crdb_region = CAST(:r AS crdb_internal_region) "
+                       "WHERE account_id = CAST(:a AS UUID)"), {"r": elsewhere, "a": user.accounts["savings"]})
+    regions.clear_region_caches()
+    assert regions.read_region(user.user_id, url) is None
+    regions.prime_rows_home([user.user_id], url)
+    assert regions.read_region(user.user_id, url) is None
 
 
 @needs_mr

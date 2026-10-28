@@ -241,19 +241,18 @@ class TrafficSimulator:
     def _sample_serving(self, user: LoadUser) -> str | None:
         """One page-load read for this customer, through their region's pool
         and naming their region, as the simulated page loads run."""
+        from ..db.regions import read_region
         from ..services.platform import sample_serving
-        ctx = self._ctx
-        if ctx is None:
-            return sample_serving(user.user_id, url=self.url)
-        return sample_serving(user.user_id, url=ctx.url_for(user), region=ctx.region_for(user))
+        url = self._ctx.url_for(user) if self._ctx else self.url
+        return sample_serving(user.user_id, url=url, region=read_region(user.user_id, url))
 
     def _context(self, users: list[LoadUser]) -> OpContext:
         """A pool of the simulator's own per home region, entering the cluster
         through a node in that region, as a regional deployment of the app
-        serves its customers; reads name the region when every money table
-        is REGIONAL BY ROW (load users' rows then all live in their region)."""
+        serves its customers. Which customers' rows all live at home is
+        checked for everyone at once, so their reads may name their region."""
         from ..db.engine import get_engine, with_gateway_region
-        from ..db.regions import detect_database_regions, money_tables_regional
+        from ..db.regions import detect_database_regions, money_tables_regional, prime_rows_home
         vectors = self._vectors or VectorCache({})
         if not self.url:
             return OpContext(url=None, vectors=vectors)
@@ -261,8 +260,9 @@ class TrafficSimulator:
         urls = {region: with_gateway_region(self.url, region) for region in regions}
         for url in urls.values():
             get_engine(url, pool_size=self._pool_size)
-        return OpContext(url=self.url, vectors=vectors, region_urls=urls,
-                         pin_regions=bool(urls) and money_tables_regional(self.url))
+        if urls and money_tables_regional(self.url):
+            prime_rows_home([u.user_id for u in users if u.region], self.url)
+        return OpContext(url=self.url, vectors=vectors, region_urls=urls)
 
     @staticmethod
     def _check_integrity() -> Any:

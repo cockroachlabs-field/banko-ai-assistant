@@ -146,6 +146,8 @@ class Settings(BaseSettings):
     db_retry_max_attempts: int = _field(5, group="database", env="DB_RETRY_MAX_ATTEMPTS", description="Attempts for a transaction that hits a retryable error (40001, a dropped connection).")
     rls_mode: str = _field("auto", group="database", env="RLS_MODE",
         description="auto turns on row-level security for the money tables when the app role can log in; off keeps it off.")
+    route_by_home_region: bool = _field(True, group="database", env="ROUTE_BY_HOME_REGION",
+        description="On a multi-region cluster, serve each signed-in user's statements through a pool whose connections enter the cluster in their home region.")
     database_app_url: str = _field("", group="database", env="DATABASE_APP_URL", secret=True,
         description="Connection URL for the non-admin app role used with row-level security. Empty derives it from DATABASE_URL on insecure clusters.")
 

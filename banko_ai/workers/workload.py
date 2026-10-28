@@ -2,9 +2,10 @@
 does, through the same services the app uses, so every simulated purchase
 is a real ledger movement and every search a real per-user vector query.
 
-Each customer is served through their home region's own pool and reads
-name that region, so on a multi-region cluster every statement stays in
-the customer's region and only a write's commit crosses to another one.
+Each customer is served through their home region's own pool, and the
+read services name that region when all the customer's rows live there
+(regions.read_region), so on a multi-region cluster their statements stay
+in their region.
 
 Transfers and card payments carry an idempotency key, so a retry after a
 dropped connection or an ambiguous commit finds its own row instead of
@@ -167,13 +168,9 @@ class OpContext:
     url: str | None
     vectors: VectorCache
     region_urls: dict[str, str] = field(default_factory=dict)  # home region -> its own pool (with_gateway_region)
-    pin_regions: bool = False  # reads name the home region: every load row lives there
 
     def url_for(self, user: LoadUser) -> str | None:
         return self.region_urls.get(user.region or "", self.url)
-
-    def region_for(self, user: LoadUser) -> str | None:
-        return user.region if self.pin_regions else None
 
 
 def _money(rng: random.Random, low, high) -> Decimal:
@@ -208,8 +205,8 @@ def _transfer(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
 def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     """Pay the statement in full half the time, else part of it, as
     cardholders do; never more than the card owes (the ledger refuses)."""
-    card = with_client_retries(lambda: accounts.get_account(user.user_id, user.accounts["card"], url=ctx.url_for(user),
-                                                            region=ctx.region_for(user)), committed=_never)[0]
+    card = with_client_retries(lambda: accounts.get_account(user.user_id, user.accounts["card"], url=ctx.url_for(user)),
+                               committed=_never)[0]
     owed = -Decimal(str((card or {}).get("balance") or 0))
     if owed < 1:
         raise Declined(0)
@@ -233,18 +230,18 @@ def _deposit(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
 
 
 def _page_load(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
-    url, region = ctx.url_for(user), ctx.region_for(user)
+    url = ctx.url_for(user)
 
     def visit() -> None:
-        accounts.list_accounts(user.user_id, url=url, region=region)
-        transactions.list_transactions(user.user_id, limit=20, url=url, region=region)
+        accounts.list_accounts(user.user_id, url=url)
+        transactions.list_transactions(user.user_id, limit=20, url=url)
     return with_client_retries(visit, committed=_never)[1]
 
 
 def _search(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     q = rng.choice(QUERIES)
-    return with_client_retries(lambda: transactions.semantic_search(
-        user.user_id, q, limit=10, url=ctx.url_for(user), region=ctx.region_for(user)), committed=_never)[1]
+    return with_client_retries(lambda: transactions.semantic_search(user.user_id, q, limit=10, url=ctx.url_for(user)),
+                               committed=_never)[1]
 
 
 def _report(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:

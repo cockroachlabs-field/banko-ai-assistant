@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from sqlalchemy import text
 
+from ..db.regions import read_region
 from ..db.rls import request_url
 from ._sql import jsonable, month_labels, read_session, region_pin, valid_uuid
 
@@ -24,9 +25,10 @@ def _account_dict(r) -> dict:
 
 
 def list_accounts(user_id: str, *, url: str | None = None, region: str | None = None) -> dict:
-    """region, when every row of this user lives in their home region (load
-    users), names it so the read touches only that region's partition."""
+    """region (by default read_region) names the user's home region, so the
+    read touches only that region's partition."""
     url = request_url(url)
+    region = region if region is not None else read_region(user_id, url)
     with read_session(user_id, url=url) as conn:
         rows = conn.execute(text(f"SELECT {_ACCOUNT_COLS} FROM accounts WHERE {region_pin('', region)}"
                                  "user_id = CAST(:u AS UUID)"), {"u": user_id, "region": region}).fetchall()
@@ -50,6 +52,7 @@ def get_account(user_id: str, account_id: str, *, url: str | None = None,
     url = request_url(url)
     if not valid_uuid(account_id):
         return None
+    region = region if region is not None else read_region(user_id, url)
     with read_session(user_id, url=url) as conn:
         row = conn.execute(text(f"SELECT {_ACCOUNT_COLS} FROM accounts WHERE {region_pin('', region)}"
                                 "account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)"),

@@ -15,7 +15,7 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine, run_transaction
-from ..db.regions import money_region, regional_tables_ready
+from ..db.regions import money_region, read_region, regional_tables_ready
 from ..db.rls import request_url
 from ..utils.request_trace import trace_step
 from ._sql import jsonable, read_session, region_pin, valid_uuid, vector_text
@@ -116,6 +116,7 @@ def list_transactions(user_id: str, *, limit: int = 50, cursor: str | None = Non
                       min_amount: Any = None, max_amount: Any = None, url: str | None = None,
                       region: str | None = None) -> dict:
     url = request_url(url)
+    region = region if region is not None else read_region(user_id, url)
     limit = max(1, min(int(limit), MAX_LIMIT))
     where, params = [], {"u": user_id, "limit": limit + 1, "region": region}
     after = _decode_cursor(cursor)
@@ -268,6 +269,7 @@ def semantic_search(user_id: str, q: str, *, limit: int = 20, cursor: str | None
     q = (q or "").strip()[:500]
     if not q:
         return {"items": [], "next_cursor": None}
+    region = region if region is not None else read_region(user_id, url)
     limit = max(1, min(int(limit), MAX_LIMIT))
     offset = _decode_offset(cursor)
     filters: list[str] = []

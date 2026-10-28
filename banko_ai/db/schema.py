@@ -84,6 +84,15 @@ class Index:
         return f"CREATE {kind} IF NOT EXISTS {self.name} ON {table} {self._body()}"
 
 
+# Declared, on a multi-region database, by a table whose keys lead with the
+# region: CockroachDB then checks uniqueness in the row's own region only,
+# where a key without it is checked in every region on each insert. Hidden
+# and defaulted exactly like the column REGIONAL BY ROW adds by itself.
+REGION_COLUMN = Column("crdb_region", "crdb_internal_region NOT VISIBLE NOT NULL "
+                       "DEFAULT default_to_database_primary_region(gateway_region())::crdb_internal_region")
+SCOPED_TRANSFER_KEY = "transfers_crdb_region_user_id_idempotency_key_key"
+
+
 @dataclass(frozen=True)
 class Table:
     name: str
@@ -93,11 +102,16 @@ class Table:
     constraints: tuple[str, ...] = ()
     locality: str | None = None  # "REGIONAL BY ROW", "GLOBAL", or None for the database default
     options: str = ""            # for example WITH (ttl_expire_after = '30 days')
+    regional_primary_key: str = ""              # replaces primary_key on a multi-region database
+    regional_constraints: tuple[str, ...] = ()  # replace constraints on a multi-region database
 
     def create_sql(self, topo: Topology) -> str:
-        parts = [f"  {c.name} {c.definition}" for c in self.columns]
-        parts.append(f"  PRIMARY KEY ({self.primary_key})")
-        parts += [f"  {c}" for c in self.constraints]
+        scoped = topo.regional and bool(self.regional_primary_key or self.regional_constraints)
+        columns = ((REGION_COLUMN,) if scoped else ()) + self.columns
+        parts = [f"  {c.name} {c.definition}" for c in columns]
+        parts.append(f"  PRIMARY KEY ({self.regional_primary_key if scoped and self.regional_primary_key else self.primary_key})")
+        parts += [f"  {c}" for c in (self.regional_constraints if scoped and self.regional_constraints
+                                     else self.constraints)]
         parts += [f"  {i.inline()}" for i in self.indexes]
         sql = f"CREATE TABLE IF NOT EXISTS {self.name} (\n" + ",\n".join(parts) + "\n)"
         if self.options:
@@ -149,7 +163,7 @@ def tables() -> tuple[Table, ...]:
             Index("idx_expenses_user_date", "user_id ASC, expense_date DESC"),
             Index("idx_expenses_merchant", "merchant ASC"),
             Index("idx_expenses_shopping_type", "shopping_type ASC"),
-        ), locality="REGIONAL BY ROW"),
+        ), locality="REGIONAL BY ROW", regional_primary_key="crdb_region, expense_id"),
         Table("agent_state", _c(
             ("agent_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
             ("agent_type", "STRING NOT NULL"),
@@ -352,6 +366,10 @@ def tables() -> tuple[Table, ...]:
             "CHECK (kind IN ('transfer', 'card_payment', 'goal_contribution'))",
             "CHECK (amount > 0)",
             "UNIQUE (user_id, idempotency_key)",
+        ), regional_constraints=(
+            "CHECK (kind IN ('transfer', 'card_payment', 'goal_contribution'))",
+            "CHECK (amount > 0)",
+            "UNIQUE (crdb_region, user_id, idempotency_key)",
         ), locality="REGIONAL BY ROW"),
         Table("ledger_entries", _c(
             ("entry_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
@@ -549,7 +567,37 @@ def _ttl_drift_upgrade(conn: Connection, topo: Topology) -> list[str]:
     return out
 
 
-UPGRADES: tuple[Upgrade, ...] = (_naive_timestamp_upgrade, _users_ttl_upgrade, _ttl_drift_upgrade)
+def _scoped_transfer_key_upgrade(conn: Connection, topo: Topology) -> list[str]:
+    """A transfers table made REGIONAL BY ROW by an older release, or
+    converted after it was created, keeps a global idempotency key that every
+    transfer checks in every region: swap it for the region-scoped one in
+    place. (CockroachDB 26.3 cannot rebuild the expenses primary key in place,
+    so only databases created multi-region get that one scoped.)"""
+    if not topo.regional:
+        return []
+    try:
+        has_region = conn.execute(text("SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' "
+                                       "AND table_name = 'transfers' AND column_name = 'crdb_region'")).fetchone()
+        if has_region is None:  # not converted yet; run_pending_conversions calls this again after
+            return []
+        keys: dict[str, list[str]] = {}
+        for name, column in conn.execute(text(
+                "SELECT index_name, column_name FROM [SHOW INDEXES FROM transfers] "
+                "WHERE NOT non_unique AND NOT storing AND NOT implicit ORDER BY index_name, seq_in_index")):
+            keys.setdefault(str(name), []).append(str(column))
+    except ProgrammingError:  # transfers doesn't exist yet
+        return []
+    out = []
+    if ["crdb_region", "user_id", "idempotency_key"] not in keys.values():
+        out.append(f"CREATE UNIQUE INDEX IF NOT EXISTS {SCOPED_TRANSFER_KEY} "
+                   "ON transfers (crdb_region, user_id, idempotency_key)")
+    out += [f"DROP INDEX transfers@{name} CASCADE" for name, cols in sorted(keys.items())
+            if cols == ["user_id", "idempotency_key"]]
+    return out
+
+
+UPGRADES: tuple[Upgrade, ...] = (_naive_timestamp_upgrade, _users_ttl_upgrade, _ttl_drift_upgrade,
+                                 _scoped_transfer_key_upgrade)
 
 
 @dataclass
@@ -986,6 +1034,9 @@ def run_pending_conversions(url: str | None = None) -> list[str]:
                     done.append(sql)
                 else:
                     raise
+        for sql in _scoped_transfer_key_upgrade(conn, topo):
+            narration.info("scoping the transfer idempotency key to its region: %s", sql.split(" ON ")[0])
+            conn.execute(text(sql))
         narration.info("multi-region migration completed successfully")
         from .regions import clear_region_caches
         clear_region_caches()

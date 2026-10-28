@@ -20,7 +20,7 @@ from sqlalchemy.engine import Connection
 
 from ..config.settings import get_config
 from ..db.engine import get_engine, run_transaction
-from ..db.regions import money_region, region_columns
+from ..db.regions import SCOPED_REGION_VALUE, home_region, money_region, region_columns, scoped_key
 from ..db.rls import request_url
 from ._sql import vector_text
 
@@ -310,10 +310,16 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
         params = {"u": user_id, "f": from_acct, "t": actual_to_acct, "amt": amt, "neg": -amt,
                   "kind": kind, "g": goal, "key": idempotency_key, "desc": label,
                   "ok": out_kind, "ik": in_kind, "crdb_region": region}
+        # With the key scoped to the region, the row's region must not depend
+        # on the gateway, or a retry through another region would pass twice.
+        tcol, tval, arbiter = rcol, rval, "user_id, idempotency_key"
+        if scoped_key(conn, "transfers"):
+            tcol, tval, arbiter = "crdb_region, ", SCOPED_REGION_VALUE, "crdb_region, user_id, idempotency_key"
+            params["scoped_region"] = region or home_region(conn, user_id) or ""
         row = conn.execute(text(f"""
-            INSERT INTO transfers ({rcol}user_id, kind, from_account, to_account, amount, goal_id, idempotency_key)
-            VALUES ({rval}CAST(:u AS UUID), :kind, CAST(:f AS UUID), CAST(:t AS UUID), :amt, CAST(:g AS UUID), :key)
-            ON CONFLICT (user_id, idempotency_key) DO NOTHING
+            INSERT INTO transfers ({tcol}user_id, kind, from_account, to_account, amount, goal_id, idempotency_key)
+            VALUES ({tval}CAST(:u AS UUID), :kind, CAST(:f AS UUID), CAST(:t AS UUID), :amt, CAST(:g AS UUID), :key)
+            ON CONFLICT ({arbiter}) DO NOTHING
             RETURNING transfer_id
         """), params).fetchone()
         if row is None:
@@ -407,19 +413,25 @@ def post_history(user_id: str, rows: Sequence[HistoryRow], *, url: str | None = 
         rcol, rval = region_columns(region)
         if purchases:
             exp = [r.expense for r in purchases if r.expense is not None]
+            # See transfer(): a region-scoped key needs a region that never
+            # depends on the gateway, or a repeated batch could write twice.
+            ecol, evals, arbiter, scoped_region = rcol, rval, "expense_id", None
+            if scoped_key(conn, "expenses"):
+                ecol, evals, arbiter = "crdb_region, ", SCOPED_REGION_VALUE, "crdb_region, expense_id"
+                scoped_region = region or home_region(conn, user_id) or ""
             conn.execute(text(f"""
-                INSERT INTO expenses ({rcol}expense_id, user_id, expense_date, expense_amount, shopping_type,
+                INSERT INTO expenses ({ecol}expense_id, user_id, expense_date, expense_amount, shopping_type,
                                       description, merchant, payment_method, recurring, tags, embedding)
-                SELECT {rval}t.id, CAST(:u AS UUID), t.d, t.amt, t.cat, t.descr, t.merch, t.pay, t.rec,
+                SELECT {evals}t.id, CAST(:u AS UUID), t.d, t.amt, t.cat, t.descr, t.merch, t.pay, t.rec,
                        ARRAY[t.tag1, t.tag2], CAST(t.emb AS VECTOR(384))
                 FROM unnest(CAST(:ids AS UUID[]), CAST(:ds AS DATE[]), CAST(:amts AS DECIMAL[]),
                             CAST(:cats AS STRING[]), CAST(:descrs AS STRING[]), CAST(:merchs AS STRING[]),
                             CAST(:pays AS STRING[]), CAST(:recs AS BOOL[]), CAST(:tag1s AS STRING[]),
                             CAST(:tag2s AS STRING[]), CAST(:embs AS STRING[]))
                      AS t(id, d, amt, cat, descr, merch, pay, rec, tag1, tag2, emb)
-                ON CONFLICT (expense_id) DO NOTHING
+                ON CONFLICT ({arbiter}) DO NOTHING
             """), {
-                "u": user_id, "crdb_region": region,
+                "u": user_id, "crdb_region": region, "scoped_region": scoped_region,
                 "ids": [e["expense_id"] for e in exp],
                 "ds": [e["expense_date"] for e in exp],
                 "amts": [e["expense_amount"] for e in exp],

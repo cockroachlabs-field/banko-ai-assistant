@@ -63,6 +63,27 @@ def with_gateway_region(url: str, region: str) -> str:
     return make_url(url).update_query_dict({_GATEWAY_REGION: region}).render_as_string(hide_password=False)
 
 
+def routed(url: str | None, user_id: str | None) -> str | None:
+    """The URL to serve this user through. On a multi-region cluster it is a
+    pool homed on their region (with_gateway_region), so their statements
+    start in the region their rows live in, as a regional deployment of the
+    app would serve them. Unchanged without a user or a home region, for a
+    URL already homed (the load simulator's), on a single-region cluster, and
+    when ROUTE_BY_HOME_REGION is off."""
+    cfg = get_config()
+    if not user_id or not cfg.route_by_home_region:
+        return url
+    base = url or cfg.database_url
+    if f"{_GATEWAY_REGION}=" in base:
+        return url
+    from . import regions  # regions imports this module
+
+    if not regions.is_regional_deployment(regions._owner(base)):
+        return url
+    region = regions.user_home_region(str(user_id), base)
+    return with_gateway_region(base, region) if region else url
+
+
 def _gateway_of(conn: Any) -> str | None:
     """The region of the node a DBAPI connection entered through, "" on a
     cluster whose nodes have no region, or None when it could not be read."""
@@ -278,7 +299,7 @@ def run_transaction(fn: Callable[[Connection], T], *, url: str | None = None,
     for attempt in range(1, attempts + 1):
         ran = False
         try:
-            with get_engine(url).begin() as conn:
+            with get_engine(routed(url, user_id)).begin() as conn:
                 if user_id is not None:
                     _set_user(conn, user_id)
                 result = fn(conn)
@@ -304,7 +325,8 @@ def run_transaction(fn: Callable[[Connection], T], *, url: str | None = None,
 
 @contextmanager
 def user_session(user_id: str, *, url: str | None = None) -> Iterator[Connection]:
-    """A transaction with banko.user_id set, for row-level-security tables."""
-    with get_engine(url).begin() as conn:
+    """A transaction with banko.user_id set, for row-level-security tables,
+    through the user's home region (routed)."""
+    with get_engine(routed(url, user_id)).begin() as conn:
         _set_user(conn, user_id)
         yield conn

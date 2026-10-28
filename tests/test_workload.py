@@ -194,8 +194,7 @@ def test_work_that_is_not_idempotent_retries_only_what_cannot_have_committed():
 
 
 def test_each_customer_is_served_through_their_home_region(monkeypatch):
-    """Reads and writes go through the customer's home-region pool, and reads
-    name the region so they touch only its partition."""
+    """Reads and writes go through the customer's home-region pool."""
     calls = []
     monkeypatch.setattr(W.accounts, "list_accounts", lambda user_id, **kw: calls.append(kw))
     monkeypatch.setattr(W.transactions, "list_transactions", lambda user_id, **kw: calls.append(kw))
@@ -203,15 +202,14 @@ def test_each_customer_is_served_through_their_home_region(monkeypatch):
     monkeypatch.setattr(W.ledger, "record_income", lambda *args, **kw: calls.append(kw) or "entry")
     homed = "postgresql://root@db:26257/defaultdb?banko_gateway_region=eu-west-1"
     ctx = OpContext(url="postgresql://root@db:26257/defaultdb", vectors=VectorCache({}),
-                    region_urls={"eu-west-1": homed}, pin_regions=True)
+                    region_urls={"eu-west-1": homed})
     rng = random.Random(4)
     for op in ("page_load", "search", "deposit"):
         run_op(op, _user(region="eu-west-1"), ctx, rng)
-    assert [c["url"] for c in calls] == [homed] * 4
-    assert [c.get("region") for c in calls[:3]] == ["eu-west-1"] * 3
+    assert [c["url"] for c in calls] == [homed] * 4  # the reads name the region themselves (read_region)
     calls.clear()
     run_op("page_load", _user(region="eu-west-1"), OpContext(url="plain", vectors=VectorCache({})), rng)
-    assert [(c["url"], c.get("region")) for c in calls] == [("plain", None)] * 2
+    assert [c["url"] for c in calls] == ["plain"] * 2
 def test_a_declined_purchase_is_a_business_outcome(prepared, vectors, monkeypatch):
     def broke(*args, **kwargs):
         raise ledger.InsufficientFunds("Not enough available on that account")

@@ -291,6 +291,13 @@ def test_fresh_multi_region_database_is_born_regional():
         assert result.changed and not result.pending_conversions
         assert localities["expenses"] == "REGIONAL BY ROW"
         assert localities["users"] == "GLOBAL"
+        with get_engine(url).connect() as conn:
+            expenses_ddl = conn.execute(text("SELECT create_statement FROM [SHOW CREATE TABLE expenses]")).scalar()
+            transfer_keys = _unique_indexes(conn, "transfers")
+        # Region-scoped keys: an insert checks uniqueness in its own region only.
+        assert "PRIMARY KEY (crdb_region ASC, expense_id ASC)" in expenses_ddl
+        assert ["crdb_region", "user_id", "idempotency_key"] in transfer_keys.values()
+        assert ["user_id", "idempotency_key"] not in transfer_keys.values()
         print(f"fresh multi-region schema in {elapsed:.1f}s")
         # 26 tables, six of them with row-level security, measured 105 to 125 s
         # on a 6-node, 3-region cluster with realistic latency (October 2026).
@@ -299,6 +306,67 @@ def test_fresh_multi_region_database_is_born_regional():
         assert elapsed < 180
     finally:
         _drop(MR_URL, "banko_schema_mr_test")
+
+
+def _unique_indexes(conn, table: str) -> dict[str, list[str]]:
+    """Unique indexes and their explicit key columns (implicit ones left out)."""
+    out: dict[str, list[str]] = {}
+    for name, column, implicit in conn.execute(text(
+            f"SELECT index_name, column_name, implicit FROM [SHOW INDEXES FROM {table}] "
+            "WHERE NOT non_unique AND NOT storing ORDER BY index_name, seq_in_index")):
+        if not implicit:
+            out.setdefault(str(name), []).append(str(column))
+    return out
+
+
+def test_regional_money_keys_lead_with_the_region():
+    """On a multi-region database a key without the region is checked in
+    every region on each insert, so the expense id and the transfer
+    idempotency key lead with crdb_region there."""
+    sql = _sql(REGIONAL)
+    assert "crdb_region crdb_internal_region NOT VISIBLE NOT NULL" in sql["expenses"]
+    assert "PRIMARY KEY (crdb_region, expense_id)" in sql["expenses"]
+    assert "UNIQUE (crdb_region, user_id, idempotency_key)" in sql["transfers"]
+    assert "UNIQUE (user_id, idempotency_key)" not in sql["transfers"]
+
+
+def test_single_region_keys_are_unchanged():
+    sql = _sql(PLAIN)
+    assert "PRIMARY KEY (expense_id)" in sql["expenses"] and "crdb_region" not in sql["expenses"]
+    assert "UNIQUE (user_id, idempotency_key)" in sql["transfers"] and "crdb_region" not in sql["transfers"]
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_the_transfer_key_upgrade_leaves_single_region_databases_alone():
+    with get_engine(URL).connect() as conn:
+        assert S._scoped_transfer_key_upgrade(conn, PLAIN) == []
+        assert S._scoped_transfer_key_upgrade(conn, REGIONAL) == []  # no crdb_region on this cluster
+
+
+@pytest.mark.skipif(not MR_URL, reason="BANKO_TEST_MR_URL not set")
+def test_an_existing_regional_transfers_table_gets_the_region_scoped_key():
+    """Databases made multi-region by an older release keep a global
+    idempotency key; the upgrade swaps it for the region-scoped one in place
+    (the expenses primary key cannot be rebuilt in place on CockroachDB 26.3)."""
+    url = _scratch(MR_URL, "banko_scoped_key_test")
+    try:
+        with get_engine(url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            regions = [str(r[0]) for r in conn.execute(text("SELECT region FROM [SHOW REGIONS FROM CLUSTER]"))]
+            conn.execute(text(f'ALTER DATABASE banko_scoped_key_test SET PRIMARY REGION "{regions[0]}"'))
+            conn.execute(text("CREATE TABLE transfers (transfer_id UUID NOT NULL DEFAULT gen_random_uuid(), "
+                              "user_id UUID NOT NULL, idempotency_key STRING NOT NULL, PRIMARY KEY (transfer_id), "
+                              "UNIQUE (user_id, idempotency_key)) LOCALITY REGIONAL BY ROW"))
+            statements = S._scoped_transfer_key_upgrade(conn, S.Topology(regional=True))
+            assert statements
+            for sql in statements:
+                conn.execute(text(sql))
+            keys = _unique_indexes(conn, "transfers")
+            assert S._scoped_transfer_key_upgrade(conn, S.Topology(regional=True)) == []
+        assert ["crdb_region", "user_id", "idempotency_key"] in keys.values()
+        assert ["user_id", "idempotency_key"] not in keys.values()
+    finally:
+        _drop(MR_URL, "banko_scoped_key_test")
 
 
 MONEY = ("categories", "accounts", "transfers", "ledger_entries", "goals", "user_data_versions")
@@ -474,3 +542,33 @@ def test_a_boot_waits_for_a_live_apply_longer_than_the_lease_ttl(scratch_url, mo
             assert conn.execute(text("SELECT value FROM banko_meta WHERE key = 'schema_lock'")).scalar() == "holder"
     finally:
         heartbeat.stop()
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_a_single_region_database_has_no_region_scoped_keys():
+    from banko_ai.db.regions import scoped_key
+
+    with get_engine(URL).connect() as conn:
+        assert scoped_key(conn, "expenses") is False and scoped_key(conn, "transfers") is False
+
+
+def test_reads_name_the_home_region_only_when_that_is_safe_and_useful(monkeypatch):
+    """A read may name the user's region when the connection has no
+    row-level security (CockroachDB keeps the filter out of an RLS scan),
+    the money tables are REGIONAL BY ROW, and all the user's money rows are
+    in their home region; otherwise reads stay as they are."""
+    from banko_ai.db import regions as R
+    from banko_ai.db import rls
+
+    monkeypatch.setattr(R, "is_regional_deployment", lambda url: True)
+    monkeypatch.setattr(R, "money_tables_regional", lambda url: True)
+    monkeypatch.setattr(R, "user_home_region", lambda user_id, url=None: {"u1": "eu-west-1", "u2": "us-east-1"}.get(user_id))
+    monkeypatch.setattr(R, "rows_home", lambda user_id, region, url=None: user_id == "u1")
+    monkeypatch.setattr(rls, "app_url", lambda: "postgresql://banko_app@db:26257/defaultdb")
+    assert R.read_region("u1", None) == "eu-west-1"
+    assert R.read_region("u1", "postgresql://root@db:26257/defaultdb?application_name=banko-load") == "eu-west-1"
+    assert R.read_region("u1", "postgresql://banko_app@db:26257/defaultdb") is None  # the RLS path
+    assert R.read_region("u2", None) is None    # some rows live elsewhere
+    assert R.read_region("u3", None) is None    # no home region
+    monkeypatch.setattr(R, "money_tables_regional", lambda url: False)
+    assert R.read_region("u1", None) is None

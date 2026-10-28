@@ -17,7 +17,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
 
 from ..config.settings import get_config
-from ..db.engine import _sqlstate, get_engine
+from ..db.engine import _sqlstate, get_engine, routed
 
 log = logging.getLogger("banko.services")
 _FOLLOWER = "SET TRANSACTION AS OF SYSTEM TIME follower_read_timestamp()"
@@ -67,7 +67,7 @@ def read_session(user_id: str, *, url: str | None = None, follower: bool = False
     it). follower=True reads a few seconds in the past from the nearest
     replica, for reports only."""
     use_follower = follower and get_config().reporting_follower_reads and follower_available(url)
-    with get_engine(url).begin() as conn:
+    with get_engine(routed(url, user_id)).begin() as conn:
         if use_follower:
             follower_snapshot(conn)
         conn.execute(text("SELECT set_config('banko.user_id', :uid, true)"), {"uid": str(user_id)})

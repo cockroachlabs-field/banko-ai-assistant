@@ -169,3 +169,65 @@ def test_a_connection_that_could_not_be_opened_counts_as_lost():
     err = OperationalError("connect", {}, psycopg.OperationalError("connection failed: Connection refused"))
     assert E.is_retryable(err, idempotent=True)
     assert not E.is_retryable(err, idempotent=False)
+
+
+# Each signed-in user is served through a pool homed on their region, on a
+# multi-region cluster, so their statements start where their rows live.
+
+BASE = "postgresql://root@db:26257/defaultdb?sslmode=disable"
+
+
+def _regional(monkeypatch, homes: dict, regional: bool = True):
+    from banko_ai.db import regions
+    monkeypatch.setattr(regions, "is_regional_deployment", lambda url: regional)
+    monkeypatch.setattr(regions, "_owner", lambda url: url or BASE)
+    monkeypatch.setattr(regions, "user_home_region", lambda user_id, url=None: homes.get(user_id))
+
+
+def test_a_user_is_routed_through_their_home_region(monkeypatch):
+    _regional(monkeypatch, {"u1": "eu-west-1"})
+    assert E.routed(BASE, "u1") == E.with_gateway_region(BASE, "eu-west-1")
+
+
+def test_routing_leaves_alone_what_it_cannot_or_should_not_home(monkeypatch):
+    _regional(monkeypatch, {"u1": "eu-west-1"})
+    homed = E.with_gateway_region(BASE, "us-east-1")
+    assert E.routed(homed, "u1") == homed        # already homed (the load simulator's)
+    assert E.routed(BASE, None) == BASE          # no user
+    assert E.routed(BASE, "nobody") == BASE      # no home region
+    _regional(monkeypatch, {"u1": "eu-west-1"}, regional=False)
+    assert E.routed(BASE, "u1") == BASE          # a single-region cluster
+
+
+def test_routing_can_be_turned_off(monkeypatch):
+    from banko_ai.config.settings import reset_config
+    _regional(monkeypatch, {"u1": "eu-west-1"})
+    monkeypatch.setenv("ROUTE_BY_HOME_REGION", "false")
+    reset_config()
+    try:
+        assert E.routed(BASE, "u1") == BASE
+    finally:
+        monkeypatch.delenv("ROUTE_BY_HOME_REGION")
+        reset_config()
+
+
+def test_transactions_and_user_sessions_use_the_routed_pool(monkeypatch):
+    _regional(monkeypatch, {"u1": "eu-west-1"})
+    seen = []
+
+    class FakeBegin:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, *exc):
+            return False
+
+    class FakeEngine:
+        def begin(self):
+            return FakeBegin()
+
+    monkeypatch.setattr(E, "get_engine", lambda url=None: seen.append(url) or FakeEngine())
+    E.run_transaction(lambda conn: None, url=BASE, user_id="u1")
+    with E.user_session("u1", url=BASE):
+        pass
+    assert seen == [E.with_gateway_region(BASE, "eu-west-1")] * 2

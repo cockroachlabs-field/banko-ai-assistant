@@ -330,13 +330,21 @@ real ledger, so money integrity is checked while it runs. Latency counts
 from when each operation was due, so a struggling cluster shows up as
 latency and dropped operations instead of quietly less load.
 
-On a multi-region cluster each customer is served the way a regional
-deployment of the app would serve them: through a node in their home
-region, with reads that stay in that region and only a write's commit
-crossing to another one. That needs a database URL that reaches nodes in
-every region, such as the chaos demo's load balancer; when a region goes
-down its customers move to a surviving region and come home after it
-recovers.
+On a multi-region cluster every customer, simulated or signed in, is
+served the way a regional deployment of the app would serve them: through
+a node in their home region, with reads that stay in that region. That
+needs a database URL that reaches nodes in every region, such as the chaos
+demo's load balancer; when a region goes down its customers move to a
+surviving region and come home after it recovers. A database created on a
+multi-region cluster also keys expenses and transfer idempotency by region,
+so a write's commit is its only trip to another region; a database that
+became multi-region later keeps a global expense key, which adds one round
+trip to each purchase.
+
+For a chaos demo with realistic latency, start Banko with `RLS_MODE=off`.
+With row-level security on, CockroachDB 26.3 plans every statement after a
+round trip to a system range and keeps region filters out of the scan, so
+pages take a second or two instead of tens of milliseconds.
 
 With the chaos control plane running, set `CHAOS_CONTROL_URL` (and
 `CHAOS_CONTROL_TOKEN` if it has one) and the chaos card appears: take a

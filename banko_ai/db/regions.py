@@ -1,6 +1,7 @@
 """Region detection and topology helpers for multi-region deployments."""
 
 import logging
+import time
 
 from sqlalchemy import text
 
@@ -198,6 +199,9 @@ def resolve_user_region_cache_clear() -> None:
 
 def clear_region_caches() -> None:
     """Forget every cached topology answer after the schema changes it."""
+    _scoped_keys.clear()
+    _home_regions.clear()
+    _rows_home.clear()
     _cluster_regions_cache.clear()
     _database_regions_cache.clear()
     _tables_ready_cache.clear()
@@ -260,6 +264,151 @@ def money_region(conn, user_id: str, url: str | None = None) -> str | None:
     row = conn.execute(text("SELECT home_region FROM users WHERE user_id = CAST(:u AS UUID)"),
                        {"u": str(user_id)}).fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+# The unique keys a database may have scoped to the region (schema.py):
+# expenses created multi-region by Banko 2.0, transfers after the upgrade.
+_SCOPED = {"expenses": ["crdb_region", "expense_id"], "transfers": ["crdb_region", "user_id", "idempotency_key"]}
+SCOPED_RECHECK_S = 60.0  # a "not scoped" answer is asked again after this long (an upgrade may have run elsewhere)
+_scoped_keys: dict[tuple[str, str], tuple[bool, float]] = {}
+
+
+def scoped_key(conn, table: str) -> bool:
+    """Whether this table's unique key leads with crdb_region, so ON CONFLICT
+    must name the region too and the row's region must not depend on the
+    gateway. Positive answers are kept per database; negative ones for
+    SCOPED_RECHECK_S."""
+    key = (conn.engine.url.render_as_string(hide_password=True), table)
+    now = time.monotonic()
+    known = _scoped_keys.get(key)
+    if known and (known[0] or now - known[1] < SCOPED_RECHECK_S):
+        return known[0]
+    keys: dict[str, list[str]] = {}
+    for name, column in conn.execute(text(
+            f"SELECT index_name, column_name FROM [SHOW INDEXES FROM {table}] "
+            "WHERE NOT non_unique AND NOT storing AND NOT implicit ORDER BY index_name, seq_in_index")):
+        keys.setdefault(str(name), []).append(str(column))
+    found = _SCOPED[table] in keys.values()
+    _scoped_keys[key] = (found, now)
+    return found
+
+
+HOME_REGION_TTL_S = 600.0
+_home_regions: dict[tuple[str, str], tuple[str | None, float]] = {}
+
+
+def _owner(url: str | None) -> str:
+    """The URL to read region facts with: the one a call targets, or the
+    configured database; never the row-level security role's."""
+    from ..config.settings import get_config
+    from . import rls
+
+    cfg = get_config()
+    return cfg.database_url if not url or url == rls.app_url() else url
+
+
+def _db_key(url: str) -> str:
+    """One cache key per database, whatever pool options the URL carries."""
+    from sqlalchemy.engine import make_url
+
+    from ..utils.db_retry import normalize_db_url
+
+    parsed = make_url(normalize_db_url(url))
+    return parsed.set(query={k: v for k, v in parsed.query.items() if k == "sslmode"}).render_as_string(
+        hide_password=True)
+
+
+def user_home_region(user_id: str, url: str | None = None) -> str | None:
+    """The user's home region in the database url targets, remembered for
+    HOME_REGION_TTL_S. users is GLOBAL, so a miss is a local read."""
+    base = _owner(url)
+    key = (_db_key(base), str(user_id))
+    now = time.monotonic()
+    known = _home_regions.get(key)
+    if known and now - known[1] < HOME_REGION_TTL_S:
+        return known[0]
+    with get_engine(base).connect() as conn:
+        region = home_region(conn, user_id)
+    _home_regions[key] = (region, now)
+    return region
+
+
+ROWS_HOME_TTL_S = 600.0
+_rows_home: dict[tuple[str, str], tuple[bool, float]] = {}
+_READ_TABLES = ("accounts", "ledger_entries", "expenses")  # the tables region-pinned reads touch
+
+
+def _users_with_rows_away(user_ids: list[str], url: str | None) -> set[str]:
+    """Which of these users have a money row outside their home region."""
+    away: set[str] = set()
+    with get_engine(_owner(url)).connect() as conn:
+        for table in _READ_TABLES:
+            away |= {str(r[0]) for r in conn.execute(text(f"""
+                SELECT DISTINCT t.user_id FROM {table} AS t JOIN users AS u ON u.user_id = t.user_id
+                WHERE t.user_id = ANY(CAST(:ids AS UUID[]))
+                  AND t.crdb_region::STRING IS DISTINCT FROM u.home_region"""), {"ids": list(user_ids)})}
+    return away
+
+
+def rows_home(user_id: str, region: str, url: str | None = None) -> bool:
+    """Whether every money row this user's reads touch lives in their home
+    region, in the database url targets. A yes is kept (new rows are written
+    there); a no is checked again after ROWS_HOME_TTL_S."""
+    key = (_db_key(_owner(url)), str(user_id))
+    now = time.monotonic()
+    known = _rows_home.get(key)
+    if known and (known[0] or now - known[1] < ROWS_HOME_TTL_S):
+        return known[0]
+    home = str(user_id) not in _users_with_rows_away([str(user_id)], url)
+    _rows_home[key] = (home, now)
+    return home
+
+
+def prime_rows_home(user_ids: list[str], url: str | None = None) -> None:
+    """rows_home for many users in one pass (the load simulator's customers,
+    when a run starts)."""
+    if not user_ids:
+        return
+    away = _users_with_rows_away(user_ids, url)
+    db, now = _db_key(_owner(url)), time.monotonic()
+    for uid in user_ids:
+        _rows_home[(db, str(uid))] = (str(uid) not in away, now)
+
+
+def read_region(user_id: str, url: str | None) -> str | None:
+    """The region this user's reads may name (region_pin), or None. Only
+    with routing by home region on, on a connection without row-level
+    security (CockroachDB 26.3 keeps the region filter out of an RLS scan),
+    when every money table is REGIONAL BY ROW, and for a user whose money
+    rows all live in their home region."""
+    from ..config.settings import get_config
+    from . import rls
+
+    if not get_config().route_by_home_region:
+        return None
+    app = rls.app_url()
+    if url is not None and app is not None and url == app:
+        return None
+    base = _owner(url)
+    if not is_regional_deployment(base) or not money_tables_regional(base):
+        return None
+    region = user_home_region(str(user_id), base)
+    if not region or not rows_home(str(user_id), region, base):
+        return None
+    return region
+
+
+def home_region(conn, user_id: str) -> str | None:
+    """The user's home region from the GLOBAL users table, or None."""
+    row = conn.execute(text("SELECT home_region FROM users WHERE user_id = CAST(:u AS UUID)"),
+                       {"u": str(user_id)}).fetchone()
+    return str(row[0]) if row and row[0] else None
+
+
+# A region-scoped row needs a region that never depends on the gateway, or a
+# retry through another region could write it twice: the home region, or the
+# database's primary region for a user without one. Reads :scoped_region.
+SCOPED_REGION_VALUE = "default_to_database_primary_region(:scoped_region)::crdb_internal_region, "
 
 
 def region_columns(region: str | None) -> tuple[str, str]:
