@@ -9,6 +9,7 @@ import click
 
 from .config.settings import get_config, set_config
 from .db.engine import mask_url
+from .load_cli import load as load_group
 
 
 @click.group()
@@ -522,6 +523,9 @@ def clear_demo_users(yes):
     counts = clear_fn(config.database_url)
 
     click.echo(f'Deleted {counts["users"]} demo users and every row they owned.')
+
+
+cli.add_command(load_group)
 
 
 def main():
