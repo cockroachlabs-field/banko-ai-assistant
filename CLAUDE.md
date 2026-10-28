@@ -66,7 +66,7 @@ Schema for `expenses` table is **shared** between both repos — keep them in sy
 
 ## Tech stack quick reference
 
-- **Python**: 3.10+ (3.12 recommended)
+- **Python**: 3.11+ (3.12 recommended). 3.10 was dropped for 2.0: it reached end of life in October 2026, and pillow 13 and filelock 4.2, which close known vulnerabilities, require 3.11.
 - **CockroachDB**: 25.4.0+ (vector indexes are GA)
 - **Embeddings**: `all-MiniLM-L6-v2` via sentence-transformers 6.x (384-dim, local). Each major jump (3 to 5 in July 2026, 5 to 6 in October 2026) landed only after `tests/test_embedding_parity.py` showed identical vectors, so nothing stored in CRDB needed re-embedding.
 - **Agent framework**: LangGraph 1.x

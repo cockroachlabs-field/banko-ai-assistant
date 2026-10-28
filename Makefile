@@ -34,13 +34,11 @@ lockcheck:
 	uv lock --check
 
 audit:
-	@# Known vulnerabilities in every locked Python package, every extra and
-	@# dependency group included. It needs the network, so it is its own
+	@# Known vulnerabilities in every version uv.lock pins, every extra,
+	@# dependency group and Python version included, through the OSV feed
+	@# (see scripts/audit_lock.py). It needs the network, so it is its own
 	@# target instead of part of test-local. Run it before any push.
-	@req=$$(mktemp) && \
-	uv export --frozen --format requirements-txt --all-extras --all-groups --no-hashes --no-emit-project -o $$req >/dev/null && \
-	uvx pip-audit -r $$req --no-deps --disable-pip --progress-spinner off; \
-	status=$$?; rm -f $$req; exit $$status
+	uv run --no-project python scripts/audit_lock.py
 	uv run --no-project --with truststore python scripts/audit_vendor.py
 
 lint:

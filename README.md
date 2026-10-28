@@ -67,7 +67,7 @@ vector search.
 
 ### Prerequisites
 
-- Python 3.10+ (3.12 recommended)
+- Python 3.11+ (3.12 recommended)
 - CockroachDB v25.4.0+ (vector indexes are GA)
 - An API key for at least one provider (watsonx, OpenAI, AWS, or Gemini),
   or a local model through Ollama (no key, no internet)

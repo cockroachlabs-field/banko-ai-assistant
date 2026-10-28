@@ -14,7 +14,7 @@ authors = [
 ]
 license = "MIT"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -22,7 +22,6 @@ classifiers = [
     "Topic :: Office/Business :: Financial",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Operating System :: OS Independent"
@@ -130,8 +129,8 @@ ignore = ["E501", "E402", "F401"]
 
 [tool.mypy]
 # 3.12 to match the version CI lints with. numpy 2.5 stubs use PEP 695
-# type statements, which mypy refuses under a 3.10 target. Runtime support
-# for 3.10 is still covered by the import matrix in ci.yml.
+# type statements, which mypy refuses under an older target. Runtime support
+# for 3.11 is still covered by the import matrix in ci.yml.
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
