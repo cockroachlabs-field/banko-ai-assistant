@@ -314,15 +314,16 @@ class TrafficSimulator:
             if t is not me:
                 t.join(max(0.0, deadline - self._clock()))
         with current.busy_lock:
-            t = dict(current.totals)
+            totals = dict(current.totals)
         with self._lock:
-            self._last_totals = t
+            self._last_totals = totals
             if self._run is current:
                 self._run, self._state = None, "idle"
         if current.started is not None:
             elapsed = self._clock() - current.started
-            self.events.publish(f"Load stopped after {elapsed:.0f} s: {t.get('ok', 0) + t.get('declined', 0):,} "
-                                f"operations, {t.get('error', 0):,} errors, {t.get('dropped', 0):,} dropped",
+            done = totals.get("ok", 0) + totals.get("declined", 0)
+            self.events.publish(f"Load stopped after {elapsed:.0f} s: {done:,} operations, "
+                                f"{totals.get('error', 0):,} errors, {totals.get('dropped', 0):,} dropped",
                                 source="load")
         return self.status()
 
