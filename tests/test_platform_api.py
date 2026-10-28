@@ -209,3 +209,14 @@ def test_load_users_prepare_and_clear(monkeypatch, fake_sim):
     fake_sim.state = "idle"
     assert client.post("/api/v1/platform/load/users", json={"action": "clear"}).get_json()["removed"] >= 2
     assert client.post("/api/v1/platform/load/users", json={"action": "prepare", "count": 0}).status_code == 400
+
+
+def test_live_events_start_over_for_a_cursor_from_before_a_restart(monkeypatch):
+    client = _signed_in(monkeypatch)
+    first = client.get("/api/v1/platform/live").get_json()
+    epoch = first["events_epoch"]
+    events.publish("after the cursor", source="test")
+    newest = events.since(None)[-1]["id"]
+    assert client.get(f"/api/v1/platform/live?since={newest}&epoch={epoch}").get_json()["events"] == []
+    stale = client.get(f"/api/v1/platform/live?since={newest + 1000}&epoch=before-restart").get_json()
+    assert any(e["text"] == "after the cursor" for e in stale["events"])

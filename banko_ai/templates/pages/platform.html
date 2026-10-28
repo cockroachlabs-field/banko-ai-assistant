@@ -39,7 +39,7 @@
         </template>
         <div class="b-actions">
           <button class="b-btn primary" type="submit" x-show="!running()" :disabled="!controls.load || busy">Start load</button>
-          <button class="b-btn" type="button" x-show="running()" x-cloak :disabled="!controls.load || busy" @click="apply()">Apply changes</button>
+          <button class="b-btn" type="button" x-show="canApply()" x-cloak :disabled="!controls.load || busy" @click="apply()">Apply changes</button>
           <button class="b-btn danger" type="button" x-show="running()" x-cloak :disabled="!controls.load || busy" @click="stop()">{{ icon('square') }}Stop</button>
           <button class="b-btn ghost sm" type="button" x-show="!running()" :disabled="!controls.load || busy" @click="clearUsers()">{{ icon('trash-2') }}Clear load customers</button>
         </div>
@@ -126,7 +126,7 @@
     <!-- Money integrity -->
     <div class="b-card" x-show="data && data.integrity" x-cloak>
       <div class="b-row"><div class="b-lbl">Money integrity</div>
-        <button class="b-btn ghost sm" type="button" :disabled="checking" @click="checkIntegrity()">{{ icon('refresh-cw') }}Check now</button></div>
+        <button class="b-btn ghost sm" type="button" :disabled="checking || !controls.load" @click="checkIntegrity()">{{ icon('refresh-cw') }}Check now</button></div>
       <template x-if="data && data.integrity"><div style="margin-top:8px">
         <span class="b-tag" :class="data.integrity.ok ? 'ok' : (data.integrity.skipped ? 'warn' : 'bad')"
               x-text="data.integrity.ok ? 'Zero drift' : (data.integrity.skipped ? 'Skipped' : data.integrity.drift + ' accounts drifted')"></span>

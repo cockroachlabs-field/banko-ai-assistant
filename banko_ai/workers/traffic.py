@@ -197,6 +197,7 @@ class _Run:
         self.last_burst = -1e9
         self.busy: Counter[str] = Counter()  # customers with an operation in flight
         self.busy_lock = threading.Lock()
+        self.totals: Counter[str] = Counter()  # outcomes over the whole run (metrics keep 15 minutes)
         self.set_mix(config.mix())
 
     def set_mix(self, mix: dict[str, int]) -> None:
@@ -226,6 +227,7 @@ class TrafficSimulator:
         self._last_config: LoadConfig | None = None
         self._serving: dict[str, dict] = {}
         self._at_home: dict[str, _Settled] = {}
+        self._last_totals: dict[str, int] = {}
         self._vectors: VectorCache | None = None
         self._ctx: OpContext | None = None
 
@@ -290,6 +292,7 @@ class TrafficSimulator:
                 raise LoadConfigError("Start the load first; there is nothing running to change")
             old, run.config, self._last_config = run.config, config, config
             run.set_mix(config.mix())
+        run.queue.maxsize = max(4, config.workers * 4)
         if config.workers > old.workers:
             self._spawn_workers(run)
         if config.users != len(run.users):
@@ -310,16 +313,29 @@ class TrafficSimulator:
         for t in list(current.threads):
             if t is not me:
                 t.join(max(0.0, deadline - self._clock()))
-        span = int(self._clock() - (current.started or self._clock())) + 2
-        s = self.metrics.summary("load", window_s=span, now=self.metrics.clock() + 1)
+        with current.busy_lock:
+            t = dict(current.totals)
         with self._lock:
+            self._last_totals = t
             if self._run is current:
                 self._run, self._state = None, "idle"
         if current.started is not None:
             elapsed = self._clock() - current.started
-            self.events.publish(f"Load stopped after {elapsed:.0f} s: {s['ok'] + s['declined']:,} operations, "
-                                f"{s['errors']:,} errors, {s['dropped']:,} dropped", source="load")
+            self.events.publish(f"Load stopped after {elapsed:.0f} s: {t.get('ok', 0) + t.get('declined', 0):,} "
+                                f"operations, {t.get('error', 0):,} errors, {t.get('dropped', 0):,} dropped",
+                                source="load")
         return self.status()
+
+    def totals(self) -> dict[str, int]:
+        """Outcomes (ok, declined, error, dropped) over the whole of the run
+        in progress, or of the last one."""
+        with self._lock:
+            run = self._run
+            last = self._last_totals
+        if run is None:
+            return dict(last)
+        with run.busy_lock:
+            return dict(run.totals)
 
     def status(self) -> dict:
         with self._lock:
@@ -336,6 +352,7 @@ class TrafficSimulator:
     # -- the run -------------------------------------------------------------------------------
 
     def _boot(self, run: _Run) -> None:
+        step = "users"
         try:
             if self.url and self._pool_size:  # the simulator's own pool, created on its first run
                 from ..db.engine import get_engine
@@ -345,20 +362,26 @@ class TrafficSimulator:
                 raise RuntimeError("no load users")
             run.rng.shuffle(users)
             if self._runner is None:
+                step = "model"
                 self._vectors = self._vectors or VectorCache.build()
+                step = "users"
                 ctx = self._ctx = self._context(users)
                 run.runner = lambda op, user, rng: run_op(op, user, ctx, rng)
             else:
                 run.runner = self._runner
             run.users, run.picker = users, UserPicker(users)
         except Exception:
-            log.warning("load users could not be prepared", exc_info=True)
+            log.warning("load could not start (%s)", step, exc_info=True)
+            error, event = ((("The embedding model could not be loaded, so load cannot start: the server log "
+                              "has the reason."), "Load could not start: the embedding model could not be loaded.")
+                            if step == "model" else
+                            ("Load users could not be prepared: check that the database is reachable.",
+                             "Load could not start: the load users could not be prepared."))
             with self._lock:
                 if self._run is run:
                     self._run, self._state = None, "idle"
-                    self._error = "Load users could not be prepared: check that the database is reachable."
-            self.events.publish("Load could not start: the load users could not be prepared.", level="bad",
-                                source="load")
+                    self._error = error
+            self.events.publish(event, level="bad", source="load")
             return
         with self._lock:
             if self._run is not run or run.stop.is_set():
@@ -416,7 +439,7 @@ class TrafficSimulator:
             try:
                 run.queue.put_nowait((op, user, next_at))
             except queue.Full:
-                self._record(op, user, outcome="dropped")
+                self._record(op, user, outcome="dropped", run=run)
 
     def _work(self, run: _Run, index: int) -> None:
         rng = random.Random(run.rng.random() + index)
@@ -439,7 +462,7 @@ class TrafficSimulator:
                 with run.busy_lock:
                     run.busy[user.user_id] -= 1
             self._record(op, user, outcome=outcome, ms=(self._clock() - intended) * 1000,
-                         error_class=error_class, retries=retries)
+                         error_class=error_class, retries=retries, run=run)
             if error_class:
                 self._note_error(run, error_class)
 
@@ -461,7 +484,10 @@ class TrafficSimulator:
         return user
 
     def _record(self, op: str, user: LoadUser, *, outcome: str, ms: float | None = None,
-                error_class: str | None = None, retries: int = 0) -> None:
+                error_class: str | None = None, retries: int = 0, run: _Run | None = None) -> None:
+        if run is not None:
+            with run.busy_lock:
+                run.totals[outcome] += 1
         for series in ("load", f"load.op.{op}", f"load.region.{user.region or 'all'}"):
             self.metrics.record(series, ms=ms, outcome=outcome, error_class=error_class, retries=retries)
 
@@ -482,13 +508,17 @@ class TrafficSimulator:
     def _watch_integrity(self, run: _Run) -> None:
         if self._integrity is None:
             return
-        drifted_before = False
+        drifted_before = skipped_said = False
         while not run.stop.wait(get_config().load_integrity_interval_seconds):
             try:
                 report = self._integrity()
             except Exception:
                 log.warning("integrity check during load failed", exc_info=True)
                 continue
+            skipped = getattr(report, "skipped", None)
+            if skipped and not skipped_said:
+                skipped_said = True
+                self.events.publish(f"Money integrity check skipped: {skipped}", level="warn", source="integrity")
             drifted = bool(report is not None and getattr(report, "drifted", ()))
             if drifted:
                 self.events.publish(f"Money integrity: {len(report.drifted)} accounts drifted", level="bad",

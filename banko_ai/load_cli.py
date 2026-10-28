@@ -144,12 +144,15 @@ def run(profile, users, rate, workers, duration, ramp, weights, max_error_rate):
         sys.exit(1)
     span = int(time.monotonic() - started) + 3
     s = sim.metrics.summary("load", window_s=span, now=sim.metrics.clock() + 1)
-    done = s["ok"] + s["declined"]
-    click.echo(f"Summary: {done:,} operations ({s['declined']:,} declined), {s['errors']:,} errors, "
-               f"{s['dropped']:,} dropped; p50 {_ms(s['p50'])}, p95 {_ms(s['p95'])}, p99 {_ms(s['p99'])}")
-    attempted = done + s["errors"]
-    if max_error_rate is not None and attempted and s["errors"] / attempted > max_error_rate:
-        click.echo(f"Error rate {s['errors'] / attempted:.2%} is above {max_error_rate:.2%}")
+    t = sim.totals()  # the whole run; latency percentiles come from what the metrics still keep
+    done, errors = t.get("ok", 0) + t.get("declined", 0), t.get("error", 0)
+    kept = "" if span <= sim.metrics.retention_s else f" (last {sim.metrics.retention_s // 60} min)"
+    click.echo(f"Summary: {done:,} operations ({t.get('declined', 0):,} declined), {errors:,} errors, "
+               f"{t.get('dropped', 0):,} dropped; p50 {_ms(s['p50'])}, p95 {_ms(s['p95'])}, "
+               f"p99 {_ms(s['p99'])}{kept}")
+    attempted = done + errors
+    if max_error_rate is not None and attempted and errors / attempted > max_error_rate:
+        click.echo(f"Error rate {errors / attempted:.2%} is above {max_error_rate:.2%}")
         sys.exit(1)
 
 

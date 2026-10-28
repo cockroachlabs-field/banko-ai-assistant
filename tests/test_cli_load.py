@@ -32,6 +32,9 @@ class FakeSim:
         self.stopped = True
         return self.status()
 
+    def totals(self):
+        return {"ok": self._ok, "error": self._errors}
+
 
 def _run(monkeypatch, sim, *args):
     monkeypatch.setattr(L, "_simulator", lambda: sim)

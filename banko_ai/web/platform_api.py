@@ -242,7 +242,10 @@ def live():
         "series": metrics.timeline("load", seconds=300),
         "http": window("http"),
         "db": {"retries_s": retries["ops_s"], "failures_s": failures["ops_s"]},
-        "events": events.since(request.args.get("since", type=int)),
+        # A cursor from another process (the app restarted) starts over.
+        "events": events.since(request.args.get("since", type=int)
+                               if request.args.get("epoch") in (None, events.epoch) else None),
+        "events_epoch": events.epoch,
         "controls": _controls(),
         "as_of": time.time(),
     })

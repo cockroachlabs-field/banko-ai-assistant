@@ -4,6 +4,7 @@ kept in memory."""
 
 from __future__ import annotations
 
+import secrets
 import threading
 import time
 from collections import deque
@@ -15,6 +16,9 @@ LEVELS = ("info", "good", "warn", "bad")
 class EventBus:
     def __init__(self, capacity: int = 500, clock: Callable[[], float] = time.time):
         self.clock = clock
+        # Ids restart at 1 in every process; the epoch tells a reader that
+        # its cursor belongs to a process that is gone.
+        self.epoch = secrets.token_hex(4)
         self._events: deque[dict] = deque(maxlen=capacity)
         self._next_id = 1
         self._lock = threading.Lock()

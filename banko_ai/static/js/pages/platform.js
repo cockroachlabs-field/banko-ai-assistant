@@ -11,7 +11,7 @@ document.addEventListener("alpine:init", () => {
                     sql: "From SQL: replicas only, liveness unknown" };
 
   Alpine.data("platformPage", () => ({
-    live: null, cluster: null, data: null, events: [], lastEvent: null, offline: false,
+    live: null, cluster: null, data: null, events: [], lastEvent: null, eventsEpoch: null, offline: false,
     controls: { load: true, chaos: false, defaults: { users: 100, rate: 50, workers: 16 },
                 limits: { users: 2000, rate: 2000, workers: 64 } },
     form: { profile: "balanced", users: 100, rate: 50, workers: 16, duration_s: 0, ramp_s: 10,
@@ -43,7 +43,9 @@ document.addEventListener("alpine:init", () => {
       tick();
     },
     async fetch(name) {
-      const path = name === "live" ? "/api/v1/platform/live?since=" + (this.lastEvent ?? "") : "/api/v1/platform/" + name;
+      const path = name === "live"
+        ? "/api/v1/platform/live?since=" + (this.lastEvent ?? "") + "&epoch=" + (this.eventsEpoch ?? "")
+        : "/api/v1/platform/" + name;
       try {
         const body = await Banko.api(path, { signal: AbortSignal.timeout(8000) });
         if (name === "live") this.receiveLive(body);
@@ -56,6 +58,11 @@ document.addEventListener("alpine:init", () => {
     receiveLive(body) {
       this.live = body;
       this.controls = body.controls;
+      if (body.events_epoch !== this.eventsEpoch) {  // the app restarted: its ids start over
+        this.eventsEpoch = body.events_epoch;
+        this.lastEvent = null;
+        this.events = [];
+      }
       const fresh = body.events.filter((e) => this.lastEvent == null || e.id > this.lastEvent);
       if (fresh.length) {
         this.lastEvent = fresh[fresh.length - 1].id;
@@ -109,6 +116,7 @@ document.addEventListener("alpine:init", () => {
 
     // -- state ----------------------------------------------------------------------------------
     running() { return !!this.live && ["preparing", "running", "stopping"].includes(this.live.load.state); },
+    canApply() { return !!this.live && this.live.load.state === "running"; },
     sum(key) { return this.live ? this.live.summary[key] : null; },
     stateText() {
       if (!this.live) return "Connecting";

@@ -29,3 +29,9 @@ def test_since_limits_to_the_newest():
     for i in range(10):
         bus.publish(f"e{i}")
     assert [e["text"] for e in bus.since(None, limit=2)] == ["e8", "e9"]
+
+
+def test_each_bus_has_its_own_epoch():
+    """Event ids start at 1 in every process; the epoch tells a page that
+    the app restarted, so it stops waiting for ids it already passed."""
+    assert EventBus().epoch != EventBus().epoch
