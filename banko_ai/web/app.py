@@ -47,6 +47,7 @@ from ..db.engine import get_engine, mask_url
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..observability.metrics import metrics
+from ..services.load_users import LOAD_PREFIX
 from ..services.profile import get_profiles
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import get_database_url
@@ -564,6 +565,13 @@ def create_app() -> Flask:
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", username):
             flash('Usernames are 1-32 characters: letters, digits, '
                   'dot, dash, underscore.', 'error')
+            return _login_page(username='',
+                               regions=detect_database_regions(config.database_url),
+                               show_signup=True)
+        # The load simulator's customers own the load- names: it moves their
+        # money and Clear load customers deletes them.
+        if username.lower().startswith(LOAD_PREFIX):
+            flash(f'Usernames starting with "{LOAD_PREFIX}" are reserved for the load simulator.', 'error')
             return _login_page(username='',
                                regions=detect_database_regions(config.database_url),
                                show_signup=True)

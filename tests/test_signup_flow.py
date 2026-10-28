@@ -130,3 +130,14 @@ def test_login_page_radios_not_required_when_hidden(client):
     html = r.get_data(as_text=True)
     assert 'name="spending_style"' in html
     assert "required" not in html.split('id="signup-section"')[1].split("</form>")[0]
+
+
+def test_load_customer_names_are_reserved(client):
+    """Load customers are the load- users: the simulator moves their money
+    and Clear load customers deletes them, so nobody may sign up as one."""
+    from banko_ai.services.load_users import LOAD_PREFIX
+
+    for name in (f"{LOAD_PREFIX}test", f"{LOAD_PREFIX.upper()}Visitor"):
+        r = client.post("/signup", data={"username": name, "spending_style": "saver"})
+        assert r.status_code == 200 and b"reserved" in r.data, name
+        assert UserManager(DB).get_by_username(name) is None
