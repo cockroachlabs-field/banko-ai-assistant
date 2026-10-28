@@ -12,11 +12,11 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, TypeVar
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection, Engine, make_url
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, DisconnectionError
 
 from ..config.settings import get_config
 from ..observability.metrics import metrics
@@ -32,6 +32,10 @@ RETRYABLE_SQLSTATES = {"40001"}            # serialization failure: always safe 
 AMBIGUOUS_SQLSTATES = {"40003"}            # result unknown: retry only idempotent work
 CONNECTION_SQLSTATE_PREFIXES = ("08", "57P")
 
+_GATEWAY_REGION = "banko_gateway_region"   # URL parameter: the pool's home region, never sent to the server
+HOME_ATTEMPTS = 24                         # connections tried for one through the home region
+REHOME_AFTER_S = 15.0                      # how long a connection that landed elsewhere waits to try home again
+
 
 def with_application_name(url: str, name: str) -> str:
     """The URL with an application_name, which gives it a pool of its own in
@@ -39,10 +43,80 @@ def with_application_name(url: str, name: str) -> str:
     return make_url(url).update_query_dict({"application_name": name}).render_as_string(hide_password=False)
 
 
+def with_gateway_region(url: str, region: str) -> str:
+    """The URL with a home region, which gives it a pool of its own in
+    get_engine whose connections enter the cluster through a node in that
+    region. The load simulator keeps one per region, so each customer is
+    served where they live, as a regional deployment of the app would."""
+    return make_url(url).update_query_dict({_GATEWAY_REGION: region}).render_as_string(hide_password=False)
+
+
+def _gateway_of(conn: Any) -> str | None:
+    """The region of the node a DBAPI connection entered through, or None
+    on a cluster whose nodes have no region."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT gateway_region()")
+            row = cur.fetchone()
+        return str(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def homed_connection(connect: Callable[[], Any], region: str, *,
+                     attempts: int = HOME_ATTEMPTS) -> tuple[Any, str | None]:
+    """A new DBAPI connection through a node in region, with the region it
+    really entered through. Behind a load balancer over every node each new
+    connection lands on the next node, so this asks again until one is in
+    the region. After attempts misses (no live node there), or when a node
+    refuses, it keeps the next connection wherever it lands; on a cluster
+    without regions it keeps the first."""
+    for _ in range(attempts):
+        try:
+            conn = connect()
+        except Exception:  # a node is down, or the database is: stop choosing
+            break
+        gateway = _gateway_of(conn)
+        if gateway == region or gateway is None:
+            return conn, gateway
+        conn.close()
+    conn = connect()
+    return conn, _gateway_of(conn)
+
+
+def should_rehome(info: dict, region: str, *, now: float) -> bool:
+    """Whether a pooled connection that landed outside its home region (the
+    region was down) has waited long enough to try home again."""
+    gateway = info.get("gateway")
+    return gateway is not None and gateway != region and now - info.get("opened", now) > REHOME_AFTER_S
+
+
+def _home(engine: Engine, region: str) -> None:
+    """Every new connection of this engine enters through region when it can;
+    one that could not is replaced once REHOME_AFTER_S has passed, so the
+    pool comes home after an outage."""
+    @event.listens_for(engine, "do_connect")
+    def _connect(dialect, conn_rec, cargs, cparams):
+        conn, gateway = homed_connection(lambda: dialect.connect(*cargs, **cparams), region)
+        conn_rec.info.update(gateway=gateway, opened=time.monotonic())
+        return conn
+
+    @event.listens_for(engine, "checkout")
+    def _rehome(dbapi_conn, conn_rec, proxy):
+        if should_rehome(conn_rec.info, region, now=time.monotonic()):
+            raise DisconnectionError(f"connection is outside {region}; trying home again")
+
+
 def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engine:
     """The process-wide engine for this URL. Never dispose it. pool_size
     applies only when this call creates the engine; an application_name in
-    the URL labels its connections, otherwise they say banko."""
+    the URL labels its connections, otherwise they say banko, and a home
+    region (with_gateway_region) makes them enter the cluster there."""
     cfg = get_config()
     key = normalize_db_url(url or cfg.database_url)
     engine = _engines.get(key)
@@ -53,8 +127,9 @@ def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engin
         if engine is None:
             parsed = make_url(key)
             name = parsed.query.get("application_name") or "banko"
+            home = parsed.query.get(_GATEWAY_REGION)
             engine = create_engine(
-                parsed.difference_update_query(["application_name"]),
+                parsed.difference_update_query(["application_name", _GATEWAY_REGION]),
                 pool_size=pool_size or cfg.db_pool_size,
                 max_overflow=cfg.db_max_overflow,
                 pool_timeout=cfg.db_pool_timeout,
@@ -66,6 +141,8 @@ def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engin
                     "options": "-c timezone=utc",
                 },
             )
+            if home:
+                _home(engine, home if isinstance(home, str) else home[0])
             _engines[key] = engine
     return engine
 
@@ -128,17 +205,26 @@ def run_transaction(fn: Callable[[Connection], T], *, url: str | None = None,
                     max_attempts: int | None = None) -> T:
     """Run fn(conn) in one transaction, retrying retryable errors with
     jittered backoff. Keep fn short and free of HTTP or LLM calls: it may
-    run more than once."""
+    run more than once. Nothing commits before COMMIT is sent, so a lost
+    connection while fn runs is retried even for non-idempotent work; an
+    error from COMMIT itself carries at_commit=True, since it may have
+    landed."""
     attempts = max_attempts or get_config().db_retry_max_attempts
     delay = 0.05
     for attempt in range(1, attempts + 1):
+        ran = False
         try:
             with get_engine(url).begin() as conn:
                 if user_id is not None:
                     _set_user(conn, user_id)
-                return fn(conn)
+                result = fn(conn)
+                ran = True
+            return result
         except DBAPIError as exc:
-            if attempt < attempts and is_retryable(exc, idempotent=idempotent):
+            if ran:
+                exc.at_commit = True  # type: ignore[attr-defined]
+            safe = idempotent or not (ran or _sqlstate(exc) in AMBIGUOUS_SQLSTATES)
+            if attempt < attempts and is_retryable(exc, idempotent=safe):
                 stats.record_retry()
                 metrics.record("db.retries")
                 log.info("retrying transaction after %s (attempt %d of %d)",

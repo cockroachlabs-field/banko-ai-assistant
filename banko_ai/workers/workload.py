@@ -2,12 +2,17 @@
 does, through the same services the app uses, so every simulated purchase
 is a real ledger movement and every search a real per-user vector query.
 
-Every write is idempotent from the client's side: the client picks the
-purchase id, the deposit's entry id or the transfer's idempotency key
-before the first attempt, so a retry after a dropped connection or an
-ambiguous commit finds its own row instead of posting twice. Declined
-purchases and transfers (not enough money) are a normal business outcome,
-not errors.
+Each customer is served through their home region's own pool and reads
+name that region, so on a multi-region cluster every statement stays in
+the customer's region and only a write's commit crosses to another one.
+
+Transfers and card payments carry an idempotency key, so a retry after a
+dropped connection or an ambiguous commit finds its own row instead of
+moving money twice. Purchases and deposits let the database pick their ids
+(a client-chosen key on a REGIONAL BY ROW table costs a uniqueness check in
+every region), so they retry only what cannot have committed and report a
+lost commit. Declined purchases and transfers (not enough money) are a
+normal business outcome, not errors.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import random
 import time
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import TypeVar
 
@@ -65,12 +70,14 @@ def _never(exc: BaseException) -> bool:
 
 
 def with_client_retries(fn: Callable[[], T], *, committed: Callable[[BaseException], bool],
-                        attempts: int = 5, sleep: Callable[[float], None] = time.sleep) -> tuple[T | None, int]:
+                        attempts: int = 5, sleep: Callable[[float], None] = time.sleep,
+                        idempotent: bool = True) -> tuple[T | None, int]:
     """Run fn, retrying what is safe to retry (connection loss, an ambiguous
     commit, a 40001 run_transaction gave up on) with jittered backoff. A
     retry that fails because committed(exc) says the first attempt landed
-    is a success. Returns (result, retries); an error that ends the attempt
-    carries .client_retries."""
+    is a success. Work that is not idempotent never retries an error from
+    its COMMIT (at_commit), which may have landed. Returns (result,
+    retries); an error that ends the attempt carries .client_retries."""
     retries = 0
     while True:
         try:
@@ -78,7 +85,8 @@ def with_client_retries(fn: Callable[[], T], *, committed: Callable[[BaseExcepti
         except Exception as exc:
             if retries and committed(exc):
                 return None, retries
-            if retries + 1 < attempts and isinstance(exc, DBAPIError) and is_retryable(exc, idempotent=True):
+            if (retries + 1 < attempts and isinstance(exc, DBAPIError) and is_retryable(exc, idempotent=True)
+                    and (idempotent or not getattr(exc, "at_commit", False))):
                 delay = _BACKOFF[min(retries, len(_BACKOFF) - 1)]
                 sleep(delay + random.uniform(0, delay / 2))
                 retries += 1
@@ -136,6 +144,14 @@ class UserPicker:
 class OpContext:
     url: str | None
     vectors: VectorCache
+    region_urls: dict[str, str] = field(default_factory=dict)  # home region -> its own pool (with_gateway_region)
+    pin_regions: bool = False  # reads name the home region: every load row lives there
+
+    def url_for(self, user: LoadUser) -> str | None:
+        return self.region_urls.get(user.region or "", self.url)
+
+    def region_for(self, user: LoadUser) -> str | None:
+        return user.region if self.pin_regions else None
 
 
 def _money(rng: random.Random, low, high) -> Decimal:
@@ -150,12 +166,11 @@ def _purchase(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     label = catalog.category_for(spec.category).label
     account = next(a for a in profile.accounts if a.key == spec.account)
     pay = account.payment_method or ("Credit Card" if account.kind == "credit" else "Debit Card")
-    eid = new_id()
     _, retries = with_client_retries(lambda: ledger.post_purchase(
         user.user_id, user.accounts[spec.account], amount=amount, merchant=merchant, category=label,
         description=f"Spent ${amount:.2f} on {label.lower()} at {merchant} using {pay}.", payment_method=pay,
-        embedding=ctx.vectors.get(merchant, spec.category), expense_id=eid, url=ctx.url),
-        committed=is_unique_violation)
+        embedding=ctx.vectors.get(merchant, spec.category), url=ctx.url_for(user)),
+        committed=_never, idempotent=False)
     return retries
 
 
@@ -163,16 +178,16 @@ def _transfer(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     pair = ("checking", "savings") if rng.random() < 0.5 else ("savings", "checking")
     amount, key = _money(rng, 20, 400), new_id()
     _, retries = with_client_retries(lambda: ledger.transfer(
-        user.user_id, user.accounts[pair[0]], user.accounts[pair[1]], amount, idempotency_key=key, url=ctx.url),
-        committed=is_unique_violation)
+        user.user_id, user.accounts[pair[0]], user.accounts[pair[1]], amount, idempotency_key=key,
+        url=ctx.url_for(user)), committed=is_unique_violation)
     return retries
 
 
 def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     """Pay the statement in full half the time, else part of it, as
     cardholders do; never more than the card owes (the ledger refuses)."""
-    card = with_client_retries(lambda: accounts.get_account(user.user_id, user.accounts["card"], url=ctx.url),
-                               committed=_never)[0]
+    card = with_client_retries(lambda: accounts.get_account(user.user_id, user.accounts["card"], url=ctx.url_for(user),
+                                                            region=ctx.region_for(user)), committed=_never)[0]
     owed = -Decimal(str((card or {}).get("balance") or 0))
     if owed < 1:
         raise Declined(0)
@@ -181,7 +196,7 @@ def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     try:
         _, retries = with_client_retries(lambda: ledger.card_payment(
             user.user_id, user.accounts["checking"], user.accounts["card"], amount, idempotency_key=key,
-            url=ctx.url), committed=is_unique_violation)
+            url=ctx.url_for(user)), committed=is_unique_violation)
     except ledger.InvalidAmount as exc:  # a concurrent payment got there first
         raise Declined(getattr(exc, "client_retries", 0)) from exc
     return retries
@@ -189,28 +204,30 @@ def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
 
 def _deposit(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     income = get_catalog().profiles[user.style].income
-    eid = new_id()
     _, retries = with_client_retries(lambda: ledger.record_income(
         user.user_id, user.accounts[income.account], income.amount, description=income.description,
-        entry_id=eid, url=ctx.url), committed=is_unique_violation)
+        url=ctx.url_for(user)), committed=_never, idempotent=False)
     return retries
 
 
 def _page_load(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
+    url, region = ctx.url_for(user), ctx.region_for(user)
+
     def visit() -> None:
-        accounts.list_accounts(user.user_id, url=ctx.url)
-        transactions.list_transactions(user.user_id, limit=20, url=ctx.url)
+        accounts.list_accounts(user.user_id, url=url, region=region)
+        transactions.list_transactions(user.user_id, limit=20, url=url, region=region)
     return with_client_retries(visit, committed=_never)[1]
 
 
 def _search(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     q = rng.choice(QUERIES)
-    return with_client_retries(lambda: transactions.semantic_search(user.user_id, q, limit=10, url=ctx.url),
-                               committed=_never)[1]
+    return with_client_retries(lambda: transactions.semantic_search(
+        user.user_id, q, limit=10, url=ctx.url_for(user), region=ctx.region_for(user)), committed=_never)[1]
 
 
 def _report(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
-    return with_client_retries(lambda: reports.cashflow(user.user_id, months=3, url=ctx.url), committed=_never)[1]
+    return with_client_retries(lambda: reports.cashflow(user.user_id, months=3, url=ctx.url_for(user)),
+                               committed=_never)[1]
 
 
 _HANDLERS: dict[str, Callable[[LoadUser, OpContext, random.Random], int]] = {

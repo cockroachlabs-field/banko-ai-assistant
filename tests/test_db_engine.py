@@ -100,3 +100,64 @@ def test_user_session_sets_the_user_context():
     with E.user_session("00000000-0000-0000-0000-0000000000a1") as conn:
         value = conn.execute(text("SELECT current_setting('banko.user_id', true)")).scalar()
     assert value == "00000000-0000-0000-0000-0000000000a1"
+
+
+class _FakeConn:
+    def execute(self, *args, **kwargs):
+        return None
+
+
+def _engine_with(begin):
+    class FakeEngine:
+        def begin(self):
+            return begin()
+    return FakeEngine()
+
+
+def test_a_connection_lost_before_commit_is_retried_even_for_non_idempotent_work(monkeypatch):
+    """Nothing commits before COMMIT is sent, so work whose connection died
+    while its statements ran is always safe to run again."""
+    class FakeBegin:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(E, "get_engine", lambda url=None: _engine_with(FakeBegin))
+    monkeypatch.setattr(E.time, "sleep", lambda seconds: None)
+    calls = {"n": 0}
+
+    def work(conn):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _wrapped(psycopg.errors.AdminShutdown("server is shutting down"))
+        return "ok"
+
+    assert E.run_transaction(work, idempotent=False) == "ok"
+    assert calls["n"] == 2
+
+
+def test_a_failed_commit_is_marked_and_not_retried_for_non_idempotent_work(monkeypatch):
+    """A connection lost during COMMIT may or may not have committed: the
+    error says where it happened and non-idempotent work does not run again."""
+    class FakeBegin:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            if exc_type is None:
+                raise _wrapped(psycopg.errors.AdminShutdown("server is shutting down"))
+            return False
+
+    monkeypatch.setattr(E, "get_engine", lambda url=None: _engine_with(FakeBegin))
+    monkeypatch.setattr(E.time, "sleep", lambda seconds: None)
+    calls = {"n": 0}
+
+    def work(conn):
+        calls["n"] += 1
+        return "ok"
+
+    with pytest.raises(OperationalError) as err:
+        E.run_transaction(work, idempotent=False)
+    assert calls["n"] == 1 and err.value.at_commit is True

@@ -49,6 +49,12 @@ def _ambiguous() -> OperationalError:
     return OperationalError("COMMIT", {}, psycopg.errors.StatementCompletionUnknown("result is ambiguous"))
 
 
+def _user(style: str = "saver", region: str | None = None) -> LoadUser:
+    """A customer who exists only in memory, with every account the style uses."""
+    accounts = {a.key: f"acct-{a.key}" for a in get_catalog().profiles[style].accounts}
+    return LoadUser("u-1", "load-00001-aaaa", style, region, accounts)
+
+
 def _unique() -> IntegrityError:
     return IntegrityError("INSERT", {}, psycopg.errors.UniqueViolation("duplicate key value"))
 
@@ -123,17 +129,89 @@ def test_every_operation_runs_against_real_services(prepared, vectors):
     assert check_integrity(follower_reads=False, user_id=prepared[0].user_id).ok
 
 
-def test_a_purchase_posts_with_the_clients_id_and_a_cached_vector(prepared, vectors, monkeypatch):
-    known = "11111111-2222-4333-8444-555555555555"
-    monkeypatch.setattr(W, "new_id", lambda: known)
+def test_a_purchase_lets_the_database_pick_its_id_and_uses_a_cached_vector(prepared, vectors, monkeypatch):
+    """A purchase sends no id of its own: on a REGIONAL BY ROW table a
+    client-chosen key costs a uniqueness check in every region."""
+    seen = {}
+    real = ledger.post_purchase
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(W.ledger, "post_purchase", spy)
     assert run_op("purchase", prepared[1], OpContext(url=None, vectors=vectors), random.Random(3)) == ("ok", 0)
+    assert seen.get("expense_id") is None and seen["embedding"] is not None
     with get_engine().connect() as c:
-        row = c.execute(text("SELECT user_id, description, embedding IS NOT NULL FROM expenses "
-                             "WHERE expense_id = CAST(:e AS UUID)"), {"e": known}).fetchone()
-    assert str(row[0]) == prepared[1].user_id and row[2]
-    assert re.fullmatch(r"Spent \$\d+\.\d{2} on .+ at .+ using .+\.", row[1])
+        row = c.execute(text("SELECT description, embedding IS NOT NULL FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                             "ORDER BY created_at DESC LIMIT 1"), {"u": prepared[1].user_id}).fetchone()
+    assert row[1] and re.fullmatch(r"Spent \$\d+\.\d{2} on .+ at .+ using .+\.", row[0])
 
 
+def test_a_deposit_lets_the_database_pick_its_entry_id(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(W.ledger, "record_income", lambda *args, **kwargs: seen.update(kwargs) or "entry")
+    assert run_op("deposit", _user(), OpContext(url=None, vectors=VectorCache({})), random.Random(2)) == ("ok", 0)
+    assert seen.get("entry_id") is None
+
+
+def _lost(at_commit: bool) -> OperationalError:
+    exc = OperationalError("COMMIT", {}, psycopg.errors.AdminShutdown("server is shutting down"))
+    if at_commit:
+        exc.at_commit = True
+    return exc
+
+
+def test_a_purchase_whose_commit_was_lost_is_not_run_again(monkeypatch):
+    """Without a key of its own a purchase cannot tell whether a lost commit
+    landed, so it is reported, never posted twice."""
+    calls = []
+
+    def lost(*args, **kwargs):
+        calls.append(1)
+        raise _lost(at_commit=True)
+
+    monkeypatch.setattr(W.ledger, "post_purchase", lost)
+    with pytest.raises(OperationalError):
+        run_op("purchase", _user(), OpContext(url=None, vectors=VectorCache({})), random.Random(1))
+    assert len(calls) == 1
+
+
+def test_work_that_is_not_idempotent_retries_only_what_cannot_have_committed():
+    attempts = iter([_lost(at_commit=False), None])
+
+    def fn():
+        exc = next(attempts)
+        if exc:
+            raise exc
+        return "posted"
+
+    assert with_client_retries(fn, committed=lambda e: False, idempotent=False, **NO_SLEEP) == ("posted", 1)
+    with pytest.raises(OperationalError) as err:
+        with_client_retries(lambda: (_ for _ in ()).throw(_lost(at_commit=True)), committed=lambda e: False,
+                            idempotent=False, **NO_SLEEP)
+    assert err.value.client_retries == 0
+
+
+def test_each_customer_is_served_through_their_home_region(monkeypatch):
+    """Reads and writes go through the customer's home-region pool, and reads
+    name the region so they touch only its partition."""
+    calls = []
+    monkeypatch.setattr(W.accounts, "list_accounts", lambda user_id, **kw: calls.append(kw))
+    monkeypatch.setattr(W.transactions, "list_transactions", lambda user_id, **kw: calls.append(kw))
+    monkeypatch.setattr(W.transactions, "semantic_search", lambda user_id, q, **kw: calls.append(kw))
+    monkeypatch.setattr(W.ledger, "record_income", lambda *args, **kw: calls.append(kw) or "entry")
+    homed = "postgresql://root@db:26257/defaultdb?banko_gateway_region=eu-west-1"
+    ctx = OpContext(url="postgresql://root@db:26257/defaultdb", vectors=VectorCache({}),
+                    region_urls={"eu-west-1": homed}, pin_regions=True)
+    rng = random.Random(4)
+    for op in ("page_load", "search", "deposit"):
+        run_op(op, _user(region="eu-west-1"), ctx, rng)
+    assert [c["url"] for c in calls] == [homed] * 4
+    assert [c.get("region") for c in calls[:3]] == ["eu-west-1"] * 3
+    calls.clear()
+    run_op("page_load", _user(region="eu-west-1"), OpContext(url="plain", vectors=VectorCache({})), rng)
+    assert [(c["url"], c.get("region")) for c in calls] == [("plain", None)] * 2
 def test_a_declined_purchase_is_a_business_outcome(prepared, vectors, monkeypatch):
     def broke(*args, **kwargs):
         raise ledger.InsufficientFunds("Not enough available on that account")
@@ -168,7 +246,7 @@ def test_card_payments_often_pay_the_whole_balance(monkeypatch):
     from decimal import Decimal
 
     paid = []
-    monkeypatch.setattr(W.accounts, "get_account", lambda user_id, account_id, url=None: {"balance": "-1234.56"})
+    monkeypatch.setattr(W.accounts, "get_account", lambda user_id, account_id, **kw: {"balance": "-1234.56"})
     monkeypatch.setattr(W.ledger, "card_payment", lambda user_id, src, card, amount, **kw: paid.append(amount))
     user = LoadUser("u", "load-00000-aaaa", "saver", None, {"checking": "c", "card": "k"})
     rng = random.Random(11)

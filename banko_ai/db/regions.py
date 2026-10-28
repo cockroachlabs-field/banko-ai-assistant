@@ -231,6 +231,19 @@ def _all_money_tables_regional(conn) -> bool:
     return False
 
 
+def money_tables_regional(url: str) -> bool:
+    """Whether REGIONAL BY ROW is live on every money table of this database
+    (cached once it is), the condition under which writes pin crdb_region."""
+    if not regional_tables_ready(url):
+        return False
+    try:
+        with get_engine(url).connect() as conn:
+            return _all_money_tables_regional(conn)
+    except Exception as e:
+        log.debug("money table locality check failed: %s", e)
+        return False
+
+
 def money_region(conn, user_id: str, url: str | None = None) -> str | None:
     """The user's home region when REGIONAL BY ROW tables are live, else None.
 

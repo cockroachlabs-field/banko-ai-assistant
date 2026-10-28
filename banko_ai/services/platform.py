@@ -174,15 +174,19 @@ def cdc_status(*, url: str | None = None) -> dict:
             "nudges_per_min": round(int(nudges) / 10, 1)}
 
 
-def sample_serving(user_id: str, *, url: str | None = None) -> str | None:
+def sample_serving(user_id: str, *, url: str | None = None, region: str | None = None) -> str | None:
     """Which regions served one of this customer's page-load reads, from its
-    EXPLAIN ANALYZE ("regions: ..."), or None on a cluster without regions."""
+    EXPLAIN ANALYZE ("regions: ..."), or None on a cluster without regions.
+    With region the read names the customer's home region, as the load
+    simulator's page loads do (see region_pin)."""
     import psycopg
 
+    pin = "crdb_region = %s AND " if region else ""
     with get_engine(url or get_config().database_url).connect() as conn:
         with psycopg.ClientCursor(cast(psycopg.Connection, conn.connection.driver_connection)) as cur:
             # Local to the implicit transaction, which the pool rolls back.
             cur.execute("SELECT set_config('banko.user_id', %s, true)", (user_id,))
-            cur.execute("EXPLAIN ANALYZE SELECT account_id, balance FROM accounts WHERE user_id = %s", (user_id,))
+            cur.execute(f"EXPLAIN ANALYZE SELECT account_id, balance FROM accounts WHERE {pin}user_id = %s",
+                        (region, user_id) if region else (user_id,))
             plan = "\n".join(str(r[0]) for r in cur.fetchall())
     return serving_regions(plan)

@@ -330,6 +330,14 @@ real ledger, so money integrity is checked while it runs. Latency counts
 from when each operation was due, so a struggling cluster shows up as
 latency and dropped operations instead of quietly less load.
 
+On a multi-region cluster each customer is served the way a regional
+deployment of the app would serve them: through a node in their home
+region, with reads that stay in that region and only a write's commit
+crossing to another one. That needs a database URL that reaches nodes in
+every region, such as the chaos demo's load balancer; when a region goes
+down its customers move to a surviving region and come home after it
+recovers.
+
 With the chaos control plane running, set `CHAOS_CONTROL_URL` (and
 `CHAOS_CONTROL_TOKEN` if it has one) and the chaos card appears: take a
 region down, watch the per-region latency and serving region move, recover

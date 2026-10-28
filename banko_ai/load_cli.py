@@ -80,19 +80,14 @@ def _line(s: dict, *, columns: bool = True) -> str:
 
 
 def _simulator():
-    """A simulator in this process, on its own banko-load pool, through the
-    app role when row-level security is on, as the app's own would be."""
+    """A simulator in this process, on banko-load pools of its own, as the
+    database owner, as the app's own simulator runs."""
     from .config.settings import get_config
-    from .db import rls
     from .db.engine import with_application_name
     from .workers.traffic import TrafficSimulator
     cfg = get_config()
-    try:
-        rls.refresh_status(cfg.database_url)
-    except Exception:  # an unreachable database fails the run's preparation with a plain reason
-        pass
-    url = with_application_name(rls.app_url() or cfg.database_url, "banko-load")
-    return TrafficSimulator(url=url, pool_size=cfg.load_max_workers + 2)
+    return TrafficSimulator(url=with_application_name(cfg.database_url, "banko-load"),
+                            pool_size=cfg.load_max_workers + 2)
 
 
 def _http():

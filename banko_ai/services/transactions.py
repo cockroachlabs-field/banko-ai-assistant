@@ -18,7 +18,7 @@ from ..db.engine import get_engine, run_transaction
 from ..db.regions import money_region, regional_tables_ready
 from ..db.rls import request_url
 from ..utils.request_trace import trace_step
-from ._sql import jsonable, read_session, valid_uuid, vector_text
+from ._sql import jsonable, read_session, region_pin, valid_uuid, vector_text
 from ._vector import nearest
 from .ledger import NotFound, bump_data_version
 
@@ -37,17 +37,23 @@ def search_page_size() -> int:
 
 # Ledger entries, plus expenses that never got a ledger entry (receipts and
 # imports from before the ledger existed), as one ordered stream.
-_STREAM = """
+def _stream(region: str | None = None) -> str:
+    """Every money movement of one user: ledger entries with their purchase,
+    and purchases with no ledger entry. With region, each table is read in
+    that region's partition only (see region_pin)."""
+    def pin(alias: str) -> str:
+        return region_pin(alias, region)
+    return f"""
     SELECT l.entry_id AS id, l.posted_at, l.amount, l.kind, l.description, l.account_id,
            e.merchant, e.shopping_type AS category, l.expense_id
-    FROM ledger_entries AS l LEFT JOIN expenses AS e ON e.expense_id = l.expense_id
-    WHERE l.user_id = CAST(:u AS UUID)
+    FROM ledger_entries AS l LEFT JOIN expenses AS e ON {pin('e.')}e.expense_id = l.expense_id
+    WHERE {pin('l.')}l.user_id = CAST(:u AS UUID)
     UNION ALL
     SELECT e.expense_id, e.expense_date::TIMESTAMPTZ, -e.expense_amount, 'purchase', e.description, NULL,
            e.merchant, e.shopping_type, e.expense_id
     FROM expenses AS e
-    LEFT JOIN ledger_entries AS l2 ON l2.expense_id = e.expense_id AND l2.user_id = CAST(:u AS UUID)
-    WHERE e.user_id = CAST(:u AS UUID) AND l2.entry_id IS NULL
+    LEFT JOIN ledger_entries AS l2 ON {pin('l2.')}l2.expense_id = e.expense_id AND l2.user_id = CAST(:u AS UUID)
+    WHERE {pin('e.')}e.user_id = CAST(:u AS UUID) AND l2.entry_id IS NULL
 """
 # Purchases with no ledger entry come from the anti join above, never from a
 # NOT EXISTS: under row-level security (banko_app) the policy predicate stops
@@ -107,10 +113,11 @@ def _decorate(item: dict) -> dict:
 def list_transactions(user_id: str, *, limit: int = 50, cursor: str | None = None,
                       category: str | None = None, account_id: str | None = None, kind: str | None = None,
                       date_from: date | None = None, date_to: date | None = None,
-                      min_amount: Any = None, max_amount: Any = None, url: str | None = None) -> dict:
+                      min_amount: Any = None, max_amount: Any = None, url: str | None = None,
+                      region: str | None = None) -> dict:
     url = request_url(url)
     limit = max(1, min(int(limit), MAX_LIMIT))
-    where, params = [], {"u": user_id, "limit": limit + 1}
+    where, params = [], {"u": user_id, "limit": limit + 1, "region": region}
     after = _decode_cursor(cursor)
     if after:
         where.append("(t.posted_at, t.id) < (:cts, CAST(:cid AS UUID))")
@@ -142,7 +149,7 @@ def list_transactions(user_id: str, *, limit: int = 50, cursor: str | None = Non
     with read_session(user_id, url=url) as conn:
         rows = conn.execute(text(f"""
             SELECT t.id, t.posted_at, t.amount, t.kind, t.description, t.account_id, t.merchant, t.category, t.expense_id
-            FROM ({_STREAM}) AS t {clause}
+            FROM ({_stream(region)}) AS t {clause}
             ORDER BY t.posted_at DESC, t.id DESC LIMIT :limit
         """), params).fetchall()
     more = len(rows) > limit
@@ -155,24 +162,26 @@ def list_transactions(user_id: str, *, limit: int = 50, cursor: str | None = Non
     return jsonable({"items": items, "next_cursor": next_cursor})
 
 
-def semantic_sql(filters: str = "") -> str:
+def semantic_sql(filters: str = "", *, pinned: bool = False) -> str:
     """The semantic search statement. The k nearest neighbours come from the
     per-user vector index inside a MATERIALIZED CTE, and the filters are a
     keep flag outside it: any extra predicate inside would make the optimizer
     skip the vector index (cockroachlabs/cockroach#10432). Every neighbour
     comes back, so the row count shows whether the index answered in full,
-    and the caller takes the page from the kept rows."""
+    and the caller takes the page from the kept rows. pinned names the
+    :region inside the CTE too: crdb_region leads the index, so it keeps the
+    index and searches only that region's partition."""
     return f"""
         WITH nn AS MATERIALIZED (
             SELECT expense_id, embedding <=> :qvec AS distance
             -- Fresh users are not in table statistics yet, so without this hint the optimizer picks the date index
             FROM expenses@idx_expenses_user_embedding
-            WHERE user_id = CAST(:u AS UUID)
+            WHERE {_pin(pinned)}user_id = CAST(:u AS UUID)
             ORDER BY embedding <=> :qvec LIMIT :k
         )
         SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance,
                (true {filters}) AS keep
-        FROM nn JOIN expenses AS e ON e.expense_id = nn.expense_id
+        FROM nn JOIN expenses AS e ON {_pin(pinned, 'e.')}e.expense_id = nn.expense_id
         WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL
         ORDER BY nn.distance, e.expense_id
     """
@@ -186,7 +195,7 @@ def _qvec(text_query: str) -> str:
     return vector_text(load_embedding_model().encode([text_query])[0])
 
 
-def exact_semantic_sql(filters: str = "") -> str:
+def exact_semantic_sql(filters: str = "", *, pinned: bool = False) -> str:
     """The same statement as semantic_sql(), but the CTE reads this user's
     rows through the date index and sorts them by exact distance, so the
     vector index plays no part. Only used when the index came back short."""
@@ -194,27 +203,34 @@ def exact_semantic_sql(filters: str = "") -> str:
         WITH nn AS MATERIALIZED (
             SELECT expense_id, embedding <=> :qvec AS distance
             FROM expenses@idx_expenses_user_date
-            WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL
+            WHERE {_pin(pinned)}user_id = CAST(:u AS UUID) AND embedding IS NOT NULL
             ORDER BY embedding <=> :qvec LIMIT :k
         )
         SELECT e.expense_id, e.expense_date, e.expense_amount, e.merchant, e.shopping_type, e.description, nn.distance,
                (true {filters}) AS keep
-        FROM nn JOIN expenses AS e ON e.expense_id = nn.expense_id
+        FROM nn JOIN expenses AS e ON {_pin(pinned, 'e.')}e.expense_id = nn.expense_id
         WHERE e.user_id = CAST(:u AS UUID) AND nn.distance IS NOT NULL
         ORDER BY nn.distance, e.expense_id
     """
 
 
+def _pin(pinned: bool, alias: str = "") -> str:
+    return region_pin(alias, "pinned" if pinned else None)
+
+
 _fallback_logged = False
 
 
-def _neighbours(conn, user_id: str, qvec: str, *, k: int, filters: str = "", extra=None) -> list:
+def _neighbours(conn, user_id: str, qvec: str, *, k: int, filters: str = "", extra=None,
+                region: str | None = None) -> list:
     """The user's k purchases nearest to qvec, nearest first, each row ending
     in its keep flag. From the per-user vector index, or from an exact scan
-    when the index came back with fewer rows than the user has."""
+    when the index came back with fewer rows than the user has. region keeps
+    every read in that region's partition (see region_pin)."""
     global _fallback_logged
-    params = {"u": user_id, "qvec": qvec, "k": k, **(extra or {})}
-    rows = conn.execute(text(semantic_sql(filters)), params).fetchall()
+    pinned = region is not None
+    params = {"u": user_id, "qvec": qvec, "k": k, "region": region, **(extra or {})}
+    rows = conn.execute(text(semantic_sql(filters, pinned=pinned)), params).fetchall()
     if len(rows) >= k:
         return rows
     # Fewer than k: the user may just have fewer purchases. But on v26.3 a
@@ -222,15 +238,15 @@ def _neighbours(conn, user_id: str, qvec: str, *, k: int, filters: str = "", ext
     # index can return none of them, or the same single one for every query,
     # though the rows are there (a larger beam does not help). Then rank this
     # user's rows exactly.
-    have = conn.execute(text("""
+    have = conn.execute(text(f"""
         SELECT count(*) FROM (SELECT 1 FROM expenses@idx_expenses_user_date
-                              WHERE user_id = CAST(:u AS UUID) AND embedding IS NOT NULL LIMIT :k)
-    """), {"u": user_id, "k": k}).scalar()
+                              WHERE {_pin(pinned)}user_id = CAST(:u AS UUID) AND embedding IS NOT NULL LIMIT :k)
+    """), {"u": user_id, "k": k, "region": region}).scalar()
     if len(rows) >= have:
         return rows
     got = len(rows)
     t0 = time.perf_counter()
-    rows = conn.execute(text(exact_semantic_sql(filters)), params).fetchall()
+    rows = conn.execute(text(exact_semantic_sql(filters, pinned=pinned)), params).fetchall()
     trace_step("vector_search", "Vector index fallback",
                ("vector index returned no rows" if not got else f"vector index returned {got} of {have} rows")
                + "; exact scan of this user's rows", ms=(time.perf_counter() - t0) * 1000, status="warning")
@@ -244,7 +260,7 @@ def _neighbours(conn, user_id: str, qvec: str, *, k: int, filters: str = "", ext
 
 def semantic_search(user_id: str, q: str, *, limit: int = 20, cursor: str | None = None,
                     category: str | None = None, date_from: date | None = None, date_to: date | None = None,
-                    url: str | None = None) -> dict:
+                    url: str | None = None, region: str | None = None) -> dict:
     """The user's purchases nearest to q in meaning, one page at a time, with
     next_cursor while the window has more. The statement reads the whole
     SEARCH_WINDOW either way, so a later page costs what the first one did."""
@@ -269,8 +285,8 @@ def semantic_search(user_id: str, q: str, *, limit: int = 20, cursor: str | None
     # loads on first use), and no connection should wait on it.
     qvec = _qvec(q)
     with read_session(user_id, url=url) as conn:
-        kept = [r for r in _neighbours(conn, user_id, qvec, k=SEARCH_WINDOW, filters=" ".join(filters), extra=extra)
-                if r[7]]
+        kept = [r for r in _neighbours(conn, user_id, qvec, k=SEARCH_WINDOW, filters=" ".join(filters), extra=extra,
+                                       region=region) if r[7]]
     items = [_decorate({"id": str(r[0]), "expense_id": str(r[0]), "posted_at": r[1], "amount": -r[2],
                         "kind": "purchase", "merchant": r[3], "category": r[4], "description": r[5],
                         "distance": float(r[6]), "account_id": None}) for r in kept[offset:offset + limit]]

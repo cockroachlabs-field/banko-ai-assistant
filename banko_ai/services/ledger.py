@@ -199,11 +199,13 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
                   description: str | None = None, payment_method: str | None = None,
                   expense_date: date | None = None, embedding: Sequence[float] | None = None,
                   expense_id: str | None = None, url: str | None = None) -> str:
-    """Record a purchase: the expense, its ledger entry and the balance, together."""
+    """Record a purchase: the expense, its ledger entry and the balance,
+    together. Without an expense_id the database picks one: on a REGIONAL BY
+    ROW table a key the client chose costs a uniqueness check in every region."""
     url = request_url(url)
     amt = _positive(amount)
     acct = _uuid(account_id)
-    eid = expense_id or str(uuid.uuid4())
+    id_col, id_val = ("expense_id, ", "CAST(:eid AS UUID), ") if expense_id else ("", "")
     today = datetime.now(timezone.utc).date()
     day = expense_date or today
 
@@ -215,19 +217,20 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
         desc = description or f"Spent ${amt:.2f} on {category.lower()} at {merchant} using {pay}."
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
-        params = {"u": user_id, "a": acct, "eid": eid, "d": day, "amt": amt, "neg": -amt,
+        params = {"u": user_id, "a": acct, "eid": expense_id, "d": day, "amt": amt, "neg": -amt,
                   "cat": category, "desc": desc, "merchant": merchant, "pay": pay,
                   "tags": [category.lower(), merchant.lower().replace(" ", "_")],
                   "emb": vector_text(embedding) if embedding is not None else None,
                   "crdb_region": region,
                   "posted": datetime.now(timezone.utc) if day == today
                   else datetime.combine(day, time(12, 0), tzinfo=timezone.utc)}
-        conn.execute(text(f"""
-            INSERT INTO expenses ({rcol}expense_id, user_id, expense_date, expense_amount, shopping_type,
+        params["eid"] = str(conn.execute(text(f"""
+            INSERT INTO expenses ({rcol}{id_col}user_id, expense_date, expense_amount, shopping_type,
                                   description, merchant, payment_method, recurring, tags, embedding)
-            VALUES ({rval}CAST(:eid AS UUID), CAST(:u AS UUID), :d, :amt, :cat,
+            VALUES ({rval}{id_val}CAST(:u AS UUID), :d, :amt, :cat,
                     :desc, :merchant, :pay, false, :tags, :emb)
-        """), params)
+            RETURNING expense_id
+        """), params).scalar())
         conn.execute(text(f"""
             INSERT INTO ledger_entries ({rcol}user_id, account_id, posted_at, amount, kind, description, expense_id)
             VALUES ({rval}CAST(:u AS UUID), CAST(:a AS UUID), :posted, :neg, 'purchase', :desc, CAST(:eid AS UUID))
@@ -235,7 +238,7 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
         conn.execute(text("UPDATE accounts SET balance = balance - :amt "
                           "WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)"), params)
         bump_data_version(conn, user_id, region)
-        return eid
+        return str(params["eid"])
 
     return run_transaction(fn, url=url, user_id=user_id, idempotent=False)
 
@@ -243,19 +246,20 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
 def record_income(user_id: str, account_id: str, amount: Any, *, description: str = "Income",
                   posted_at: datetime | None = None, entry_id: str | None = None, url: str | None = None) -> str:
     """Credit an account. A caller that picks entry_id up front can replay
-    the deposit safely: the second attempt hits the primary key."""
+    the deposit safely: the second attempt hits the primary key. Without one
+    the database picks it, which needs no uniqueness check in other regions."""
     url = request_url(url)
     amt = _positive(amount)
     acct = _uuid(account_id)
+    id_col, id_val = ("entry_id, ", "CAST(:eid AS UUID), ") if entry_id else ("", "")
 
     def fn(conn: Connection) -> str:
         _lock_account(conn, user_id, acct)
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
         row = conn.execute(text(f"""
-            INSERT INTO ledger_entries ({rcol}entry_id, user_id, account_id, posted_at, amount, kind, description)
-            VALUES ({rval}COALESCE(CAST(:eid AS UUID), gen_random_uuid()), CAST(:u AS UUID), CAST(:a AS UUID),
-                    :posted, :amt, 'income', :desc)
+            INSERT INTO ledger_entries ({rcol}{id_col}user_id, account_id, posted_at, amount, kind, description)
+            VALUES ({rval}{id_val}CAST(:u AS UUID), CAST(:a AS UUID), :posted, :amt, 'income', :desc)
             RETURNING entry_id
         """), {"u": user_id, "a": acct, "amt": amt, "desc": description, "crdb_region": region,
                "eid": entry_id, "posted": posted_at or datetime.now(timezone.utc)}).fetchone()
@@ -334,13 +338,12 @@ def transfer(user_id: str, from_account: str, to_account: str, amount: Any, *, i
             raise InsufficientFunds("Not enough available on that account")
         if dst_kind == "credit" and dst_balance + amt > 0:
             raise InvalidAmount("That pays more than the card owes")
-        # One statement moves both balances: CockroachDB rejects two
-        # mutations of the same table in one statement.
-        conn.execute(text("""
-            UPDATE accounts
-            SET balance = CASE WHEN account_id = CAST(:f AS UUID) THEN balance - :amt ELSE balance + :amt END
-            WHERE account_id IN (CAST(:f AS UUID), CAST(:t AS UUID)) AND user_id = CAST(:u AS UUID)
-        """), params)
+        # One update per account: a lookup by one key reads the home region
+        # first, while one update over both keys reads every region.
+        for acct_param, delta in (("f", "- :amt"), ("t", "+ :amt")):
+            conn.execute(text(f"UPDATE accounts SET balance = balance {delta} "
+                              f"WHERE account_id = CAST(:{acct_param} AS UUID) AND user_id = CAST(:u AS UUID)"),
+                         params)
         conn.execute(text(f"""
             INSERT INTO ledger_entries ({rcol}user_id, account_id, posted_at, amount, kind, description, transfer_id, goal_id)
             VALUES ({rval}CAST(:u AS UUID), CAST(:f AS UUID), now(), :neg, :ok, :desc, CAST(:tid AS UUID), CAST(:g AS UUID)),

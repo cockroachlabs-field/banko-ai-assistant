@@ -42,7 +42,8 @@ _MAX_DURATION_S = 24 * 3600
 _MAX_RAMP_S = 600
 _DEFAULT: Any = object()
 _ERROR_WORDS = {"40001": "transaction conflicts", "40003": "ambiguous commits", "connection": "lost connections",
-                "timeout": "timeouts"}
+                "timeout": "timeouts", "ambiguous": "commits lost in flight"}
+_FREE_PICKS = 16  # draws from the skew for a customer who is free before scanning for any
 
 
 class LoadConfigError(ValueError):
@@ -135,9 +136,12 @@ class LoadConfig:
 
 def error_class_of(exc: BaseException) -> str:
     """A short name for what went wrong: the SQLSTATE, or connection,
-    timeout, or the exception's class."""
+    timeout, ambiguous (a commit lost in flight: it may have landed), or
+    the exception's class."""
     if isinstance(exc, DBAPIError):
         state = str(getattr(getattr(exc, "orig", None), "sqlstate", None) or "")
+        if getattr(exc, "at_commit", False) and state not in ("40001", "40003"):
+            return "ambiguous"
         if state == "57014":
             return "timeout"
         if exc.connection_invalidated or state.startswith(("08", "57P")):
@@ -163,6 +167,8 @@ class _Run:
         self.workers: dict[int, threading.Thread] = {}
         self.errors: deque[tuple[float, str]] = deque()
         self.last_burst = -1e9
+        self.busy: Counter[str] = Counter()  # customers with an operation in flight
+        self.busy_lock = threading.Lock()
         self.set_mix(config.mix())
 
     def set_mix(self, mix: dict[str, int]) -> None:
@@ -173,7 +179,7 @@ class TrafficSimulator:
     def __init__(self, *, metrics: Metrics | None = None, events: EventBus | None = None, url: str | None = None,
                  runner: Callable[[str, LoadUser, random.Random], tuple[str, int]] | None = None,
                  prepare: Callable[[int], list[LoadUser]] | None = None,
-                 sampler: Callable[[str], str | None] | None = _DEFAULT,
+                 sampler: Callable[[LoadUser], str | None] | None = _DEFAULT,
                  integrity: Callable[[], Any] | None = _DEFAULT, pool_size: int | None = None,
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
         self.metrics = metrics or default_metrics
@@ -192,6 +198,7 @@ class TrafficSimulator:
         self._last_config: LoadConfig | None = None
         self._serving: dict[str, dict] = {}
         self._vectors: VectorCache | None = None
+        self._ctx: OpContext | None = None
 
     # -- defaults ------------------------------------------------------------------------------
 
@@ -200,9 +207,31 @@ class TrafficSimulator:
         from ..services.load_users import prepare
         return prepare(count)
 
-    def _sample_serving(self, user_id: str) -> str | None:
+    def _sample_serving(self, user: LoadUser) -> str | None:
+        """One page-load read for this customer, through their region's pool
+        and naming their region, as the simulated page loads run."""
         from ..services.platform import sample_serving
-        return sample_serving(user_id, url=self.url)
+        ctx = self._ctx
+        if ctx is None:
+            return sample_serving(user.user_id, url=self.url)
+        return sample_serving(user.user_id, url=ctx.url_for(user), region=ctx.region_for(user))
+
+    def _context(self, users: list[LoadUser]) -> OpContext:
+        """A pool of the simulator's own per home region, entering the cluster
+        through a node in that region, as a regional deployment of the app
+        serves its customers; reads name the region when every money table
+        is REGIONAL BY ROW (load users' rows then all live in their region)."""
+        from ..db.engine import get_engine, with_gateway_region
+        from ..db.regions import detect_database_regions, money_tables_regional
+        vectors = self._vectors or VectorCache({})
+        if not self.url:
+            return OpContext(url=None, vectors=vectors)
+        regions = sorted(set(detect_database_regions(self.url)) | {u.region for u in users if u.region})
+        urls = {region: with_gateway_region(self.url, region) for region in regions}
+        for url in urls.values():
+            get_engine(url, pool_size=self._pool_size)
+        return OpContext(url=self.url, vectors=vectors, region_urls=urls,
+                         pin_regions=bool(urls) and money_tables_regional(self.url))
 
     @staticmethod
     def _check_integrity() -> Any:
@@ -288,7 +317,7 @@ class TrafficSimulator:
             run.rng.shuffle(users)
             if self._runner is None:
                 self._vectors = self._vectors or VectorCache.build()
-                ctx = OpContext(url=self.url, vectors=self._vectors)
+                ctx = self._ctx = self._context(users)
                 run.runner = lambda op, user, rng: run_op(op, user, ctx, rng)
             else:
                 run.runner = self._runner
@@ -370,16 +399,37 @@ class TrafficSimulator:
                 op, user, intended = run.queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+            user = self._claim(run, user, rng)
             error_class = None
             try:
                 outcome, retries = runner(op, user, rng)
             except Exception as exc:  # recorded by class; the run goes on
                 outcome, retries, error_class = "error", getattr(exc, "client_retries", 0), error_class_of(exc)
                 log.debug("load operation %s failed: %s", op, error_class)
+            finally:
+                with run.busy_lock:
+                    run.busy[user.user_id] -= 1
             self._record(op, user, outcome=outcome, ms=(self._clock() - intended) * 1000,
                          error_class=error_class, retries=retries)
             if error_class:
                 self._note_error(run, error_class)
+
+    @staticmethod
+    def _claim(run: _Run, user: LoadUser, rng: random.Random) -> LoadUser:
+        """The customer an arrival drew, or, while they are busy, another
+        free one from the same skew: a customer is one person doing one
+        thing at a time, so nobody queues on their own account locks. With
+        more operations in flight than customers, someone busy goes again."""
+        picker = run.picker
+        with run.busy_lock:
+            for _ in range(_FREE_PICKS):
+                if not run.busy[user.user_id] or picker is None:
+                    break
+                user = picker.pick(rng)
+            else:
+                user = next((u for u in run.users if not run.busy[u.user_id]), user)
+            run.busy[user.user_id] += 1
+        return user
 
     def _record(self, op: str, user: LoadUser, *, outcome: str, ms: float | None = None,
                 error_class: str | None = None, retries: int = 0) -> None:
@@ -429,7 +479,7 @@ class TrafficSimulator:
                     by_region.setdefault(u.region, []).append(u)
             for region, users in sorted(by_region.items()):
                 try:
-                    served = self._sampler(rng.choice(users).user_id)
+                    served = self._sampler(rng.choice(users))
                 except Exception:
                     log.debug("serving region sample failed", exc_info=True)
                     continue
@@ -448,16 +498,18 @@ _simulator_lock = threading.Lock()
 
 
 def get_simulator() -> TrafficSimulator:
-    """The process's simulator, on its own banko-load pool (the app role's
-    URL when row-level security is on), sized for LOAD_MAX_WORKERS and
-    created on the first run, so asking for its status never connects."""
+    """The process's simulator, on banko-load pools of its own (one per home
+    region on a multi-region cluster), sized for LOAD_MAX_WORKERS and created
+    on the first run, so asking for its status never connects. It connects
+    as the database owner, as the seeder does: on CockroachDB 26.3 row-level
+    security puts a policy lookup in every statement's plan and keeps region
+    filters out of the scan."""
     global _simulator
     with _simulator_lock:
         if _simulator is None:
-            from ..db import rls
             from ..db.engine import with_application_name
             cfg = get_config()
-            url = with_application_name(rls.app_url() or cfg.database_url, "banko-load")
+            url = with_application_name(cfg.database_url, "banko-load")
             _simulator = TrafficSimulator(url=url, pool_size=cfg.load_max_workers + 2)
         return _simulator
 

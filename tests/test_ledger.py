@@ -3,13 +3,15 @@
 import os
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from banko_ai.db.engine import get_engine
+from banko_ai.db.rls import request_url
 from banko_ai.services import ledger as L
 from tests._money import drop_user, invariant_violations, make_user
 
@@ -27,6 +29,21 @@ def _balance(account_id: str) -> Decimal:
     with get_engine().connect() as c:
         return c.execute(text("SELECT balance FROM accounts WHERE account_id = CAST(:a AS UUID)"),
                          {"a": account_id}).scalar()
+
+
+@contextmanager
+def _statements():
+    """Every statement the ledger sends while the block runs."""
+    seen: list[str] = []
+    engine = get_engine(request_url(None))
+
+    def listener(conn, cursor, statement, parameters, context, executemany):
+        seen.append(" ".join(statement.split()))
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
 
 
 def _checking(user_id: str, opening="100.00") -> str:
@@ -319,3 +336,40 @@ def test_money_rows_live_in_the_users_home_region():
         with admin.connect() as c:
             c.execution_options(isolation_level="AUTOCOMMIT")
             c.execute(text("DROP DATABASE IF EXISTS banko_ledger_mr_test CASCADE"))
+
+
+def test_a_purchase_without_an_id_lets_the_database_pick_it(user):
+    """A key the database generates needs no uniqueness check in other
+    regions, so a caller without its own id sends none."""
+    acct = _checking(user)
+    with _statements() as seen:
+        eid = L.post_purchase(user, acct, amount="5.00", merchant="Corner Cafe", category="Coffee")
+    insert = next(s for s in seen if s.startswith("INSERT INTO expenses"))
+    assert "expense_id" not in insert.split("VALUES")[0]
+    with get_engine().connect() as c:
+        legs = c.execute(text("SELECT count(*) FROM ledger_entries WHERE expense_id = CAST(:e AS UUID)"),
+                         {"e": eid}).scalar()
+    assert legs == 1 and _balance(acct) == Decimal("95.00")
+
+
+def test_a_deposit_without_an_entry_id_lets_the_database_pick_it(user):
+    acct = _checking(user)
+    with _statements() as seen:
+        L.record_income(user, acct, "10.00")
+    insert = next(s for s in seen if s.startswith("INSERT INTO ledger_entries"))
+    assert "entry_id" not in insert.split("VALUES")[0]
+    assert _balance(acct) == Decimal("110.00") and invariant_violations(user) == []
+
+
+def test_a_transfer_updates_each_account_by_its_own_key(user):
+    """One update per account finds it in the home region first; one update
+    over both ids reads every region."""
+    a = _checking(user)
+    b = L.open_account(user, kind="savings", name="Savings", institution="Test Bank",
+                       mask="0004", opening_balance="0")
+    with _statements() as seen:
+        assert L.transfer(user, a, b, "40.00", idempotency_key="t-split").status == "ok"
+    updates = [s for s in seen if s.startswith("UPDATE accounts")]
+    assert len(updates) == 2 and not any(" IN (" in s for s in updates)
+    assert (_balance(a), _balance(b)) == (Decimal("60.00"), Decimal("40.00"))
+    assert invariant_violations(user) == []

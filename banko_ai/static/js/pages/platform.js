@@ -5,7 +5,7 @@ document.addEventListener("alpine:init", () => {
   const DISRUPTIVE = ["crash", "outage", "stop", "partition", "isolate", "brownout"];
   const EVERY = { live: 1000, cluster: 3000, data: 15000 };
   const ERROR_WORDS = { "40001": "transaction conflicts", "40003": "ambiguous commits", connection: "lost connections",
-                        timeout: "timeouts" };
+                        timeout: "timeouts", ambiguous: "commits lost in flight" };
   const SOURCES = { chaos: "From the chaos control plane", status_api: "From CockroachDB's HTTP API",
                     sql: "From SQL: replicas only, liveness unknown" };
 

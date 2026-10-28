@@ -147,7 +147,9 @@ def test_apply_changes_the_rate_live():
         sim.apply(LoadConfig.from_dict({"rate": 80}, base=sim.config))
         assert sim.status()["config"]["rate"] == 80
         time.sleep(2.2)
-        assert m.summary("load", window_s=2)["ok"] >= 100
+        # The last whole second: all of it at the new rate, wherever the
+        # change fell inside its own second.
+        assert m.summary("load", window_s=1)["ok"] >= 50
     finally:
         sim.stop()
 
@@ -184,3 +186,37 @@ def test_a_real_run_has_no_errors_and_no_drift():
         assert run_check().ok
     finally:
         clear()
+
+
+def test_a_customer_never_has_two_operations_in_flight():
+    """A customer is one person: while one of their operations runs, the
+    next arrival goes to someone who is free, so busy customers never queue
+    on their own account locks."""
+    in_flight, peak, lock = {}, {}, threading.Lock()
+
+    def runner(op, user, rng):
+        with lock:
+            in_flight[user.user_id] = in_flight.get(user.user_id, 0) + 1
+            peak[user.user_id] = max(peak.get(user.user_id, 0), in_flight[user.user_id])
+        time.sleep(0.01)
+        with lock:
+            in_flight[user.user_id] -= 1
+        return "ok", 0
+
+    sim, m, _ = _sim(runner)
+    sim.start(_cfg(users=6, rate=300, workers=4, duration_s=2))
+    _wait(sim, "idle", 10)
+    assert _done(m)["ok"] > 100 and max(peak.values()) == 1
+
+
+def test_the_simulator_connects_as_the_database_owner(monkeypatch):
+    """Row-level security makes every statement's plan wait on a policy
+    lookup and keeps region filters out of the scan (CockroachDB 26.3), so
+    the simulator connects as the owner, like the seeder."""
+    from banko_ai.db import rls
+    from banko_ai.workers import traffic as T
+
+    monkeypatch.setattr(T, "_simulator", None)
+    monkeypatch.setattr(rls, "app_url", lambda: "postgresql://banko_app@db:26257/defaultdb?sslmode=disable")
+    url = T.get_simulator().url
+    assert "banko_app" not in url and "application_name=banko-load" in url

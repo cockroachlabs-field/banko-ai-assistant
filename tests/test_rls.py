@@ -180,7 +180,7 @@ def test_the_transaction_stream_never_runs_a_subquery_per_purchase(two_users):
     """Under the policy, a NOT EXISTS against ledger_entries is not
     decorrelated and runs once per expense row (11 s for one user on a
     3-region cluster). The unlinked-purchase branch is a join instead."""
-    plan = _plan_as_app(two_users[0], T._STREAM)
+    plan = _plan_as_app(two_users[0], T._stream())
     assert '"exists"' not in plan and "subquery" not in plan, plan
     # The ledger branch's outer join to expenses, and the unlinked purchases' own join.
     assert plan.count("join (") >= 2, plan

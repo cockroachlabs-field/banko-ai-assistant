@@ -74,6 +74,15 @@ def read_session(user_id: str, *, url: str | None = None, follower: bool = False
         yield conn
 
 
+def region_pin(alias: str, region: str | None) -> str:
+    """A predicate that keeps a read inside one region's partition, then
+    AND, or nothing without a region; it reads the :region parameter. Only
+    for customers whose rows all live in their home region, as load users'
+    do: on REGIONAL BY ROW tables a lookup by user_id alone reads every
+    region, and one naming the region reads only that one."""
+    return f"{alias}crdb_region = CAST(:region AS crdb_internal_region) AND " if region else ""
+
+
 def jsonable(value: Any) -> Any:
     """Decimals become numbers rounded to cents, dates ISO strings, UUIDs strings."""
     if isinstance(value, Decimal):

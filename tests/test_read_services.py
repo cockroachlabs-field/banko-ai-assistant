@@ -256,16 +256,17 @@ def _blind_vector_index(monkeypatch):
     v26.3 sometimes does on a REGIONAL BY ROW expenses table."""
     original = T.semantic_sql
     monkeypatch.setattr(T, "semantic_sql",
-                        lambda filters="": original(filters).replace("WHERE e.user_id", "WHERE false AND e.user_id"))
+                        lambda filters="", **kw: original(filters, **kw).replace("WHERE e.user_id",
+                                                                                      "WHERE false AND e.user_id"))
 
 
 def _count_exact_scans(monkeypatch) -> list[str]:
     calls: list[str] = []
     original = getattr(T, "exact_semantic_sql", None)
 
-    def counting(filters=""):
+    def counting(filters="", **kw):
         calls.append(filters)
-        return original(filters)
+        return original(filters, **kw)
 
     monkeypatch.setattr(T, "exact_semantic_sql", counting, raising=False)
     return calls
@@ -302,7 +303,7 @@ def _short_vector_index(monkeypatch):
     user has many: on v26.3 one user's searches all returned the same
     single purchase, so the empty-result check never fired."""
     original = T.semantic_sql
-    monkeypatch.setattr(T, "semantic_sql", lambda filters="": original(filters).replace("LIMIT :k", "LIMIT 1"))
+    monkeypatch.setattr(T, "semantic_sql", lambda filters="", **kw: original(filters, **kw).replace("LIMIT :k", "LIMIT 1"))
 
 
 def test_semantic_search_falls_back_when_the_vector_index_returns_too_few(seeded, monkeypatch):
@@ -346,3 +347,13 @@ def test_no_embedded_rows_means_no_fallback(monkeypatch):
         assert calls == []
     finally:
         drop_user(uid)
+
+
+def test_a_pinned_search_names_the_region_inside_the_vector_cte():
+    """crdb_region leads the per-user vector index, so naming it inside the
+    CTE keeps the index and reads only the home region's partition."""
+    pin = "crdb_region = CAST(:region AS crdb_internal_region) AND user_id = CAST(:u AS UUID)"
+    for build in (T.semantic_sql, T.exact_semantic_sql):
+        sql = build("", pinned=True)
+        assert pin in sql[sql.index("WITH nn"):sql.index("SELECT e.expense_id")]
+        assert "crdb_region" not in build("")
