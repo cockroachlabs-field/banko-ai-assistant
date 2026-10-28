@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from botocore.exceptions import TokenRetrievalError
+from botocore.exceptions import ClientError, TokenRetrievalError
 
 from banko_ai.ai_providers.aws_provider import AWSProvider
 
@@ -45,6 +45,29 @@ def test_aws_fresh_credentials_are_reachable(monkeypatch):
     provider.session.get_credentials.return_value = creds
     assert provider.test_connection() is True
     creds.get_frozen_credentials.assert_called_once()
+    provider.session.client.return_value.list_foundation_models.assert_called_once()
+    service, kwargs = provider.session.client.call_args.args[0], provider.session.client.call_args.kwargs
+    assert service == "bedrock" and kwargs["config"].read_timeout <= 5
+    assert kwargs["config"].retries["total_max_attempts"] == 1
+
+
+def _bedrock_says(monkeypatch, code: str) -> bool:
+    provider = _aws(monkeypatch)
+    provider.session = MagicMock()
+    provider.session.get_credentials.return_value = MagicMock()
+    provider.session.client.return_value.list_foundation_models.side_effect = ClientError(
+        {"Error": {"Code": code, "Message": "from AWS"}}, "ListFoundationModels")
+    return provider.test_connection()
+
+
+def test_aws_keys_aws_rejects_are_not_reachable(monkeypatch):
+    # Stale session keys in ~/.aws resolve locally; only AWS can say they are dead.
+    assert _bedrock_says(monkeypatch, "UnrecognizedClientException") is False
+    assert _bedrock_says(monkeypatch, "ExpiredTokenException") is False
+
+
+def test_aws_keys_that_may_not_list_models_are_still_reachable(monkeypatch):
+    assert _bedrock_says(monkeypatch, "AccessDeniedException") is True
 
 
 def test_openai_check_uses_a_short_timeout_and_no_retries(monkeypatch):

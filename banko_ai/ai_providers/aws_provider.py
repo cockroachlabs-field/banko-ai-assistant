@@ -613,9 +613,13 @@ class AWSProvider(AIProvider):
             raise AIConnectionError(f"Embedding generation failed: {str(e)}")
     
     def test_connection(self) -> bool:
-        """Credentials resolve and are current. get_frozen_credentials forces
-        an SSO refresh, so an expired token shows up here instead of on the
-        first chat. Never logs the identity behind the credentials."""
+        """Credentials resolve, are current, and AWS accepts them.
+        get_frozen_credentials forces an SSO refresh, so an expired token
+        shows up here instead of on the first chat. Stale keys in ~/.aws
+        still resolve locally, so the check also lists Bedrock's models, as
+        the model dropdown does, which asks AWS itself without asking who
+        the credentials belong to."""
+        from botocore.config import Config
         from botocore.exceptions import BotoCoreError, ClientError
 
         if self.session is None:
@@ -628,5 +632,16 @@ class AWSProvider(AIProvider):
         except (BotoCoreError, ClientError):
             # TokenRetrievalError, UnauthorizedSSOTokenError and
             # NoCredentialsError are all BotoCoreError subclasses.
+            return False
+        try:
+            bedrock = self.session.client("bedrock", region_name=self.region, config=Config(
+                connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1}))
+            bedrock.list_foundation_models(byProvider="Anthropic")
+        except ClientError as e:
+            # AccessDeniedException: AWS took the keys, they just may not list
+            # models. UnrecognizedClientException, ExpiredTokenException and
+            # the like: AWS rejected them.
+            return e.response.get("Error", {}).get("Code") == "AccessDeniedException"
+        except BotoCoreError:  # unreachable endpoint, timeout
             return False
         return True
