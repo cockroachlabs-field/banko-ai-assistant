@@ -178,3 +178,12 @@ def test_ui_settings_defaults_and_validation(monkeypatch):
     monkeypatch.setenv("UI_LANGUAGES", "en-US,xx-XX")
     with pytest.raises(Exception):
         S.Settings()
+
+
+def test_checkpoint_pool_size_defaults_to_sixteen_and_needs_one(monkeypatch):
+    assert S.Settings().checkpoint_pool_size == 16
+    monkeypatch.setenv("CHECKPOINT_POOL_SIZE", "32")
+    assert S.Settings().checkpoint_pool_size == 32
+    monkeypatch.setenv("CHECKPOINT_POOL_SIZE", "0")
+    with pytest.raises(ValidationError, match="CHECKPOINT_POOL_SIZE"):
+        S.Settings()

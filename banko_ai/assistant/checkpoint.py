@@ -35,7 +35,11 @@ def get_saver():
 
         from ..utils.db_retry import to_libpq_url
         cfg = get_config()
-        pool = ConnectionPool(to_libpq_url(cfg.database_url), min_size=1, max_size=8, open=True,
+        # Checkpoint reads and writes run concurrently, one pooled connection
+        # each. A turn that finds the pool full waits up to the timeout, then
+        # fails with PoolTimeout, which the saver does not retry.
+        pool = ConnectionPool(to_libpq_url(cfg.database_url), min_size=1, max_size=cfg.checkpoint_pool_size,
+                              timeout=cfg.db_pool_timeout, open=True,
                               kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
                                       "application_name": APPLICATION_NAME})
         saver = CockroachDBSaver(pool)

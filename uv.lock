@@ -364,7 +364,7 @@ requires-dist = [
     { name = "kafka-python", specifier = ">=2.0.0,<4.0.0" },
     { name = "langchain", specifier = ">=1.0.0" },
     { name = "langchain-aws", specifier = ">=1.0.0" },
-    { name = "langchain-cockroachdb", specifier = ">=0.4.0" },
+    { name = "langchain-cockroachdb", specifier = ">=0.5.1" },
     { name = "langchain-community", specifier = ">=0.4.0" },
     { name = "langchain-core", specifier = ">=1.3.3" },
     { name = "langchain-google-genai", specifier = ">=4.0.0" },
@@ -1746,7 +1746,7 @@ wheels = [
 
 [[package]]
 name = "langchain-cockroachdb"
-version = "0.4.0"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "greenlet" },
@@ -1759,9 +1759,9 @@ dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "sqlalchemy-cockroachdb" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b1/1d/2e6484236ba4a565885f2716ff508f821be4653db880cda988f6906a1130/langchain_cockroachdb-0.4.0.tar.gz", hash = "sha256:5c2a24ff65b91813e10f87c6576c0850f8ba3798724230dc0f328f835e32ddc2", size = 402882, upload-time = "2026-10-15T01:40:24.083Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/09/a8/5f4e8d4f22e92fff7f83195239c56b6e00a454c5bf013bb7b89f46b11e08/langchain_cockroachdb-0.5.1.tar.gz", hash = "sha256:7a95e706fc4f55c98b996d7172359e745e081f7ecbb01a92e54616a9b32c5386", size = 581880, upload-time = "2026-10-28T04:15:09.067Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e2/be/4a80370dfc1b53ac506c3334b6ebebcd45d89382e9478b85ae85f3704376/langchain_cockroachdb-0.4.0-py3-none-any.whl", hash = "sha256:f85709bc44bd4357114c34af05744c644db1dc41f5539762ac67bf8446965d69", size = 65034, upload-time = "2026-10-15T01:40:22.788Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/c8/7f770ebab8add1c58fc998f9733d44e71f716e2ca0dd48d204fb9c3edef8/langchain_cockroachdb-0.5.1-py3-none-any.whl", hash = "sha256:a403fdf637f56e01837f93188772621c7eff79eaf8b4900462ece54fc2c379de", size = 121467, upload-time = "2026-10-28T04:15:07.354Z" },
 ]
 
 [[package]]

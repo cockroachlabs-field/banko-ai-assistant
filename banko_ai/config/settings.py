@@ -256,6 +256,9 @@ class Settings(BaseSettings):
         description="Largest cosine distance at which a memory counts as relevant to a question.")
     assistant_action_ttl_hours: int = _field(24, group="assistant", env="ASSISTANT_ACTION_TTL_HOURS",
         description="Hours a proposed change waits for Confirm before it expires.")
+    checkpoint_pool_size: int = _field(16, group="assistant", env="CHECKPOINT_POOL_SIZE",
+        description="Most connections the conversation checkpointer opens, about one per conversation answering at "
+                    "once. Past that a turn waits for a free one, and gives up after DB_POOL_TIMEOUT seconds.")
     search_cache_ttl_minutes: int = _field(10, group="assistant", env="SEARCH_CACHE_TTL_MINUTES",
         description="Minutes a semantic search result stays cached for the same user and data version.")
     search_page_size: int = _field(10, group="assistant", env="SEARCH_PAGE_SIZE",
@@ -301,6 +304,13 @@ class Settings(BaseSettings):
         if value not in allowed:
             raise ValueError(f"RLS_MODE={value!r} must be one of {', '.join(sorted(allowed))}")
         return value
+
+    @field_validator("checkpoint_pool_size")
+    @classmethod
+    def _check_checkpoint_pool_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"CHECKPOINT_POOL_SIZE={v} must be at least 1")
+        return v
 
     @field_validator("brand_accent")
     @classmethod

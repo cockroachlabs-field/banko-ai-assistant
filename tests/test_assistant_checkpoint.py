@@ -32,3 +32,19 @@ def test_a_canceled_session_costs_a_retry_not_the_checkpoint():
     found = saver.get_tuple(written)
     assert found is not None and found.config["configurable"]["thread_id"] == config["configurable"]["thread_id"]
     saver.delete_thread(config["configurable"]["thread_id"])
+
+
+def test_the_pool_follows_checkpoint_pool_size_and_db_pool_timeout(monkeypatch):
+    from banko_ai.config.settings import reset_config
+
+    monkeypatch.setenv("CHECKPOINT_POOL_SIZE", "3")
+    monkeypatch.setenv("DB_POOL_TIMEOUT", "7")
+    reset_config()
+    monkeypatch.setattr(checkpoint, "_saver", None)
+    saver = checkpoint.get_saver()
+    try:
+        assert saver.conn.max_size == 3 and saver.conn.min_size == 1
+        assert saver.conn.timeout == 7
+    finally:
+        saver.conn.close()
+        reset_config()
