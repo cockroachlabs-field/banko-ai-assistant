@@ -160,3 +160,20 @@ def test_card_payments_pay_what_is_owed_then_decline(prepared, vectors):
     assert Decimal(str(card["balance"])) == 0  # paid off exactly, never overpaid
     assert "ok" in outcomes and outcomes[-1] == "declined"
     assert check_integrity(follower_reads=False, user_id=user.user_id).ok
+
+
+def test_card_payments_often_pay_the_whole_balance(monkeypatch):
+    """Many cardholders pay the statement in full, which keeps busy
+    customers' cards from piling up declines."""
+    from decimal import Decimal
+
+    paid = []
+    monkeypatch.setattr(W.accounts, "get_account", lambda user_id, account_id, url=None: {"balance": "-1234.56"})
+    monkeypatch.setattr(W.ledger, "card_payment", lambda user_id, src, card, amount, **kw: paid.append(amount))
+    user = LoadUser("u", "load-00000-aaaa", "saver", None, {"checking": "c", "card": "k"})
+    rng = random.Random(11)
+    for _ in range(200):
+        assert run_op("card_payment", user, OpContext(url=None, vectors=VectorCache({})), rng) == ("ok", 0)
+    full = sum(1 for a in paid if a == Decimal("1234.56"))
+    assert 70 <= full <= 130
+    assert all(Decimal("100") <= a <= Decimal("600") for a in paid if a != Decimal("1234.56"))

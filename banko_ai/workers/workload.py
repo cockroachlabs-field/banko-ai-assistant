@@ -169,13 +169,15 @@ def _transfer(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
 
 
 def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
-    """Pay part of what the card owes (the ledger refuses to pay more)."""
+    """Pay the statement in full half the time, else part of it, as
+    cardholders do; never more than the card owes (the ledger refuses)."""
     card = with_client_retries(lambda: accounts.get_account(user.user_id, user.accounts["card"], url=ctx.url),
                                committed=_never)[0]
     owed = -Decimal(str((card or {}).get("balance") or 0))
     if owed < 1:
         raise Declined(0)
-    amount, key = min(owed, _money(rng, 100, 600)), new_id()
+    amount = owed if rng.random() < 0.5 else min(owed, _money(rng, 100, 600))
+    key = new_id()
     try:
         _, retries = with_client_retries(lambda: ledger.card_payment(
             user.user_id, user.accounts["checking"], user.accounts["card"], amount, idempotency_key=key,
