@@ -295,6 +295,13 @@ class Settings(BaseSettings):
         description="The cockroach-chaos-demo control plane (for example http://localhost:8088). Empty hides the chaos card.")
     chaos_control_token: str = _field("", group="platform", env="CHAOS_CONTROL_TOKEN", secret=True,
         description="The control plane's control token, when it has one. Banko sends it; the browser never sees it.")
+    crdb_admin_url: str = _field("", group="platform", env="CRDB_ADMIN_URL",
+        description="CockroachDB's HTTP API (the DB Console address) for node liveness on the Platform page. "
+                    "Empty derives http://<database host>:8080 on an insecure cluster.")
+    crdb_admin_user: str = _field("", group="platform", env="CRDB_ADMIN_USER",
+        description="SQL user that logs in to the HTTP API on a secure cluster.")
+    crdb_admin_password: str = _field("", group="platform", env="CRDB_ADMIN_PASSWORD", secret=True,
+        description="That user's password.")
 
     # Brand and UI
     brand_accent: str = _field("#6933FF", group="ui", env="BRAND_ACCENT",

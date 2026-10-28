@@ -208,3 +208,11 @@ def test_chaos_token_is_masked(monkeypatch):
     monkeypatch.setenv("CHAOS_CONTROL_TOKEN", "s3cret")
     info = {i.env: i for i in S.Settings().describe()}
     assert "s3cret" not in info["CHAOS_CONTROL_TOKEN"].value
+
+
+def test_crdb_admin_settings_default_empty_and_mask_the_password(monkeypatch):
+    cfg = S.Settings()
+    assert (cfg.crdb_admin_url, cfg.crdb_admin_user, cfg.crdb_admin_password) == ("", "", "")
+    monkeypatch.setenv("CRDB_ADMIN_PASSWORD", "pa55word")
+    info = {i.env: i for i in S.Settings().describe()}
+    assert "pa55word" not in info["CRDB_ADMIN_PASSWORD"].value
