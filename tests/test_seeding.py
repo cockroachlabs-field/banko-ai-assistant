@@ -111,7 +111,7 @@ def test_interrupted_seed_resumes_without_duplicates(saver, monkeypatch):
         return real(user_id, rows, url=url)
 
     monkeypatch.setattr(S, "post_history", flaky)
-    monkeypatch.setattr(S, "_batch_size", lambda: 20)
+    monkeypatch.setattr(S, "_batch_size", lambda: 5)  # a month plans 17 to 39 entries: several batches
     with pytest.raises(RuntimeError):
         S.seed_user(saver, months=1, today=TODAY)
     assert S.seeding_status(saver)["state"] == "failed"
@@ -176,7 +176,7 @@ def test_interrupted_seed_resumed_the_next_day_keeps_the_original_window(saver, 
         return real(user_id, rows, url=url)
 
     monkeypatch.setattr(S, "post_history", flaky)
-    monkeypatch.setattr(S, "_batch_size", lambda: 20)
+    monkeypatch.setattr(S, "_batch_size", lambda: 5)  # a month plans 17 to 39 entries: several batches
     with pytest.raises(RuntimeError):
         S.seed_user(saver, months=1, today=TODAY)
     monkeypatch.setattr(S, "post_history", real)
@@ -381,11 +381,11 @@ def test_the_invariant_holds_after_every_batch(saver, monkeypatch):
         return written
 
     monkeypatch.setattr(S, "post_history", flaky)
-    monkeypatch.setattr(S, "_batch_size", lambda: 20)
+    monkeypatch.setattr(S, "_batch_size", lambda: 5)  # a month plans 17 to 39 entries: several batches
     with pytest.raises(RuntimeError):
         S.seed_user(saver, months=1, today=TODAY)
     assert after_batch == [[]]
-    assert _count("ledger_entries", saver) == 20
+    assert _count("ledger_entries", saver) == 5
     assert invariant_violations(saver) == []  # a failed seed leaves no drift behind
 
 
