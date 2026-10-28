@@ -71,8 +71,9 @@ def _month_bounds(month: str) -> tuple[datetime, datetime]:
 
 
 def net_worth_history(user_id: str, *, months: int = 12, today: date | None = None,
-                      url: str | None = None) -> list[dict]:
+                      url: str | None = None, region: str | None = None) -> list[dict]:
     url = request_url(url)
+    region = region if region is not None else read_region(user_id, url)
     today = today or datetime.now(timezone.utc).date()
     months = max(1, int(months))
     with read_session(user_id, url=url, follower=True) as conn:
@@ -94,9 +95,9 @@ def net_worth_history(user_id: str, *, months: int = 12, today: date | None = No
     # comes from live balances so it matches the accounts page.
     if labels[-1] == datetime.now(timezone.utc).strftime("%Y-%m"):
         with read_session(user_id, url=url) as conn:
-            out[-1]["net_worth"] = conn.execute(text("SELECT COALESCE(sum(balance), 0) FROM accounts "
-                                                     "WHERE user_id = CAST(:u AS UUID)"),
-                                                {"u": user_id}).scalar()
+            out[-1]["net_worth"] = conn.execute(text(f"SELECT COALESCE(sum(balance), 0) FROM accounts "
+                                                     f"WHERE {region_pin('', region)}user_id = CAST(:u AS UUID)"),
+                                                {"u": user_id, "region": region}).scalar()
     return jsonable(out)
 
 

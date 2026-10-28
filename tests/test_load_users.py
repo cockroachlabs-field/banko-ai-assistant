@@ -103,7 +103,7 @@ def test_reads_pinned_to_the_home_region_return_what_unpinned_reads_do(mr_db):
 
     from banko_ai.db import regions
     from banko_ai.db.engine import with_gateway_region
-    from banko_ai.services import accounts, transactions
+    from banko_ai.services import accounts, budgets, reports, transactions
     from banko_ai.services.platform import sample_serving
     from banko_ai.workers.workload import OpContext, VectorCache, run_op
 
@@ -121,6 +121,11 @@ def test_reads_pinned_to_the_home_region_return_what_unpinned_reads_do(mr_db):
         assert (transactions.semantic_search(uid, "coffee", limit=10, url=url, region=region)
                 == transactions.semantic_search(uid, "coffee", limit=10, url=url))
         assert region in (sample_serving(uid, url=with_gateway_region(url, region), region=region) or "")
+        # The dashboard's other live reads pin themselves the same way ("" reads unpinned).
+        assert budgets.budget_progress(uid, url=url) == budgets.budget_progress(uid, url=url, region="")
+        assert reports.latest_insight(uid, url=url) == reports.latest_insight(uid, url=url, region="")
+        assert (accounts.net_worth_history(uid, months=2, url=url)
+                == accounts.net_worth_history(uid, months=2, url=url, region=""))
 
 
 @needs_mr

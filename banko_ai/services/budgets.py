@@ -11,27 +11,29 @@ from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..db.engine import run_transaction
-from ..db.regions import has_region_column, money_region, region_columns
+from ..db.regions import has_region_column, money_region, read_region, region_columns
 from ..db.rls import request_url
-from ._sql import jsonable, read_session
+from ._sql import jsonable, read_session, region_pin
 from .ledger import LedgerError, bump_data_version, money
 
 
-def budget_progress(user_id: str, *, today: date | None = None, url: str | None = None) -> dict:
+def budget_progress(user_id: str, *, today: date | None = None, url: str | None = None,
+                    region: str | None = None) -> dict:
     url = request_url(url)
+    region = region if region is not None else read_region(user_id, url)
     today = today or datetime.now(timezone.utc).date()
     first = today.replace(day=1)
     days = calendar.monthrange(today.year, today.month)[1]
     nxt = date(today.year + (today.month == 12), 1 if today.month == 12 else today.month + 1, 1)
     catalog = get_catalog()
     with read_session(user_id, url=url) as conn:
-        budgets = conn.execute(text("SELECT category, amount FROM user_budgets WHERE user_id = CAST(:u AS UUID)"),
-                               {"u": user_id}).fetchall()
-        spent_rows = conn.execute(text("""
+        budgets = conn.execute(text(f"SELECT category, amount FROM user_budgets WHERE {region_pin('', region)}"
+                                    "user_id = CAST(:u AS UUID)"), {"u": user_id, "region": region}).fetchall()
+        spent_rows = conn.execute(text(f"""
             SELECT shopping_type, sum(expense_amount) FROM expenses
-            WHERE user_id = CAST(:u AS UUID) AND expense_date >= :first AND expense_date < :next
+            WHERE {region_pin('', region)}user_id = CAST(:u AS UUID) AND expense_date >= :first AND expense_date < :next
             GROUP BY shopping_type
-        """), {"u": user_id, "first": first, "next": nxt}).fetchall()
+        """), {"u": user_id, "first": first, "next": nxt, "region": region}).fetchall()
     spent: dict[str, Decimal] = {}
     for label, total in spent_rows:
         key = catalog.category_for(label).key

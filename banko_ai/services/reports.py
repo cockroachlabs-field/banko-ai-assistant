@@ -9,9 +9,10 @@ from decimal import Decimal
 from sqlalchemy import text
 
 from ..config.catalog import get_catalog
+from ..db.regions import read_region
 from ..db.rls import request_url
 from . import accounts, budgets, recurring, transactions
-from ._sql import jsonable, month_labels, read_session, valid_uuid
+from ._sql import jsonable, month_labels, read_session, region_pin, valid_uuid
 
 
 def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: str | None = None) -> dict:
@@ -85,11 +86,13 @@ def spending_pace(user_id: str, *, today: date | None = None, url: str | None = 
                      "this_total": this_month[-1]["total"], "last_same_day": same_day})
 
 
-def latest_insight(user_id: str, *, url: str | None = None) -> dict | None:
+def latest_insight(user_id: str, *, url: str | None = None, region: str | None = None) -> dict | None:
     url = request_url(url)
+    region = region if region is not None else read_region(user_id, url)
     with read_session(user_id, url=url) as conn:
-        row = conn.execute(text("SELECT nudge_id, message, created_at FROM coach_nudges WHERE user_id = CAST(:u AS UUID) "
-                                "ORDER BY created_at DESC LIMIT 1"), {"u": user_id}).fetchone()
+        row = conn.execute(text(f"SELECT nudge_id, message, created_at FROM coach_nudges WHERE {region_pin('', region)}"
+                                "user_id = CAST(:u AS UUID) ORDER BY created_at DESC LIMIT 1"),
+                           {"u": user_id, "region": region}).fetchone()
     return jsonable({"nudge_id": str(row[0]), "message": row[1], "created_at": row[2]}) if row else None
 
 

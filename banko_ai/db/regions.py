@@ -335,7 +335,8 @@ def user_home_region(user_id: str, url: str | None = None) -> str | None:
 
 ROWS_HOME_TTL_S = 600.0
 _rows_home: dict[tuple[str, str], tuple[bool, float]] = {}
-_READ_TABLES = ("accounts", "ledger_entries", "expenses")  # the tables region-pinned reads touch
+# The tables region-pinned reads touch.
+_READ_TABLES = ("accounts", "ledger_entries", "expenses", "user_budgets", "coach_nudges")
 
 
 def _users_with_rows_away(user_ids: list[str], url: str | None) -> set[str]:
