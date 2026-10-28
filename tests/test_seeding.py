@@ -1,6 +1,8 @@
 """Seeding writes deterministic history once, resumes cleanly, and catches up."""
 
+import json
 import os
+import time
 from datetime import date, timedelta
 
 import psycopg
@@ -246,6 +248,68 @@ def test_reset_holds_the_lease_until_the_reseed_is_done(saver, monkeypatch):
     assert S.reset_user(saver, today=TODAY, months=1) > 0
     assert seen == [("delete", True), ("seed", True)]
     assert not S._lease_held(saver, None)
+
+
+def test_a_lease_left_by_a_killed_run_lapses_and_the_next_seed_takes_it(saver, monkeypatch):
+    monkeypatch.setattr(S, "LEASE_TTL_SECONDS", 2)
+    monkeypatch.setattr(S, "LEASE_WAIT_SECONDS", 20)
+    real_wait, waited = S._wait_for_lease, []
+
+    def timed_wait(*args):
+        started = time.monotonic()
+        real_wait(*args)
+        waited.append(time.monotonic() - started)
+
+    monkeypatch.setattr(S, "_wait_for_lease", timed_wait)
+    assert S._claim_lease(saver, "killed-boot", None)  # nobody renews it: that process is gone
+    assert S.seed_user(saver, months=1, today=TODAY) > 0
+    assert waited and waited[0] < 10, "the wait ends when the dead run's lease lapses, not at the deadline"
+    assert S._read_meta(saver, None)["through"] == TODAY.isoformat()
+    assert invariant_violations(saver) == []
+    assert not S._lease_held(saver, None)
+
+
+def test_the_heartbeat_keeps_the_lease_through_a_step_longer_than_the_ttl(saver, monkeypatch):
+    from banko_ai.utils import embeddings
+
+    monkeypatch.setattr(S, "LEASE_TTL_SECONDS", 2)
+    monkeypatch.setattr(S, "LEASE_HEARTBEAT_SECONDS", 0.5)
+    real_load, stolen = embeddings.load_embedding_model, []
+
+    def slow_load(*args, **kwargs):
+        time.sleep(4)  # twice the TTL, like a first boot waiting for the model download
+        stolen.append(S._claim_lease(saver, "intruder", None))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(embeddings, "load_embedding_model", slow_load)
+    assert S.seed_user(saver, months=1, today=TODAY) > 0
+    assert stolen == [False]
+    assert invariant_violations(saver) == []
+    assert not S._lease_held(saver, None)
+
+
+def test_a_seed_that_lost_its_lease_stops_before_it_writes_again(saver, monkeypatch):
+    from banko_ai.utils import embeddings
+
+    real_load, at_takeover = embeddings.load_embedding_model, []
+
+    def taken_over_meanwhile(*args, **kwargs):
+        # This run stalled past the TTL and a reset took the lease over.
+        with get_engine().begin() as c:
+            c.execute(text("UPDATE banko_meta SET value = :v WHERE key = :k"),
+                      {"v": json.dumps({"owner": "reset", "expires_at": "2100-01-01T00:00:00+00:00"}),
+                       "k": f"seed_lock:{saver}"})
+        at_takeover.append(_count("ledger_entries", saver))
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(embeddings, "load_embedding_model", taken_over_meanwhile)
+    try:
+        with pytest.raises(S.LeaseLost):
+            S.seed_user(saver, months=1, today=TODAY)
+        assert _count("ledger_entries", saver) == at_takeover[0]
+        assert S._lease_held(saver, None), "the run that lost the lease leaves the new owner's alone"
+    finally:
+        S._release_lease(saver, "reset", None)
 
 
 def test_concurrent_seeds_of_one_user_never_duplicate(saver):

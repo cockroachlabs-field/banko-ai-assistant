@@ -90,8 +90,11 @@ PIXEL = bytes.fromhex("47494638396101000100800000000000ffffff21f90401000000002c0
 
 @pytest.fixture(scope="module")
 def server():
-    env = {**os.environ, "AI_SERVICE": "ollama", "COACH_KAFKA_ENABLED": "false",
-           "CDC_WEBHOOK_HMAC_SECRET": "dev-only-secret", "PYTHONUNBUFFERED": "1"}
+    # A real boot, seeding included: conftest turns autosetup off for in-process
+    # tests, and the pages here need the personas' history. They never read
+    # the legacy sample expenses, so none are written into the test database.
+    env = {**os.environ, "AI_SERVICE": "ollama", "COACH_KAFKA_ENABLED": "false", "BANKO_SKIP_AUTOSETUP": "0",
+           "SAMPLE_DATA_COUNT": "0", "CDC_WEBHOOK_HMAC_SECRET": "dev-only-secret", "PYTHONUNBUFFERED": "1"}
     assert ":26258/" in env.get("DATABASE_URL", ""), "the browser pass runs against the test database only"
     # `python -m banko_ai` ignores its arguments, so call the click group directly.
     proc = subprocess.Popen([sys.executable, "-c", "from banko_ai.cli import cli; cli()",
@@ -107,6 +110,21 @@ def server():
     else:
         proc.kill()
         pytest.fail("the app never became ready on port 5073")
+    # The personas' history seeds in the background after the ready line, and
+    # first waits out any seeding lease a killed earlier run left behind.
+    persona_data = {}
+    while time.time() < deadline + 300:
+        try:
+            with urllib.request.urlopen(BASE + "/api/health", timeout=5) as r:
+                persona_data = json.load(r)["components"].get("persona_data") or {}
+        except Exception:
+            persona_data = {}
+        if persona_data.get("state") in ("ready", "failed"):
+            break
+        time.sleep(2)
+    if persona_data.get("state") != "ready":
+        proc.kill()
+        pytest.fail(f"the personas' history never became ready on port 5073: {persona_data or 'no answer'}")
     yield BASE
     proc.terminate()
     proc.wait(timeout=20)

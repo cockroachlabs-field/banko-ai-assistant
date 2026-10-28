@@ -182,8 +182,18 @@ def _ensure_goals(user_id: str, plan: SeedPlan, account_ids: dict[str, str], url
             account_id=account_ids[goal.account_key], target_date=goal.target_date, url=url)
     return ids
 
-LEASE_MINUTES = 15
-LEASE_WAIT_SECONDS = 30
+# A seed holds its user's lease LEASE_TTL_SECONDS at a time and a heartbeat
+# renews it every LEASE_HEARTBEAT_SECONDS, so a run killed mid-seed blocks
+# that user for a minute at most. Waiters wait a little longer than the TTL,
+# so a dead run's lease lapses before they give up.
+LEASE_TTL_SECONDS = 60
+LEASE_HEARTBEAT_SECONDS = 15
+LEASE_WAIT_SECONDS = LEASE_TTL_SECONDS + LEASE_HEARTBEAT_SECONDS
+
+
+class LeaseLost(RuntimeError):
+    """Another run took this user's seeding lease over after this one stalled
+    past LEASE_TTL_SECONDS. The run that lost it stops before it writes again."""
 
 
 def _lease_key(user_id: str) -> str:
@@ -199,7 +209,7 @@ def _claim_lease(user_id: str, owner: str, url: str | None) -> bool:
         conn.execute(text(f"""
             INSERT INTO banko_meta (key, value, updated_at)
             VALUES (:k, json_build_object('owner', CAST(:owner AS STRING),
-                                          'expires_at', now() + INTERVAL '{LEASE_MINUTES} minutes')::STRING, now())
+                                          'expires_at', now() + INTERVAL '{LEASE_TTL_SECONDS} seconds')::STRING, now())
             ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = now()
             WHERE CAST(CAST(banko_meta.value AS JSONB)->>'expires_at' AS TIMESTAMPTZ) < now()
         """), {"k": _lease_key(user_id), "owner": owner})
@@ -211,16 +221,50 @@ def _claim_lease(user_id: str, owner: str, url: str | None) -> bool:
 
 
 def _refresh_lease(user_id: str, owner: str, url: str | None) -> None:
-    def fn(conn) -> None:
-        conn.execute(text(f"""
+    """Renew the lease for another LEASE_TTL_SECONDS. Raises LeaseLost when
+    another run holds it now."""
+
+    def fn(conn) -> int:
+        return int(conn.execute(text(f"""
             UPDATE banko_meta
             SET value = json_build_object('owner', CAST(:owner AS STRING),
-                                          'expires_at', now() + INTERVAL '{LEASE_MINUTES} minutes')::STRING,
+                                          'expires_at', now() + INTERVAL '{LEASE_TTL_SECONDS} seconds')::STRING,
                 updated_at = now()
             WHERE key = :k AND CAST(value AS JSONB)->>'owner' = :owner
-        """), {"k": _lease_key(user_id), "owner": owner})
+        """), {"k": _lease_key(user_id), "owner": owner}).rowcount)
 
-    run_transaction(fn, url=url)
+    if run_transaction(fn, url=url) == 0:
+        raise LeaseLost(f"another run took over the seeding lease for {user_id}")
+
+
+class _LeaseHeartbeat:
+    """Renews a seed's lease from a thread of its own, so a step that outlasts
+    the TTL (a first boot waiting minutes for the embedding model) never lets
+    it lapse. It stops once another run holds the lease; the seed's own check
+    before its next write raises LeaseLost."""
+
+    def __init__(self, user_id: str, owner: str, url: str | None):
+        self._lease = (user_id, owner, url)
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="banko-seed-lease", daemon=True)
+
+    def __enter__(self) -> _LeaseHeartbeat:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop.wait(LEASE_HEARTBEAT_SECONDS):
+            try:
+                _refresh_lease(*self._lease)
+            except LeaseLost:
+                log.warning("seeding: another run took over the lease for %s", self._lease[0])
+                return
+            except Exception:  # a transient error; the next beat tries again
+                log.debug("seeding: lease heartbeat skipped", exc_info=True)
 
 
 def _release_lease(user_id: str, owner: str, url: str | None) -> None:
@@ -235,9 +279,13 @@ def _release_lease(user_id: str, owner: str, url: str | None) -> None:
 
 
 def _lease_held(user_id: str, url: str | None) -> bool:
+    """True while a run holds this user's lease. A lease that has lapsed
+    belongs to a run that died, and the next claim takes it over."""
     with get_engine(url).connect() as conn:
-        return conn.execute(text("SELECT 1 FROM banko_meta WHERE key = :k"),
-                            {"k": _lease_key(user_id)}).fetchone() is not None
+        return conn.execute(text(
+            "SELECT 1 FROM banko_meta WHERE key = :k "
+            "AND CAST(CAST(value AS JSONB)->>'expires_at' AS TIMESTAMPTZ) >= now()"),
+            {"k": _lease_key(user_id)}).fetchone() is not None
 
 
 def _wait_for_lease(user_id: str, url: str | None) -> None:
@@ -246,9 +294,9 @@ def _wait_for_lease(user_id: str, url: str | None) -> None:
         time.sleep(1.0)
 
 
-def _wait_for_owner(user_id: str, today: date, on_progress: ProgressFn | None, url: str | None) -> int:
-    """Someone else is seeding this user: give them a moment, never write."""
-    _wait_for_lease(user_id, url)
+def _report_other_owner(user_id: str, today: date, on_progress: ProgressFn | None, url: str | None) -> int:
+    """Another run still holds this user's lease after the wait: report how
+    far the history is, never write."""
     meta = _read_meta(user_id, url)
     current = bool(meta and meta.get("through") and date.fromisoformat(meta["through"]) >= today)
     _report(user_id, 0, 0, "done" if current else "running", on_progress)
@@ -280,10 +328,15 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
     style, profile = _profile_for(user_id, style, url)
     owner = secrets.token_hex(8)
     if not _claim_lease(user_id, owner, url):
-        return _wait_for_owner(user_id, today, on_progress, url)
+        # Wait for the other run to finish, or for its lease to lapse if it
+        # died, then take the lease. A finished history makes this run a no-op.
+        _wait_for_lease(user_id, url)
+        if not _claim_lease(user_id, owner, url):
+            return _report_other_owner(user_id, today, on_progress, url)
     try:
-        return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
-                           today, on_progress, url, owner, batch_size=batch_size)
+        with _LeaseHeartbeat(user_id, owner, url):
+            return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
+                               today, on_progress, url, owner, batch_size=batch_size)
     finally:
         _release_lease(user_id, owner, url)
 
@@ -331,6 +384,7 @@ def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
         model = load_embedding_model(wait_seconds=600) if any(e.is_purchase for e in todo) else None
         size = max(1, batch_size) if batch_size else _batch_size()
         for i in range(0, total, size):
+            _refresh_lease(user_id, owner, url)  # never write once another run holds the lease
             batch = todo[i:i + size]
             purchases = [e for e in batch if e.is_purchase]
             vectors = iter(model.encode([e.description for e in purchases])) if model and purchases else iter(())
@@ -352,8 +406,8 @@ def _seed_owned(user_id: str, style: str, profile, months: int, today: date,
                                        transfer_id=e.transfer_ref))
             post_history(user_id, rows, url=url)
             done += len(batch)
-            _refresh_lease(user_id, owner, url)
             _report(user_id, done, total, "running", on_progress)
+        _refresh_lease(user_id, owner, url)
         rebalance(user_id, url=url)
         _write_meta(user_id, {"start": start.isoformat(), "through": today.isoformat(), "style": style}, url)
     except Exception:
@@ -463,8 +517,9 @@ def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn 
                         "after %ss; nothing was deleted", user_id, LEASE_WAIT_SECONDS)
             return 0
     try:
-        _delete_money_rows(user_id, url)
-        return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
-                           today, on_progress, url, owner)
+        with _LeaseHeartbeat(user_id, owner, url):
+            _delete_money_rows(user_id, url)
+            return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
+                               today, on_progress, url, owner)
     finally:
         _release_lease(user_id, owner, url)
