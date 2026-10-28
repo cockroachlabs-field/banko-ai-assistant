@@ -19,6 +19,7 @@ from sqlalchemy.engine import Connection, Engine, make_url
 from sqlalchemy.exc import DBAPIError
 
 from ..config.settings import get_config
+from ..observability.metrics import metrics
 from ..utils.db_retry import normalize_db_url
 
 log = logging.getLogger("banko.db")
@@ -139,12 +140,14 @@ def run_transaction(fn: Callable[[Connection], T], *, url: str | None = None,
         except DBAPIError as exc:
             if attempt < attempts and is_retryable(exc, idempotent=idempotent):
                 stats.record_retry()
+                metrics.record("db.retries")
                 log.info("retrying transaction after %s (attempt %d of %d)",
                          _sqlstate(exc) or exc.__class__.__name__, attempt, attempts)
                 time.sleep(delay + random.uniform(0, delay))
                 delay = min(delay * 2, 2.0)
                 continue
             stats.record_failure()
+            metrics.record("db.failures")
             raise
     raise AssertionError("unreachable")
 

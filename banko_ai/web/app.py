@@ -46,6 +46,7 @@ from ..config.settings import get_config
 from ..db.engine import get_engine, mask_url
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
+from ..observability.metrics import metrics
 from ..services.profile import get_profiles
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import get_database_url
@@ -332,6 +333,26 @@ def create_app() -> Flask:
         threading.Thread(target=_replay_stranded_on_boot,
                          name="coach-stranded-replay", daemon=True).start()
         return "webhook active, kafka enabled" if config.coach_kafka_enabled else "webhook active"
+
+    # Every request's time and status, for the Platform view. Registered
+    # before the warm-up gate so a 503 during warm-up is timed too. Static
+    # files and the Platform page's own once-a-second poll would only drown
+    # the real traffic.
+    _UNMEASURED = ("/static/", "/socket.io", "/api/v1/platform/live", "/favicon")
+
+    @app.before_request
+    def _stamp_request():
+        g._banko_t0 = time.perf_counter()
+
+    @app.after_request
+    def _measure_request(response):
+        started = g.pop("_banko_t0", None)
+        if started is not None and not request.path.startswith(_UNMEASURED):
+            failed = response.status_code >= 500
+            metrics.record("http", ms=(time.perf_counter() - started) * 1000,
+                           outcome="error" if failed else "ok",
+                           error_class=str(response.status_code) if failed else None)
+        return response
 
     # /health covers /health/coach, which the pipeline polls during warm-up.
     _READINESS_EXEMPT = ("/api/health", "/health", "/static/", "/socket.io", "/favicon")
