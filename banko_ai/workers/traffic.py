@@ -174,9 +174,10 @@ class TrafficSimulator:
                  runner: Callable[[str, LoadUser, random.Random], tuple[str, int]] | None = None,
                  prepare: Callable[[int], list[LoadUser]] | None = None,
                  sampler: Callable[[str], str | None] | None = _DEFAULT,
-                 integrity: Callable[[], Any] | None = _DEFAULT,
+                 integrity: Callable[[], Any] | None = _DEFAULT, pool_size: int | None = None,
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
         self.metrics = metrics or default_metrics
+        self._pool_size = pool_size
         self.events = events or default_events
         self.url = url
         self._runner = runner
@@ -278,6 +279,9 @@ class TrafficSimulator:
 
     def _boot(self, run: _Run) -> None:
         try:
+            if self.url and self._pool_size:  # the simulator's own pool, created on its first run
+                from ..db.engine import get_engine
+                get_engine(self.url, pool_size=self._pool_size)
             users = list(self._prepare(run.config.users))[:run.config.users]
             if not users:
                 raise RuntimeError("no load users")
@@ -439,16 +443,16 @@ _simulator_lock = threading.Lock()
 
 def get_simulator() -> TrafficSimulator:
     """The process's simulator, on its own banko-load pool (the app role's
-    URL when row-level security is on), sized for LOAD_MAX_WORKERS."""
+    URL when row-level security is on), sized for LOAD_MAX_WORKERS and
+    created on the first run, so asking for its status never connects."""
     global _simulator
     with _simulator_lock:
         if _simulator is None:
             from ..db import rls
-            from ..db.engine import get_engine, with_application_name
+            from ..db.engine import with_application_name
             cfg = get_config()
             url = with_application_name(rls.app_url() or cfg.database_url, "banko-load")
-            get_engine(url, pool_size=cfg.load_max_workers + 2)
-            _simulator = TrafficSimulator(url=url)
+            _simulator = TrafficSimulator(url=url, pool_size=cfg.load_max_workers + 2)
         return _simulator
 
 

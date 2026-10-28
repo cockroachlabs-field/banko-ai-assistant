@@ -1537,6 +1537,14 @@ def create_app() -> Flask:
     app.register_blueprint(coach_api)
     from .agents_api import agents_api
     app.register_blueprint(agents_api)
+    from .platform_api import platform_api
+    app.register_blueprint(platform_api)
+    # A load run's threads are daemons; stop it cleanly so its last
+    # operations finish and the Stop event lands.
+    import atexit
+
+    from ..workers.traffic import stop_simulator
+    atexit.register(stop_simulator)
     from .pages import pages
     app.register_blueprint(pages)
 

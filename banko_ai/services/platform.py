@@ -55,6 +55,13 @@ def _regions(conn: Connection) -> list[str]:
         return []
 
 
+def cluster_regions(*, url: str | None = None) -> list[str]:
+    """The cluster's regions (empty without localities): how a derived HTTP
+    API address is checked against the database Banko is connected to."""
+    with _session(url) as conn:
+        return sorted(str(r[0]) for r in conn.execute(text("SELECT region FROM [SHOW REGIONS FROM CLUSTER]")))
+
+
 def _lease_holders(conn: Connection, table: str) -> list[tuple[int, dict[str, str]]]:
     # WITH DETAILS asks every range for its span stats: about 7 s per table
     # on a three-region cluster with realistic latency, so only the
