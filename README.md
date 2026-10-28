@@ -336,7 +336,7 @@ a node in their home region, with reads that stay in that region. That
 needs a database URL that reaches nodes in every region, such as the chaos
 demo's load balancer; when a region goes down its customers move to a
 surviving region and come home after it recovers. A database created on a
-multi-region cluster also keys expenses and transfer idempotency by region,
+multi-region cluster also keys expenses and transfers by region,
 so a write's commit is its only trip to another region; a database that
 became multi-region later keeps a global expense key, which adds one round
 trip to each purchase.
