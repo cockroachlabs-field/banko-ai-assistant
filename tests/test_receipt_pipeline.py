@@ -156,6 +156,29 @@ def test_a_grocery_receipt_posts_as_groceries(member, image, monkeypatch):
     assert "food or transportation" not in prompt and "Income" not in prompt
 
 
+class _DownLLM:
+    """A model that never answers: an outage, or credentials the provider rejects."""
+
+    def invoke(self, prompt):
+        raise ConnectionError("The security token included in the request is invalid.")
+
+
+def _real_extract(monkeypatch, llm):
+    from banko_ai.agents import llm_factory
+    monkeypatch.setattr(llm_factory, "get_llm_for_agent", lambda temp, model_override=None: llm)
+    return receipts.ReceiptHooks(ocr=lambda path: "BLUE BOTTLE COFFEE TOTAL 9.75", extract=receipts.default_hooks().extract,
+                                 fraud=lambda u, e: "No issues detected", budget=lambda u: "Within budget")
+
+
+def test_a_model_that_does_not_answer_is_our_failure_not_the_photo(member, image, monkeypatch):
+    assert _run(member, image, _real_extract(monkeypatch, _DownLLM()))[-1] == {"type": "error", "message": receipts.FAILED}
+
+
+def test_an_answer_that_is_no_receipt_asks_for_a_clearer_photo(member, image, monkeypatch):
+    hooks = _real_extract(monkeypatch, _StubLLM("I can't tell what this is."))
+    assert _run(member, image, hooks)[-1] == {"type": "error", "message": receipts.INVALID}
+
+
 def test_a_receipt_without_a_date_or_payment_method_posts(member, image):
     """Many receipts print no payment method, and some no readable date."""
     fields = {"merchant": "Corner Bakery", "amount": 6.40, "category": "Restaurant", "items": ["Rye loaf"],

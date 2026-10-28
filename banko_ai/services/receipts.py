@@ -99,7 +99,14 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
 
     def extract(text_value: str) -> dict:
         out = parse_receipt_fields(text_value, get_llm_for_agent(0.1, model_override=model))
-        return out.get("fields", {}) if out.get("success") else {}
+        if out.get("success"):
+            fields: dict = out.get("fields", {})
+            return fields
+        if out.get("raw_response") is None:
+            # The model never answered (an outage, credentials the provider
+            # rejects): that is our failure, not a blurry photo.
+            raise RuntimeError(f"receipt extraction got no answer from the model: {out.get('error')}")
+        return {}
 
     def fraud(user_id: str, expense_id: str) -> str:
         from ..agents.fraud_agent import FraudAgent
