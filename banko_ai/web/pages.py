@@ -75,6 +75,11 @@ def agents():
     return render_template("pages/agents.html")
 
 
+@pages.get("/platform")
+def platform():
+    return render_template("pages/platform.html")
+
+
 @pages.get("/settings")
 def settings():
     personas = [{"user_id": p.user_id, "username": p.username, "display_name": p.display_name}

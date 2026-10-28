@@ -88,9 +88,84 @@
     }));
   }
 
+  function clock(sec) {
+    return sec == null ? "" : new Date(sec * 1000).toLocaleTimeString("en-US", { hour12: false });
+  }
+
+  // A time series updated in place once a second (one axis, 2px lines).
+  // Hovering draws a crosshair and one tooltip with every series, value
+  // first; thin markers stand at the seconds events happened, and the
+  // tooltip for that second names them.
+  function timeline(canvas, { series, format = (v) => String(v) }) {
+    const state = { labels: [], data: series.map(() => []), events: [] };
+    const tones = { bad: "--neg", good: "--pos", warn: "--warn", info: "--mu" };
+    const marks = {
+      id: "bankoTimeline",
+      afterDatasetsDraw(chart) {
+        const { ctx, chartArea: area, scales: { x } } = chart;
+        const rule = (px, color) => {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(px, area.top);
+          ctx.lineTo(px, area.bottom);
+          ctx.stroke();
+        };
+        ctx.save();
+        for (const ev of state.events) {
+          const i = state.labels.indexOf(ev.second);
+          if (i >= 0) rule(Math.round(x.getPixelForValue(i)) + 0.5, alpha(css(tones[ev.level] || "--mu"), 0.75));
+        }
+        const active = chart.tooltip ? chart.tooltip.getActiveElements() : [];
+        if (active.length) rule(Math.round(active[0].element.x) + 0.5, css("--mu"));
+        ctx.restore();
+      },
+    };
+    const reg = register(canvas, () => new Chart(canvas, {
+      type: "line",
+      data: {
+        labels: state.labels,
+        datasets: series.map((s, i) => {
+          const color = css(s.color);
+          return { label: s.label, data: state.data[i], borderColor: color, backgroundColor: color,
+                   borderDash: s.dashed ? [5, 4] : [], borderWidth: 2, borderCapStyle: "round", borderJoinStyle: "round",
+                   pointRadius: 0, pointHoverRadius: 4, pointHoverBorderWidth: 2, pointHoverBorderColor: css("--card"),
+                   tension: 0.25, spanGaps: true, fill: false };
+        }),
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: {
+            title: (items) => clock(state.labels[items[0].dataIndex]),
+            label: (c) => (c.parsed.y == null ? "no data" : format(c.parsed.y)) + "  " + c.dataset.label,
+            afterBody: (items) => state.events.filter((e) => e.second === state.labels[items[0].dataIndex]).map((e) => e.text),
+          } },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: css("--mu"), maxRotation: 0, autoSkip: true, maxTicksLimit: 6,
+                                                 callback: (v, i) => clock(state.labels[i]) } },
+          y: { beginAtZero: true, grid: { color: css("--chart-grid") }, border: { display: false },
+               ticks: { color: css("--mu"), maxTicksLimit: 5, callback: (v) => format(v) } },
+        },
+      },
+      plugins: [marks],
+    }));
+    return {
+      destroy: reg.destroy,
+      update(labels, data, events) {
+        state.labels.splice(0, state.labels.length, ...labels);
+        data.forEach((d, i) => state.data[i].splice(0, state.data[i].length, ...d));
+        state.events = events || [];
+        reg.entry.chart.update("none");
+      },
+    };
+  }
+
   window.addEventListener("banko:theme", () => {
     for (const e of live) { e.chart.destroy(); e.chart = e.build(); }
   });
 
-  Banko.charts = { line, bar, doughnut, css };
+  Banko.charts = { line, bar, doughnut, timeline, css };
 })();

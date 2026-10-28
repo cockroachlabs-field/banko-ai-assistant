@@ -321,6 +321,22 @@ button { font: inherit; color: inherit; }
 .b-kv { font-family: ui-monospace, Menlo, monospace; font-size: 11px; background: var(--card); border: 1px solid var(--bd); border-radius: 8px;
   padding: 8px 9px; color: var(--mu); line-height: 1.5; white-space: pre-wrap; overflow-x: auto; max-height: 280px; }
 
+/* Platform */
+.b-loadform { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.b-loadform .b-field { width: 150px; }
+.b-weights { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+.b-weights .b-field { width: 110px; }
+.b-actions { display: flex; gap: 8px; flex-wrap: wrap; width: 100%; }
+.b-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 12px; margin-top: 8px; }
+.b-tiles .v { font-size: 19px; font-weight: 700; letter-spacing: -.01em; margin-top: 2px; white-space: nowrap; }
+.b-events { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 420px; overflow-y: auto; }
+.b-event { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; font-size: 13px;
+  padding: 4px 0; border-top: 1px solid var(--bd2); }
+.b-regions { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 8px; }
+.b-nodes { display: flex; flex-wrap: wrap; gap: 6px; }
+.b-scroll { max-height: 220px; overflow-y: auto; margin-top: 6px; }
+.b-card.stale { opacity: .62; }
+
 /* Small screens */
 .b-menu-btn { display: none; }
 @media (max-width: 900px) {
@@ -336,4 +352,5 @@ button { font: inherit; color: inherit; }
   .b-panel { width: 100vw; }
   .b-assist-page { grid-template-columns: 1fr; height: auto; }
   .b-threads, .b-trace { display: none; }
+  .b-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -201,7 +201,9 @@ def _fetch_data(state: _State) -> dict:
 
 
 def _error(status: int, code: str, message: str):
-    return jsonify({"error": code, "message": message}), status
+    # As every v2 API: the plain sentence in "error" (the page shows it as
+    # is), and a code beside it for pages that branch on the kind.
+    return jsonify({"error": message, "code": code}), status
 
 
 @platform_api.before_request
@@ -239,9 +241,17 @@ def live():
         "http": window("http"),
         "db": {"retries_s": retries["ops_s"], "failures_s": failures["ops_s"]},
         "events": events.since(request.args.get("since", type=int)),
-        "controls": {"load": get_config().platform_controls, "chaos": chaos_client() is not None},
+        "controls": _controls(),
         "as_of": time.time(),
     })
+
+
+def _controls() -> dict:
+    cfg = get_config()
+    return {"load": cfg.platform_controls, "chaos": chaos_client() is not None,
+            "defaults": {"users": cfg.load_default_users, "rate": cfg.load_default_rate,
+                         "workers": cfg.load_default_workers},
+            "limits": {"users": cfg.load_max_users, "rate": cfg.load_max_rate, "workers": cfg.load_max_workers}}
 
 
 @platform_api.get("/cluster")
@@ -317,7 +327,8 @@ def chaos():
     try:
         result = plane.act(action, kind, value, confirm=bool(body.get("confirm")))
     except ChaosConfirmRequired as exc:
-        return jsonify({"error": "needs_confirm", "needs_confirm": True, "warning": exc.warning}), 409
+        return jsonify({"error": exc.warning, "code": "needs_confirm", "needs_confirm": True,
+                        "warning": exc.warning}), 409
     except ChaosUnavailable as exc:
         return _error(503, "unavailable", str(exc))
     except ChaosError as exc:

@@ -72,7 +72,7 @@ def test_nav_only_lists_registered_pages(monkeypatch):
         from banko_ai.web.shell import NAV
         expected = [n for n in NAV if n["endpoint"] in endpoints]
         assert len(hrefs) == len(expected)
-        assert "/platform" not in hrefs
+        assert "/platform" in hrefs  # the Platform page is registered since sub-project 5
 
 
 def test_api_responses_name_the_user(monkeypatch, member):

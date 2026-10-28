@@ -93,13 +93,14 @@ def test_live_never_touches_the_database(monkeypatch, fake_sim):
     assert r.status_code == 200
     body = r.get_json()
     assert {"load", "summary", "ops", "regions", "series", "http", "db", "events", "controls", "as_of"} <= set(body)
-    assert body["controls"] == {"load": True, "chaos": False}
+    assert body["controls"] == {"load": True, "chaos": False, "defaults": {"users": 100, "rate": 50, "workers": 16},
+                                "limits": {"users": 2000, "rate": 2000, "workers": 64}}
 
 
 def test_load_controls_validate_and_start_once(monkeypatch, fake_sim):
     client = _signed_in(monkeypatch)
     bad = client.post("/api/v1/platform/load", json={"action": "start", "rate": "abc"})
-    assert bad.status_code == 400 and bad.get_json()["message"] == "The rate must be a number"
+    assert bad.status_code == 400 and bad.get_json() == {"error": "The rate must be a number", "code": "bad_request"}
     assert client.post("/api/v1/platform/load", json={"action": "dance"}).status_code == 400
     ok = client.post("/api/v1/platform/load", json={"action": "start", "users": 50, "rate": 20, "workers": 4})
     assert ok.status_code == 202 and ok.get_json()["state"] == "running"
@@ -149,8 +150,8 @@ def test_a_disruptive_action_needing_confirm_is_409_with_the_warning(monkeypatch
     plane = FakePlane(state={"cluster": {}, "regions": [], "nodes": [], "scenario": None, "events": []}, act=act)
     monkeypatch.setattr(PA, "chaos_client", lambda: plane)
     first = client.post("/api/v1/platform/chaos", json={"action": "outage", "kind": "region", "value": "us-east-1"})
-    assert first.status_code == 409 and first.get_json() == {"error": "needs_confirm", "needs_confirm": True,
-                                                            "warning": "3 ranges lose quorum"}
+    assert first.status_code == 409 and first.get_json() == {"error": "3 ranges lose quorum", "code": "needs_confirm",
+                                                            "needs_confirm": True, "warning": "3 ranges lose quorum"}
     before = events.since(None)[-1]["id"] if events.since(None) else 0
     second = client.post("/api/v1/platform/chaos", json={"action": "outage", "kind": "region", "value": "us-east-1",
                                                         "confirm": True})

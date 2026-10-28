@@ -10,6 +10,7 @@ error; every page is screenshotted to artifacts/ui/."""
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -27,7 +28,7 @@ PORT = 5073
 BASE = f"http://127.0.0.1:{PORT}"
 OUT = Path(__file__).resolve().parents[2] / "artifacts" / "ui"
 PAGES = ["/", "/accounts", "/transactions", "/cashflow", "/budget", "/recurring", "/goals", "/assistant",
-         "/coach", "/agents", "/settings"]
+         "/coach", "/agents", "/platform", "/settings"]
 PERSONAS = ["maya", "sam", "riley"]
 
 # The assistant panel tests mock the assistant API with page.route, so no
@@ -1407,5 +1408,218 @@ def test_a_fresh_signup_shows_progress_not_zeros(server, browser):
         expect(card).to_be_hidden()
         expect(dashboard.locator(":scope > .b-grid").first).to_be_visible()
         assert not errors, errors
+    finally:
+        ctx.close()
+
+
+# -- The Platform page, with its API answered by page.route ---------------------------------------
+
+_NOW = int(time.time())
+_T = list(range(_NOW - 300, _NOW))
+_QUIET = {"ops_s": 0, "errors_s": 0, "ok": 0, "errors": 0, "declined": 0, "dropped": 0, "retries": 0,
+          "p50": None, "p95": None, "p99": None, "error_classes": {}}
+_BUSY = {"ops_s": 48.2, "errors_s": 0.3, "ok": 482, "errors": 3, "declined": 2, "dropped": 0, "retries": 4,
+         "p50": 61.5, "p95": 140.2, "p99": 310.7, "error_classes": {"40001": 3}}
+_CONTROLS = {"load": True, "chaos": False, "defaults": {"users": 100, "rate": 50, "workers": 16},
+             "limits": {"users": 2000, "rate": 2000, "workers": 64}}
+
+
+def _live(state="idle", **over):
+    running = state != "idle"
+    body = {"load": {"state": state, "error": None, "started_at": _NOW - 60 if running else None,
+                     "elapsed_s": 60.0 if running else 0.0, "users_ready": 100 if running else 0,
+                     "config": {"users": 100, "rate": 50, "workers": 16, "profile": "balanced", "duration_s": None,
+                                "ramp_s": 10, "weights": None} if running else None,
+                     "serving": {"us-east-1": {"served_by": "us-east-1", "at": _NOW}} if running else {}},
+            "summary": _BUSY if running else _QUIET,
+            "ops": {"purchase": _BUSY, "search": _BUSY} if running else {},
+            "regions": {"us-east-1": _BUSY, "us-west-2": _BUSY} if running else {},
+            "series": {"t": _T, "ops": [48] * 300 if running else [0] * 300, "errors": [0] * 300,
+                       "dropped": [0] * 300, "p50": [61.5] * 300 if running else [None] * 300,
+                       "p95": [140.2] * 300 if running else [None] * 300, "p99": [310.7] * 300 if running else [None] * 300},
+            "http": _QUIET, "db": {"retries_s": 0.1, "failures_s": 0},
+            "events": [{"id": 1, "at": _NOW - 30, "level": "info", "source": "load",
+                        "text": "Load started: balanced, 100 customers, 50 ops/s, 16 workers"}] if running else [],
+            "controls": dict(_CONTROLS), "as_of": _NOW}
+    body.update(over)
+    return body
+
+
+_CLUSTER_SQL = {"topology": {"source": "sql", "regions": [], "nodes": [
+    {"node_id": 1, "address": None, "region": None, "zone": None, "live": None, "status": None, "replicas": 12,
+     "leases": None}]}, "chaos": None, "leases": None, "as_of": _NOW, "stale": False}
+_CLUSTER_CHAOS = {"topology": {"source": "chaos", "regions": ["us-east-1", "us-west-2"], "nodes": [
+    {"node_id": 1, "name": "us-east-1a-n1", "address": None, "region": "us-east-1", "zone": "us-east-1a", "live": True,
+     "status": "live", "replicas": 300, "leases": 80},
+    {"node_id": 3, "name": "us-west-2a-n1", "address": None, "region": "us-west-2", "zone": "us-west-2a", "live": True,
+     "status": "live", "replicas": 290, "leases": 50}]},
+    "chaos": {"cluster": {"display_name": "Global Payments", "status": "healthy", "latency": "realistic",
+                          "live_nodes": 2, "total_nodes": 2, "survival_goal": "region", "crdb_version": "v26.3.2"},
+              "regions": [{"name": "us-east-1", "label": "N. Virginia", "primary": True, "state": "healthy",
+                           "nodes_total": 1, "nodes_up": 1},
+                          {"name": "us-west-2", "label": "Oregon", "primary": False, "state": "healthy",
+                           "nodes_total": 1, "nodes_up": 1}],
+              "nodes": [{"name": "us-east-1a-n1", "node_id": 1, "region": "us-east-1", "zone": "us-east-1a",
+                         "runtime": "running", "liveness": "live", "partitioned": False, "isolated": False,
+                         "brownout": None, "leases": 80, "replicas": 300},
+                        {"name": "us-west-2a-n1", "node_id": 3, "region": "us-west-2", "zone": "us-west-2a",
+                         "runtime": "running", "liveness": "live", "partitioned": False, "isolated": False,
+                         "brownout": None, "leases": 50, "replicas": 290}],
+              "scenario": None, "events": []},
+    "leases": {"source": "nodes", "by_region": {"us-east-1": 80, "us-west-2": 50}}, "as_of": _NOW, "stale": False}
+_DATA = {"users": [{"region": "us-east-1", "personas": 1, "load": 50, "demo": 0, "total": 51},
+                   {"region": "us-west-2", "personas": 1, "load": 50, "demo": 0, "total": 51}],
+         "residency": {"tables": [{"name": "accounts", "locality": "REGIONAL BY ROW", "rls": True},
+                                  {"name": "expenses", "locality": "REGIONAL BY ROW", "rls": False},
+                                  {"name": "users", "locality": "GLOBAL", "rls": False}],
+                       "users_global": True, "rls": {"enabled": True, "reason": "banko_app can log in"}},
+         "vectors": {"vectors": 5861, "users_with_vectors": 105,
+                     "index": "idx_expenses_user_embedding: C-SPANN vector index on (user_id, embedding), cosine distance"},
+         "cdc": {"changefeeds": [], "signals_per_min": 0.0, "nudges_per_min": 0.0},
+         "integrity": {"checked_at": "2026-10-28T12:00:00+00:00", "accounts": 312, "drift": 0, "skipped": None,
+                       "ok": True, "follower_reads": True},
+         "as_of": _NOW, "stale": False}
+
+
+class _PlatformApi:
+    """page.route handlers for /api/v1/platform/*, recording the writes."""
+
+    def __init__(self, live=None, cluster=None, data=None):
+        self.live, self.cluster, self.data = live or _live(), cluster or _CLUSTER_SQL, data or _DATA
+        self.posts, self.replies = [], {}
+
+    def __call__(self, route):
+        path = urllib.parse.urlparse(route.request.url).path.removeprefix("/api/v1/platform")
+        if route.request.method == "POST":
+            body = json.loads(route.request.post_data or "{}")
+            self.posts.append((path, body))
+            queue = self.replies.get(path)
+            status, reply = queue.pop(0) if queue else (200, {"state": "running"})
+            return route.fulfill(status=status, json=reply)
+        return route.fulfill(json={"/live": self.live, "/cluster": self.cluster, "/data": self.data}[path])
+
+
+def _platform(browser, api, theme="light"):
+    ctx, page, errors = _page(browser, theme)
+    page.route("**/api/v1/platform/**", api)
+    return ctx, page, errors
+
+
+def test_the_platform_page_shows_a_running_load(server, browser):
+    api = _PlatformApi(live=_live("running"), cluster=_CLUSTER_CHAOS)
+    ctx, page, errors = _platform(browser, api, "dark")
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/platform")
+        expect(page.get_by_test_id("ops-rate")).to_have_text("48.2")
+        expect(page.get_by_test_id("p95")).to_have_text("140 ms")
+        expect(page.locator("[data-region-row]")).to_have_count(2)
+        expect(page.get_by_text("Load started: balanced, 100 customers, 50 ops/s, 16 workers")).to_be_visible()
+        assert page.locator("canvas[data-chart=throughput]").count() == 1
+        assert page.locator("canvas[data-chart=latency]").count() == 1
+        OUT.mkdir(parents=True, exist_ok=True)
+        page.wait_for_timeout(2500)  # several polls, each answering the same event again
+        expect(page.locator(".b-event")).to_have_count(1)
+        expect(page.get_by_text("Errors: 3 transaction conflicts (40001)")).to_be_visible()
+        page.screenshot(path=str(OUT / "platform-running-dark.png"), full_page=True)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_start_sends_the_form_and_stop_stops(server, browser):
+    api = _PlatformApi()
+    ctx, page, errors = _platform(browser, api)
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/platform")
+        page.get_by_label("Profile").select_option("payments")
+        page.get_by_label("Customers").fill("200")
+        page.get_by_label("Operations per second").fill("120")
+        page.get_by_label("Workers").fill("24")
+        page.get_by_label("Run for").select_option("300")
+        page.get_by_role("button", name="Start load").click()
+        page.wait_for_timeout(300)
+        start = [b for p, b in api.posts if p == "/load"][0]
+        assert start == {"action": "start", "profile": "payments", "users": 200, "rate": 120, "workers": 24,
+                         "duration_s": 300, "ramp_s": 10}
+        api.live = _live("running")
+        page.get_by_role("button", name="Stop").click()
+        page.wait_for_timeout(300)
+        assert [b for p, b in api.posts if p == "/load"][-1] == {"action": "stop"}
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_chaos_card_shows_only_with_a_plane(server, browser):
+    api = _PlatformApi()
+    ctx, page, errors = _platform(browser, api)
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/platform")
+        page.wait_for_timeout(500)
+        expect(page.get_by_test_id("chaos-card")).to_be_hidden()
+        api.live = _live(controls={**_CONTROLS, "chaos": True})
+        api.cluster = _CLUSTER_CHAOS
+        page.reload()
+        expect(page.get_by_test_id("chaos-card")).to_be_visible()
+        expect(page.get_by_role("button", name="Take us-east-1 down")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_an_outage_asks_twice_when_the_plane_warns(server, browser):
+    api = _PlatformApi(live=_live(controls={**_CONTROLS, "chaos": True}), cluster=_CLUSTER_CHAOS)
+    api.replies["/chaos"] = [(409, {"error": "3 ranges lose quorum", "code": "needs_confirm", "needs_confirm": True,
+                                    "warning": "3 ranges lose quorum"}),
+                             (200, {"ok": True, "targets": ["us-east-1a-n1"]})]
+    ctx, page, errors = _platform(browser, api)
+    dialogs = []
+
+    def accept(dialog):
+        dialogs.append(dialog.message)
+        dialog.accept()
+
+    page.on("dialog", accept)
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/platform")
+        page.get_by_role("button", name="Take us-east-1 down").click()
+        page.wait_for_timeout(500)
+        chaos = [b for p, b in api.posts if p == "/chaos"]
+        assert [b.get("confirm") for b in chaos] == [False, True]
+        assert chaos[0]["action"] == "outage" and chaos[0]["kind"] == "region" and chaos[0]["value"] == "us-east-1"
+        assert len(dialogs) == 2 and "us-east-1" in dialogs[0] and "3 ranges lose quorum" in dialogs[1]
+        # The 409 that asks for confirmation is the protocol, and Chromium logs every 4xx.
+        assert not [e for e in errors if "status of 409" not in e], errors
+    finally:
+        ctx.close()
+
+
+def test_stale_sections_dim_and_read_only_disables_the_controls(server, browser):
+    api = _PlatformApi(live=_live(controls={**_CONTROLS, "load": False}), cluster={**_CLUSTER_SQL, "stale": True})
+    ctx, page, errors = _platform(browser, api)
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/platform")
+        expect(page.get_by_test_id("topology-card")).to_have_class(re.compile(r"\bstale\b"))
+        expect(page.get_by_role("button", name="Start load")).to_be_disabled()
+        expect(page.get_by_text("Read-only here")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_refused_start_says_why_in_plain_words(server, browser):
+    api = _PlatformApi()
+    api.replies["/load"] = [(400, {"error": "The rate must be between 0.1 and 2000", "code": "bad_request"})]
+    ctx, page, errors = _platform(browser, api)
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/platform")
+        page.get_by_role("button", name="Start load").click()
+        expect(page.get_by_text("The rate must be between 0.1 and 2000")).to_be_visible()
     finally:
         ctx.close()
