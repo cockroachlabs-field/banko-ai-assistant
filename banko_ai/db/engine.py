@@ -16,7 +16,7 @@ from typing import Any, TypeVar
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Connection, Engine, make_url
-from sqlalchemy.exc import DBAPIError, DisconnectionError
+from sqlalchemy.exc import DBAPIError, DisconnectionError, OperationalError
 
 from ..config.settings import get_config
 from ..observability.metrics import metrics
@@ -35,6 +35,9 @@ CONNECTION_SQLSTATE_PREFIXES = ("08", "57P")
 _GATEWAY_REGION = "banko_gateway_region"   # URL parameter: the pool's home region, never sent to the server
 HOME_ATTEMPTS = 24                         # connections tried for one through the home region
 REHOME_AFTER_S = 15.0                      # how long a connection that landed elsewhere waits to try home again
+UNREACHABLE_RETRY_S = 300.0                # how often a home region this URL has never reached is tried again
+_NO_REGIONS = "no region set"              # gateway_region() on a node started without a region
+_now = time.monotonic
 
 
 def with_application_name(url: str, name: str) -> str:
@@ -52,15 +55,15 @@ def with_gateway_region(url: str, region: str) -> str:
 
 
 def _gateway_of(conn: Any) -> str | None:
-    """The region of the node a DBAPI connection entered through, or None
-    on a cluster whose nodes have no region."""
+    """The region of the node a DBAPI connection entered through, "" on a
+    cluster whose nodes have no region, or None when it could not be read."""
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT gateway_region()")
             row = cur.fetchone()
-        return str(row[0]) if row and row[0] else None
-    except Exception:
-        return None
+        return str(row[0]) if row and row[0] else ""
+    except Exception as exc:
+        return "" if _NO_REGIONS in str(exc) else None
     finally:
         try:
             conn.rollback()
@@ -71,22 +74,27 @@ def _gateway_of(conn: Any) -> str | None:
 def homed_connection(connect: Callable[[], Any], region: str, *,
                      attempts: int = HOME_ATTEMPTS) -> tuple[Any, str | None]:
     """A new DBAPI connection through a node in region, with the region it
-    really entered through. Behind a load balancer over every node each new
-    connection lands on the next node, so this asks again until one is in
-    the region. After attempts misses (no live node there), or when a node
-    refuses, it keeps the next connection wherever it lands; on a cluster
-    without regions it keeps the first."""
+    really entered through: None on a cluster without regions, "unknown"
+    when that could not be read. Behind a load balancer over every node each
+    new connection lands on the next node, so this asks again until one is
+    in the region (a connection whose gateway cannot be read is asked again
+    too). After attempts misses (no live node there), or when a node
+    refuses, it keeps the next connection wherever it lands."""
     for _ in range(attempts):
         try:
             conn = connect()
         except Exception:  # a node is down, or the database is: stop choosing
             break
         gateway = _gateway_of(conn)
-        if gateway == region or gateway is None:
-            return conn, gateway
+        if gateway == region or gateway == "":
+            return conn, gateway or None
         conn.close()
     conn = connect()
-    return conn, _gateway_of(conn)
+    return conn, _landed(_gateway_of(conn))
+
+
+def _landed(gateway: str | None) -> str | None:
+    return "unknown" if gateway is None else (gateway or None)
 
 
 def should_rehome(info: dict, region: str, *, now: float) -> bool:
@@ -96,19 +104,62 @@ def should_rehome(info: dict, region: str, *, now: float) -> bool:
     return gateway is not None and gateway != region and now - info.get("opened", now) > REHOME_AFTER_S
 
 
+class _Home:
+    """A homed engine's memory: whether its URL has ever reached the home
+    region, and when it last missed. After a miss, new connections take the
+    first node they land on instead of shopping for the region again, for
+    REHOME_AFTER_S when the region was reached before (it is probably down)
+    and UNREACHABLE_RETRY_S when it never was (a URL to one region only:
+    CockroachDB Cloud, a single node, a sticky load balancer)."""
+
+    def __init__(self, region: str):
+        self.region = region
+        self.reached = False
+        self.missed_at: float | None = None
+        self._lock = threading.Lock()
+
+    def _cooling(self, now: float) -> bool:
+        if self.missed_at is None:
+            return False
+        return now - self.missed_at < (REHOME_AFTER_S if self.reached else UNREACHABLE_RETRY_S)
+
+    def connect(self, connect: Callable[[], Any], *, now: float) -> tuple[Any, str | None]:
+        with self._lock:
+            cooling = self._cooling(now)
+        if cooling:
+            conn = connect()
+            gateway = _landed(_gateway_of(conn))
+        else:
+            conn, gateway = homed_connection(connect, self.region)
+        with self._lock:
+            if gateway == self.region:
+                self.reached, self.missed_at = True, None
+            elif gateway is not None and not cooling:
+                self.missed_at = now
+        return conn, gateway
+
+    def may_rehome(self, info: dict, *, now: float) -> bool:
+        with self._lock:
+            cooling = self._cooling(now)
+        return not cooling and should_rehome(info, self.region, now=now)
+
+
 def _home(engine: Engine, region: str) -> None:
     """Every new connection of this engine enters through region when it can;
-    one that could not is replaced once REHOME_AFTER_S has passed, so the
-    pool comes home after an outage."""
+    one that could not is replaced on checkout once home may be tried again,
+    so the pool comes home after an outage."""
+    home = _Home(region)
+
     @event.listens_for(engine, "do_connect")
     def _connect(dialect, conn_rec, cargs, cparams):
-        conn, gateway = homed_connection(lambda: dialect.connect(*cargs, **cparams), region)
-        conn_rec.info.update(gateway=gateway, opened=time.monotonic())
+        now = _now()
+        conn, gateway = home.connect(lambda: dialect.connect(*cargs, **cparams), now=now)
+        conn_rec.info.update(gateway=gateway, opened=now)
         return conn
 
     @event.listens_for(engine, "checkout")
     def _rehome(dbapi_conn, conn_rec, proxy):
-        if should_rehome(conn_rec.info, region, now=time.monotonic()):
+        if home.may_rehome(conn_rec.info, now=_now()):
             raise DisconnectionError(f"connection is outside {region}; trying home again")
 
 
@@ -191,8 +242,8 @@ def is_retryable(exc: BaseException, *, idempotent: bool) -> bool:
         return True
     if state in AMBIGUOUS_SQLSTATES or state.startswith(CONNECTION_SQLSTATE_PREFIXES):
         return idempotent
-    if exc.connection_invalidated:
-        return idempotent
+    if exc.connection_invalidated or (isinstance(exc, OperationalError) and not state):
+        return idempotent  # psycopg reports a connection it could not open without a SQLSTATE
     return False
 
 

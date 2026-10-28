@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..config.settings import get_config
 from ..observability.events import EventBus
@@ -148,7 +148,8 @@ def error_class_of(exc: BaseException) -> str:
             return "ambiguous"
         if state == "57014":
             return "timeout"
-        if exc.connection_invalidated or state.startswith(("08", "57P")):
+        if exc.connection_invalidated or state.startswith(("08", "57P")) or (isinstance(exc, OperationalError)
+                                                                             and not state):
             return "connection"
         if state:
             return state

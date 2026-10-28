@@ -236,3 +236,10 @@ def test_serving_events_mark_leaving_home_and_coming_back_not_each_survivor():
     assert texts == [("warn", "Reads for us-west-2 customers now served by eu-west-1, us-east-1"),
                      ("good", "Reads for us-west-2 customers are served in us-west-2 again")]
     assert sim.status()["serving"]["us-west-2"]["served_by"] == "us-west-2"
+
+
+def test_a_connection_that_could_not_be_opened_is_classed_as_lost():
+    from banko_ai.workers.traffic import error_class_of
+
+    err = OperationalError("connect", {}, psycopg.OperationalError("connection failed: Connection refused"))
+    assert error_class_of(err) == "connection"

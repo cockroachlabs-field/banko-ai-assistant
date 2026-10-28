@@ -161,3 +161,11 @@ def test_a_failed_commit_is_marked_and_not_retried_for_non_idempotent_work(monke
     with pytest.raises(OperationalError) as err:
         E.run_transaction(work, idempotent=False)
     assert calls["n"] == 1 and err.value.at_commit is True
+
+
+def test_a_connection_that_could_not_be_opened_counts_as_lost():
+    """psycopg reports a failed connect without a SQLSTATE. Nothing ran, so
+    it is retried like a dropped connection whenever that is safe."""
+    err = OperationalError("connect", {}, psycopg.OperationalError("connection failed: Connection refused"))
+    assert E.is_retryable(err, idempotent=True)
+    assert not E.is_retryable(err, idempotent=False)
