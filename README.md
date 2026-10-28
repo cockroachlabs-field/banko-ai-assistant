@@ -344,7 +344,10 @@ trip to each purchase.
 For a chaos demo with realistic latency, start Banko with `RLS_MODE=off`.
 With row-level security on, CockroachDB 26.3 plans every statement after a
 round trip to a system range and keeps region filters out of the scan, so
-pages take a second or two instead of tens of milliseconds.
+pages take a second or two instead of tens of milliseconds. Give a database
+created just before the demo a quarter of an hour: CockroachDB moves each
+region's leases home in that time, and until it has, that region's reads
+cross to the primary region.
 
 With the chaos control plane running, set `CHAOS_CONTROL_URL` (and
 `CHAOS_CONTROL_TOKEN` if it has one) and the chaos card appears: take a
