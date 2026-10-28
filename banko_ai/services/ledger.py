@@ -241,7 +241,9 @@ def post_purchase(user_id: str, account_id: str, *, amount: Any, merchant: str, 
 
 
 def record_income(user_id: str, account_id: str, amount: Any, *, description: str = "Income",
-                  posted_at: datetime | None = None, url: str | None = None) -> str:
+                  posted_at: datetime | None = None, entry_id: str | None = None, url: str | None = None) -> str:
+    """Credit an account. A caller that picks entry_id up front can replay
+    the deposit safely: the second attempt hits the primary key."""
     url = request_url(url)
     amt = _positive(amount)
     acct = _uuid(account_id)
@@ -251,11 +253,12 @@ def record_income(user_id: str, account_id: str, amount: Any, *, description: st
         region = money_region(conn, user_id, url)
         rcol, rval = region_columns(region)
         row = conn.execute(text(f"""
-            INSERT INTO ledger_entries ({rcol}user_id, account_id, posted_at, amount, kind, description)
-            VALUES ({rval}CAST(:u AS UUID), CAST(:a AS UUID), :posted, :amt, 'income', :desc)
+            INSERT INTO ledger_entries ({rcol}entry_id, user_id, account_id, posted_at, amount, kind, description)
+            VALUES ({rval}COALESCE(CAST(:eid AS UUID), gen_random_uuid()), CAST(:u AS UUID), CAST(:a AS UUID),
+                    :posted, :amt, 'income', :desc)
             RETURNING entry_id
         """), {"u": user_id, "a": acct, "amt": amt, "desc": description, "crdb_region": region,
-               "posted": posted_at or datetime.now(timezone.utc)}).fetchone()
+               "eid": entry_id, "posted": posted_at or datetime.now(timezone.utc)}).fetchone()
         conn.execute(text("UPDATE accounts SET balance = balance + :amt "
                           "WHERE account_id = CAST(:a AS UUID) AND user_id = CAST(:u AS UUID)"),
                      {"amt": amt, "a": acct, "u": user_id})

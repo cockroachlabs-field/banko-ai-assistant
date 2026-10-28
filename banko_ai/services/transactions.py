@@ -4,6 +4,7 @@ the per-user vector index, and one transaction's detail."""
 from __future__ import annotations
 
 import base64
+import functools
 import logging
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -177,7 +178,10 @@ def semantic_sql(filters: str = "") -> str:
     """
 
 
+@functools.lru_cache(maxsize=1024)
 def _qvec(text_query: str) -> str:
+    """The query's vector text. Memoized: the model is deterministic, and
+    repeated searches (the load simulator's, a user's Show more) skip it."""
     from ..utils.embeddings import load_embedding_model
     return vector_text(load_embedding_model().encode([text_query])[0])
 
