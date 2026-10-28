@@ -180,7 +180,7 @@ make test-local        # ruff + advisory mypy + pytest (same ignore list as CI)
 #   watsonx, openai, aws, gemini, ollama
 ```
 
-The pytest target skips the same script style test files CI skips; they need a running app or live creds. The coach end to end smoke is automated: boot the app, then `uv run python scripts/coach/assert_nudges.py` (webhook transport) or `--via sql` (exercises the real CDC path when the cdc-demo stack is up). The rest of the manual pass list: grounded chat answer, correct provider logo, receipt upload extracts fields, real dashboard activity, cache stats climb on a repeat query, relevant vector search, clean server log.
+The pytest target skips the same script style test files CI skips; they need a running app or live creds. The per-provider smoke is automated: boot the app, run `uv run python scripts/smoke.py --url http://localhost:5000 --expect <provider>` (provider shown and answering, a receipt with follow-ups whose new purchase retires earlier runs' cached answers, totals and visits from SQL, cache on a repeat, search and show more, Spanish, a coach nudge the model wrote when `CDC_WEBHOOK_HMAC_SECRET` and `DATABASE_URL` are in the shell), then restart the app and run it again with `--resume <thread id it printed>`. The coach smoke alone is `uv run python scripts/coach/assert_nudges.py` (webhook transport) or `--via sql` (exercises the real CDC path when the cdc-demo stack is up). The rest of the manual pass list: the right provider logo in the header, real dashboard activity, relevant vector search, clean server log.
 
 CI is **not enough**. CI gates on lint/unit/integration, but the multi-provider smoke is a human-driven, locally-run check.
 
