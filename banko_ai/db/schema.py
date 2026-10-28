@@ -366,7 +366,7 @@ def tables() -> tuple[Table, ...]:
             "CHECK (kind IN ('transfer', 'card_payment', 'goal_contribution'))",
             "CHECK (amount > 0)",
             "UNIQUE (user_id, idempotency_key)",
-        ), regional_constraints=(
+        ), regional_primary_key="crdb_region, transfer_id", regional_constraints=(
             "CHECK (kind IN ('transfer', 'card_payment', 'goal_contribution'))",
             "CHECK (amount > 0)",
             "UNIQUE (crdb_region, user_id, idempotency_key)",

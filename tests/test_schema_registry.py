@@ -296,6 +296,7 @@ def test_fresh_multi_region_database_is_born_regional():
             transfer_keys = _unique_indexes(conn, "transfers")
         # Region-scoped keys: an insert checks uniqueness in its own region only.
         assert "PRIMARY KEY (crdb_region ASC, expense_id ASC)" in expenses_ddl
+        assert transfer_keys.get("transfers_pkey") == ["crdb_region", "transfer_id"]
         assert ["crdb_region", "user_id", "idempotency_key"] in transfer_keys.values()
         assert ["user_id", "idempotency_key"] not in transfer_keys.values()
         print(f"fresh multi-region schema in {elapsed:.1f}s")
@@ -328,6 +329,9 @@ def test_regional_money_keys_lead_with_the_region():
     assert "PRIMARY KEY (crdb_region, expense_id)" in sql["expenses"]
     assert "UNIQUE (crdb_region, user_id, idempotency_key)" in sql["transfers"]
     assert "UNIQUE (user_id, idempotency_key)" not in sql["transfers"]
+    # INSERT ... ON CONFLICT checks a global primary key in every region even
+    # when the database generates it, so the transfer id leads with the region too.
+    assert "PRIMARY KEY (crdb_region, transfer_id)" in sql["transfers"]
 
 
 def test_single_region_keys_are_unchanged():
