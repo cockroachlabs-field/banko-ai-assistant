@@ -42,7 +42,8 @@ _MAX_DURATION_S = 24 * 3600
 _MAX_RAMP_S = 600
 _DEFAULT: Any = object()
 _ERROR_WORDS = {"40001": "transaction conflicts", "40003": "ambiguous commits", "connection": "lost connections",
-                "timeout": "timeouts", "ambiguous": "commits lost in flight"}
+                "timeout": "timeouts", "ambiguous": "commits lost in flight", "not_found": "missing accounts",
+                "key_conflict": "reused transfer keys"}
 _FREE_PICKS = 16  # draws from the skew for a customer who is free before scanning for any
 
 
@@ -138,6 +139,9 @@ def error_class_of(exc: BaseException) -> str:
     """A short name for what went wrong: the SQLSTATE, or connection,
     timeout, ambiguous (a commit lost in flight: it may have landed), or
     the exception's class."""
+    named = getattr(exc, "error_class", None)  # a refusal that names itself (TransferRefused)
+    if isinstance(named, str) and named:
+        return named
     if isinstance(exc, DBAPIError):
         state = str(getattr(getattr(exc, "orig", None), "sqlstate", None) or "")
         if getattr(exc, "at_commit", False) and state not in ("40001", "40003"):

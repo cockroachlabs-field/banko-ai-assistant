@@ -255,3 +255,19 @@ def test_card_payments_often_pay_the_whole_balance(monkeypatch):
     full = sum(1 for a in paid if a == Decimal("1234.56"))
     assert 70 <= full <= 130
     assert all(Decimal("100") <= a <= Decimal("600") for a in paid if a != Decimal("1234.56"))
+
+
+@pytest.mark.parametrize("op", ["transfer", "card_payment"])
+def test_a_transfer_the_ledger_refused_is_never_counted_as_done(op, monkeypatch):
+    """ledger.transfer reports insufficient funds, a missing account or a
+    reused key in its result instead of raising: not enough money is a
+    decline, anything else an error, never a success."""
+    monkeypatch.setattr(W.accounts, "get_account", lambda user_id, account_id, **kw: {"balance": "-50.00"})
+    ctx, rng = OpContext(url=None, vectors=VectorCache({})), random.Random(6)
+    for status, expect in (("insufficient_funds", "declined"), ("ok", "ok"), ("replay", "ok")):
+        monkeypatch.setattr(W.ledger, op, lambda *a, _s=status, **kw: ledger.TransferResult(_s, None))
+        assert run_op(op, _user(), ctx, rng)[0] == expect, status
+    for status in ("not_found", "key_conflict"):
+        monkeypatch.setattr(W.ledger, op, lambda *a, _s=status, **kw: ledger.TransferResult(_s, None))
+        with pytest.raises(W.TransferRefused):
+            run_op(op, _user(), ctx, rng)

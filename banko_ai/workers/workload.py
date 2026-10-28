@@ -56,6 +56,28 @@ class Declined(Exception):
         self.client_retries = client_retries
 
 
+class TransferRefused(Exception):
+    """The ledger refused a transfer for a reason other than money: an
+    account it could not find, or an idempotency key reused for a different
+    transfer. Its error_class is the ledger's status."""
+
+    def __init__(self, status: str, client_retries: int = 0):
+        super().__init__(status)
+        self.error_class = status
+        self.client_retries = client_retries
+
+
+def _settle(result: ledger.TransferResult | None, retries: int) -> int:
+    """A transfer's outcome from its result: ok and replay are done (None is
+    a retry that found its first attempt), not enough money is a decline."""
+    status = result.status if result is not None else "ok"
+    if status in ("ok", "replay"):
+        return retries
+    if status == "insufficient_funds":
+        raise Declined(retries)
+    raise TransferRefused(status, retries)
+
+
 def new_id() -> str:
     return str(uuid.uuid4())
 
@@ -177,10 +199,10 @@ def _purchase(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
 def _transfer(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     pair = ("checking", "savings") if rng.random() < 0.5 else ("savings", "checking")
     amount, key = _money(rng, 20, 400), new_id()
-    _, retries = with_client_retries(lambda: ledger.transfer(
+    result, retries = with_client_retries(lambda: ledger.transfer(
         user.user_id, user.accounts[pair[0]], user.accounts[pair[1]], amount, idempotency_key=key,
         url=ctx.url_for(user)), committed=is_unique_violation)
-    return retries
+    return _settle(result, retries)
 
 
 def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
@@ -194,12 +216,12 @@ def _card_payment(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
     amount = owed if rng.random() < 0.5 else min(owed, _money(rng, 100, 600))
     key = new_id()
     try:
-        _, retries = with_client_retries(lambda: ledger.card_payment(
+        result, retries = with_client_retries(lambda: ledger.card_payment(
             user.user_id, user.accounts["checking"], user.accounts["card"], amount, idempotency_key=key,
             url=ctx.url_for(user)), committed=is_unique_violation)
     except ledger.InvalidAmount as exc:  # a concurrent payment got there first
         raise Declined(getattr(exc, "client_retries", 0)) from exc
-    return retries
+    return _settle(result, retries)
 
 
 def _deposit(user: LoadUser, ctx: OpContext, rng: random.Random) -> int:
