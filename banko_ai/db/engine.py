@@ -32,8 +32,16 @@ AMBIGUOUS_SQLSTATES = {"40003"}            # result unknown: retry only idempote
 CONNECTION_SQLSTATE_PREFIXES = ("08", "57P")
 
 
-def get_engine(url: str | None = None) -> Engine:
-    """The process-wide engine for this URL. Never dispose it."""
+def with_application_name(url: str, name: str) -> str:
+    """The URL with an application_name, which gives it a pool of its own in
+    get_engine and a label in SHOW SESSIONS (the load simulator's banko-load)."""
+    return make_url(url).update_query_dict({"application_name": name}).render_as_string(hide_password=False)
+
+
+def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engine:
+    """The process-wide engine for this URL. Never dispose it. pool_size
+    applies only when this call creates the engine; an application_name in
+    the URL labels its connections, otherwise they say banko."""
     cfg = get_config()
     key = normalize_db_url(url or cfg.database_url)
     engine = _engines.get(key)
@@ -42,16 +50,18 @@ def get_engine(url: str | None = None) -> Engine:
     with _engines_lock:
         engine = _engines.get(key)
         if engine is None:
+            parsed = make_url(key)
+            name = parsed.query.get("application_name") or "banko"
             engine = create_engine(
-                key,
-                pool_size=cfg.db_pool_size,
+                parsed.difference_update_query(["application_name"]),
+                pool_size=pool_size or cfg.db_pool_size,
                 max_overflow=cfg.db_max_overflow,
                 pool_timeout=cfg.db_pool_timeout,
                 pool_recycle=cfg.db_pool_recycle,
                 pool_pre_ping=cfg.db_pool_pre_ping,
                 connect_args={
                     "connect_timeout": cfg.db_connect_timeout,
-                    "application_name": "banko",
+                    "application_name": name if isinstance(name, str) else name[0],
                     "options": "-c timezone=utc",
                 },
             )

@@ -41,6 +41,7 @@ GROUPS = {
     "data": "Demo data",
     "coach": "Coach and CDC",
     "assistant": "Assistant",
+    "platform": "Platform and load simulator",
     "ui": "Brand and UI",
 }
 
@@ -271,6 +272,30 @@ class Settings(BaseSettings):
     duplicate_window_days: int = _field(3, group="assistant", env="DUPLICATE_WINDOW_DAYS",
         description="Days before and after a purchase in which a same-amount, similar purchase counts as a possible duplicate.")
 
+    # Platform view and load simulator
+    load_default_users: int = _field(100, group="platform", env="LOAD_DEFAULT_USERS",
+        description="Simulated customers the load simulator starts with.")
+    load_default_rate: float = _field(50.0, group="platform", env="LOAD_DEFAULT_RATE",
+        description="Operations per second the load simulator starts with.")
+    load_default_workers: int = _field(16, group="platform", env="LOAD_DEFAULT_WORKERS",
+        description="Operations the load simulator runs at once, by default.")
+    load_max_users: int = _field(2000, group="platform", env="LOAD_MAX_USERS",
+        description="Most simulated customers a run may use.")
+    load_max_rate: float = _field(2000.0, group="platform", env="LOAD_MAX_RATE",
+        description="Highest operations per second a run may ask for.")
+    load_max_workers: int = _field(64, group="platform", env="LOAD_MAX_WORKERS",
+        description="Most operations a run may have in flight; the simulator's own pool holds this many connections plus two.")
+    load_integrity_interval_seconds: int = _field(60, group="platform", env="LOAD_INTEGRITY_INTERVAL_SECONDS",
+        description="Seconds between money integrity checks while the load simulator runs.")
+    load_serving_sample_seconds: int = _field(5, group="platform", env="LOAD_SERVING_SAMPLE_SECONDS",
+        description="Seconds between EXPLAIN ANALYZE samples, per home region, of which regions serve the simulated reads.")
+    platform_controls: bool = _field(True, group="platform", env="PLATFORM_CONTROLS",
+        description="Let signed-in users start the load simulator and run chaos actions from the Platform page. Off makes the page read-only.")
+    chaos_control_url: str = _field("", group="platform", env="CHAOS_CONTROL_URL",
+        description="The cockroach-chaos-demo control plane (for example http://localhost:8088). Empty hides the chaos card.")
+    chaos_control_token: str = _field("", group="platform", env="CHAOS_CONTROL_TOKEN", secret=True,
+        description="The control plane's control token, when it has one. Banko sends it; the browser never sees it.")
+
     # Brand and UI
     brand_accent: str = _field("#6933FF", group="ui", env="BRAND_ACCENT",
         description="Accent color for the UI, as #RRGGBB. Both themes derive their accent shades from it.")
@@ -336,6 +361,21 @@ class Settings(BaseSettings):
         if not codes or unknown:
             raise ValueError(f"UI_LANGUAGES has unknown codes: {', '.join(unknown) or 'none given'}")
         return ",".join(codes)
+
+    @model_validator(mode="after")
+    def _check_load_limits(self) -> Settings:
+        for kind in ("users", "rate", "workers"):
+            top = getattr(self, f"load_max_{kind}")
+            if top < 1:
+                raise ValueError(f"LOAD_MAX_{kind.upper()}={top} must be at least 1")
+            default = getattr(self, f"load_default_{kind}")
+            if not 0 < default <= top:
+                raise ValueError(f"LOAD_DEFAULT_{kind.upper()}={default} must be above 0 and at most "
+                                 f"LOAD_MAX_{kind.upper()} ({top})")
+        for name in ("load_integrity_interval_seconds", "load_serving_sample_seconds"):
+            if getattr(self, name) < 1:
+                raise ValueError(f"{name.upper()}={getattr(self, name)} must be at least 1")
+        return self
 
     @model_validator(mode="after")
     def _check_choices(self) -> Settings:

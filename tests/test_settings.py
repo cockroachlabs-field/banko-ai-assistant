@@ -187,3 +187,24 @@ def test_checkpoint_pool_size_defaults_to_sixteen_and_needs_one(monkeypatch):
     monkeypatch.setenv("CHECKPOINT_POOL_SIZE", "0")
     with pytest.raises(ValidationError, match="CHECKPOINT_POOL_SIZE"):
         S.Settings()
+
+
+def test_platform_settings_default_and_validate(monkeypatch):
+    cfg = S.Settings()
+    assert (cfg.load_default_users, cfg.load_default_rate, cfg.load_default_workers) == (100, 50, 16)
+    assert (cfg.load_max_users, cfg.load_max_rate, cfg.load_max_workers) == (2000, 2000, 64)
+    assert (cfg.load_integrity_interval_seconds, cfg.load_serving_sample_seconds) == (60, 5)
+    assert cfg.platform_controls is True and cfg.chaos_control_url == "" and cfg.chaos_control_token == ""
+    monkeypatch.setenv("LOAD_DEFAULT_RATE", "5000")  # above LOAD_MAX_RATE
+    with pytest.raises(ValidationError, match="LOAD_DEFAULT_RATE"):
+        S.Settings()
+    monkeypatch.setenv("LOAD_DEFAULT_RATE", "50")
+    monkeypatch.setenv("LOAD_MAX_WORKERS", "0")
+    with pytest.raises(ValidationError, match="LOAD_MAX_WORKERS"):
+        S.Settings()
+
+
+def test_chaos_token_is_masked(monkeypatch):
+    monkeypatch.setenv("CHAOS_CONTROL_TOKEN", "s3cret")
+    info = {i.env: i for i in S.Settings().describe()}
+    assert "s3cret" not in info["CHAOS_CONTROL_TOKEN"].value
