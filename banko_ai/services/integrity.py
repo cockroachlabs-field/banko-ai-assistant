@@ -82,6 +82,16 @@ def latest_report() -> IntegrityReport | None:
         return _latest
 
 
+def run_check(*, url: str | None = None) -> IntegrityReport:
+    """Check now and keep the result as the latest report (the worker's
+    loop, the Platform view's Check now, and the load simulator use this)."""
+    global _latest
+    report = check_integrity(url=url)
+    with _latest_lock:
+        _latest = report
+    return report
+
+
 class IntegrityWorker:
     def __init__(self, url: str | None = None, interval: int | None = None,
                  stop: threading.Event | None = None,
@@ -96,13 +106,10 @@ class IntegrityWorker:
         return self._latest
 
     def _loop(self) -> None:
-        global _latest
         while not self.stop.is_set():
             try:
-                report = check_integrity(url=self.url)
+                report = run_check(url=self.url)
                 self._latest = report
-                with _latest_lock:
-                    _latest = report
                 if self.on_report:
                     self.on_report(report)
             except Exception:

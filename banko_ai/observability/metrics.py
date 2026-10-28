@@ -3,8 +3,10 @@
 Each series keeps one bucket per second for `retention_s` seconds: counts by
 outcome, client retries, error classes, and a log-scale latency histogram
 from 0.1 ms to 120 s in steps of 9 percent, so a percentile over any window
-is accurate to about 4 percent. Only ok and declined operations carry
-latency: an error's time says more about timeouts than about the system.
+is accurate to about 4 percent. Windows cover complete seconds, so a rate
+never reads low because the current second is half over. Only ok and
+declined operations carry latency: an error's time says more about
+timeouts than about the system.
 """
 
 from __future__ import annotations
@@ -98,7 +100,9 @@ class Metrics:
                 bucket.samples += 1
 
     def _window(self, series: str, seconds: int, now: float | None) -> tuple[int, list[_Second | None]]:
-        end = int(self.clock() if now is None else now)
+        # Complete seconds only: the current one is still filling, and
+        # counting it would make every rate read low.
+        end = int(self.clock() if now is None else now) - 1
         start = end - seconds + 1
         floor = end - self.retention_s
         buckets = self._series.get(series, {})

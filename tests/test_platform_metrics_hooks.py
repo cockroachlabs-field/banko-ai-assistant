@@ -1,6 +1,7 @@
 """The app measures its own requests and database retries for the Platform view."""
 
 import os
+import time
 
 import psycopg
 import pytest
@@ -19,7 +20,7 @@ def test_requests_and_server_errors_are_measured(monkeypatch):
     metrics.clear("http")
     client.get("/api/health/live")
     client.get("/api/_boom")
-    s = metrics.summary("http", window_s=60)
+    s = metrics.summary("http", window_s=60, now=time.time() + 1)
     assert s["ok"] >= 1 and s["errors"] == 1 and s["error_classes"] == {"500": 1}
     assert s["p50"] is not None
 
@@ -28,7 +29,7 @@ def test_static_files_are_not_measured(monkeypatch):
     client = app_client(monkeypatch)
     metrics.clear("http")
     client.get("/static/css/app.css")
-    assert metrics.summary("http", window_s=60)["ok"] == 0
+    assert metrics.summary("http", window_s=60, now=time.time() + 1)["ok"] == 0
 
 
 class _FakeConn:
@@ -66,11 +67,11 @@ def test_transaction_retries_and_failures_are_counted(monkeypatch):
         return "ok"
 
     assert E.run_transaction(flaky) == "ok"
-    assert metrics.summary("db.retries", window_s=60)["ok"] == 2
+    assert metrics.summary("db.retries", window_s=60, now=time.time() + 1)["ok"] == 2
 
     def always(conn):
         raise _restart()
 
     with pytest.raises(OperationalError):
         E.run_transaction(always, max_attempts=2)
-    assert metrics.summary("db.failures", window_s=60)["ok"] == 1
+    assert metrics.summary("db.failures", window_s=60, now=time.time() + 1)["ok"] == 1
