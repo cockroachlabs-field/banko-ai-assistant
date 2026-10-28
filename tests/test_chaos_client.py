@@ -136,3 +136,26 @@ def test_chaos_client_follows_the_settings(monkeypatch):
         assert chaos_client().base_url == "http://localhost:8088"
     finally:
         reset_config()
+
+
+def test_actions_wait_for_the_plane_longer_than_state_reads():
+    """Recovering a region or switching latency runs Docker work on the plane
+    before it answers; only reading its state is held to the short timeout."""
+    client, session = _client(responses={("GET", "/api/state"): (200, STATE), ("POST", "/api/chaos"): (200, {}),
+                                         ("POST", "/api/cluster/latency"): (200, {})})
+    client.state()
+    client.act("recover", "region", "us-west-2")
+    client.latency("realistic")
+    timeouts = [kw["timeout"][1] for _, _, kw in session.calls]
+    assert timeouts[0] == client.timeout and timeouts[1] == timeouts[2] == client.action_timeout > client.timeout
+
+
+def test_one_client_per_plane_so_connections_are_reused(monkeypatch):
+    monkeypatch.setenv("CHAOS_CONTROL_URL", "http://plane:8088")
+    from banko_ai.config.settings import reset_config
+    reset_config()
+    try:
+        assert chaos_client() is chaos_client()
+    finally:
+        monkeypatch.delenv("CHAOS_CONTROL_URL")
+        reset_config()

@@ -10,6 +10,7 @@ target kinds and latency settings are forwarded.
 from __future__ import annotations
 
 import logging
+import threading
 
 import requests
 
@@ -55,18 +56,21 @@ def summarize(state: dict) -> dict:
 
 
 class ChaosClient:
-    def __init__(self, base_url: str, token: str = "", *, timeout: float = 3.0,
+    """timeout bounds reading the plane's state; action_timeout bounds an
+    action, which the plane answers only after its Docker work is done."""
+
+    def __init__(self, base_url: str, token: str = "", *, timeout: float = 3.0, action_timeout: float = 30.0,
                  session: requests.Session | None = None):
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.timeout, self.action_timeout = timeout, action_timeout
         self._token = token
         self._session = session or requests.Session()
 
-    def _call(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _call(self, method: str, path: str, body: dict | None = None, *, timeout: float | None = None) -> dict:
         headers = {"x-control-token": self._token} if self._token else {}
         try:
             r = self._session.request(method, self.base_url + path, json=body, headers=headers,
-                                      timeout=(1.5, self.timeout))
+                                      timeout=(1.5, timeout or self.timeout))
         except requests.RequestException as exc:
             log.info("chaos control plane unreachable: %s", exc.__class__.__name__)
             raise ChaosUnavailable("The chaos control plane did not answer.") from None
@@ -93,17 +97,28 @@ class ChaosClient:
             raise ValueError(f"unknown chaos action {action!r}")
         if kind not in KINDS:
             raise ValueError(f"unknown chaos target {kind!r}")
-        return self._call("POST", "/api/chaos", {"action": action, "kind": kind, "value": value, "confirm": confirm})
+        return self._call("POST", "/api/chaos", {"action": action, "kind": kind, "value": value, "confirm": confirm},
+                          timeout=self.action_timeout)
 
     def latency(self, setting: str) -> dict:
         if setting not in LATENCY:
             raise ValueError(f"unknown latency setting {setting!r}")
-        return self._call("POST", "/api/cluster/latency", {"setting": setting})
+        return self._call("POST", "/api/cluster/latency", {"setting": setting}, timeout=self.action_timeout)
+
+
+_clients: dict[tuple[str, str], ChaosClient] = {}
+_clients_lock = threading.Lock()
 
 
 def chaos_client() -> ChaosClient | None:
-    """The configured plane, or None when CHAOS_CONTROL_URL is empty."""
+    """The configured plane, or None when CHAOS_CONTROL_URL is empty. One
+    client per address and token, so its connections are reused."""
     cfg = get_config()
     if not cfg.chaos_control_url:
         return None
-    return ChaosClient(cfg.chaos_control_url, cfg.chaos_control_token)
+    key = (cfg.chaos_control_url, cfg.chaos_control_token)
+    with _clients_lock:
+        client = _clients.get(key)
+        if client is None:
+            client = _clients[key] = ChaosClient(cfg.chaos_control_url, cfg.chaos_control_token)
+        return client
