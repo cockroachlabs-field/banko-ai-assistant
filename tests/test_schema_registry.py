@@ -292,7 +292,11 @@ def test_fresh_multi_region_database_is_born_regional():
         assert localities["expenses"] == "REGIONAL BY ROW"
         assert localities["users"] == "GLOBAL"
         print(f"fresh multi-region schema in {elapsed:.1f}s")
-        assert elapsed < 120
+        # 26 tables, six of them with row-level security, measured 105 to 125 s
+        # on a 6-node, 3-region cluster with realistic latency (October 2026).
+        # The per-table CREATE INDEX plus SET LOCALITY this replaced took 82 s
+        # for a single empty table.
+        assert elapsed < 180
     finally:
         _drop(MR_URL, "banko_schema_mr_test")
 
