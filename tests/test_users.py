@@ -106,3 +106,19 @@ def test_clear_demo_users_preserves_personas(um, scratch_db):
     assert sam is not None and sam["username"] == "sam"
     assert riley is not None and riley["username"] == "riley"
     assert um.get_by_username("spec-wipe-me-2") is None
+
+
+def test_clear_demo_users_deletes_through_the_one_helper(um, scratch_db, monkeypatch):
+    from banko_ai.services import users as user_service
+    from banko_ai.web.auth import clear_demo_users
+    seen = []
+    real = user_service.delete_users
+
+    def spy(ids, **kwargs):
+        seen.extend(ids)
+        return real(ids, **kwargs)
+
+    monkeypatch.setattr(user_service, "delete_users", spy)
+    created = um.create("spec-wipe-me-3", "saver", demo_user=True)
+    assert clear_demo_users(scratch_db)["users"] >= 1
+    assert str(created["user_id"]) in seen and um.get_by_username("spec-wipe-me-3") is None

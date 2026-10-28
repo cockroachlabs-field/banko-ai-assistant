@@ -92,7 +92,6 @@ class DatabaseMigration:
 
         personas = [p.user_id for p in get_catalog().personas]
         cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
-        limit = 1000
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text("""
@@ -104,28 +103,12 @@ class DatabaseMigration:
             if not ids:
                 return 0
 
-            # Bounded, set-based deletes, children before parents, each in
-            # its own short transaction so no sweep holds intents on every
-            # row an expired user ever wrote.
-            for i in range(0, len(ids), limit):
-                chunk = ids[i:i + limit]
-                for table in ("coach_nudges", "spending_signals", "ledger_entries", "transfers",
-                              "goals", "accounts", "user_budgets", "user_data_versions", "expenses"):
-                    while True:
-                        with self.engine.begin() as conn:
-                            deleted = conn.execute(text(
-                                f"DELETE FROM {table} WHERE user_id = ANY(CAST(:ids AS UUID[])) LIMIT {limit}"),
-                                {"ids": chunk}).rowcount
-                        if deleted < limit:
-                            break
-                keys = [f"seed:{u}" for u in chunk] + [f"seed_lock:{u}" for u in chunk]
-                with self.engine.begin() as conn:
-                    conn.execute(text("DELETE FROM banko_meta WHERE key = ANY(CAST(:keys AS STRING[]))"),
-                                 {"keys": keys})
-                    conn.execute(text("DELETE FROM users WHERE user_id = ANY(CAST(:ids AS UUID[]))"),
-                                 {"ids": chunk})
-            print(f"Expired {len(ids)} demo users older than {ttl_days} days")
-            return len(ids)
+            # Children before parents, bounded set-based batches, every
+            # user-scoped table the registry knows (services/users.py).
+            from ..services.users import delete_users
+            removed = delete_users(ids, url=self.database_url)
+            print(f"Expired {removed} demo users older than {ttl_days} days")
+            return removed
         except Exception as e:
             print(f"Demo user expiry sweep failed (non-fatal): {e}")
             return 0

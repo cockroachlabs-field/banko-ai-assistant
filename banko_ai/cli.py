@@ -504,11 +504,11 @@ def config_cmd(docs):
 @cli.command()
 @click.option('--yes', is_flag=True, help='Skip confirmation prompt')
 def clear_demo_users(yes):
-    """Clear all demo users and their data (preserves legacy personas).
+    """Clear all demo users and every row they own (keeps the personas).
 
-    This removes demo users created via signup along with their expenses,
-    signals, nudges, and budgets. The three legacy persona users (maya,
-    sam, riley) are preserved.
+    Signed-up, generated and load users go, with their accounts, ledger,
+    transfers, goals, budgets, expenses, receipts, conversations, memories,
+    caches, signals and nudges. The personas maya, sam and riley stay.
     """
     if not yes:
         if not click.confirm('Delete all demo users and their data?'):
@@ -521,12 +521,7 @@ def clear_demo_users(yes):
     click.echo('Clearing demo users...')
     counts = clear_fn(config.database_url)
 
-    click.echo('Deleted:')
-    click.echo(f'  Users: {counts["users"]}')
-    click.echo(f'  Expenses: {counts["expenses"]}')
-    click.echo(f'  User budgets: {counts["user_budgets"]}')
-    click.echo(f'  Spending signals: {counts["spending_signals"]}')
-    click.echo(f'  Coach nudges: {counts["coach_nudges"]}')
+    click.echo(f'Deleted {counts["users"]} demo users and every row they owned.')
 
 
 def main():

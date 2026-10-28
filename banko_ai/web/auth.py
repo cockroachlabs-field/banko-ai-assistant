@@ -193,72 +193,16 @@ class UserManager:
 
 
 def clear_demo_users(database_url: str) -> dict[str, int]:
-    """Delete all demo users and their dependent data, preserving the three
-    legacy personas. Returns per-table deletion counts."""
+    """Delete every demo user and every row they own, keeping the personas.
+    Returns {"users": number removed}."""
+    from ..config.catalog import get_catalog
     from ..db.engine import get_engine
+    from ..services import users as user_service
 
-    engine = get_engine(get_database_url(database_url))
-    counts = {}
-
-    legacy_persona_ids = [
-        "00000000-0000-0000-0000-0000000000a1",
-        "00000000-0000-0000-0000-0000000000a2",
-        "00000000-0000-0000-0000-0000000000a3",
-    ]
-
-    with engine.connect() as conn:
-        demo_user_ids_result = conn.execute(
-            text("""
-                SELECT user_id FROM users
-                WHERE demo_user = true
-                AND user_id NOT IN (:p1, :p2, :p3)
-            """),
-            {"p1": legacy_persona_ids[0], "p2": legacy_persona_ids[1], "p3": legacy_persona_ids[2]}
-        )
-        demo_user_ids = [str(row[0]) for row in demo_user_ids_result]
-
-        if not demo_user_ids:
-            return {"users": 0, "expenses": 0, "user_budgets": 0, "spending_signals": 0, "coach_nudges": 0}
-
-        placeholders = ", ".join([f":uid{i}" for i in range(len(demo_user_ids))])
-        uid_params = {f"uid{i}": uid for i, uid in enumerate(demo_user_ids)}
-
-        result = conn.execute(
-            text(f"""
-                DELETE FROM coach_nudges
-                WHERE signal_id IN (
-                    SELECT signal_id FROM spending_signals
-                    WHERE user_id IN ({placeholders})
-                )
-            """),
-            uid_params
-        )
-        counts["coach_nudges"] = result.rowcount
-
-        result = conn.execute(
-            text(f"DELETE FROM spending_signals WHERE user_id IN ({placeholders})"),
-            uid_params
-        )
-        counts["spending_signals"] = result.rowcount
-
-        result = conn.execute(
-            text(f"DELETE FROM user_budgets WHERE user_id IN ({placeholders})"),
-            uid_params
-        )
-        counts["user_budgets"] = result.rowcount
-
-        result = conn.execute(
-            text(f"DELETE FROM expenses WHERE user_id IN ({placeholders})"),
-            uid_params
-        )
-        counts["expenses"] = result.rowcount
-
-        result = conn.execute(
-            text(f"DELETE FROM users WHERE user_id IN ({placeholders})"),
-            uid_params
-        )
-        counts["users"] = result.rowcount
-
-        conn.commit()
-
-    return counts
+    url = get_database_url(database_url)
+    personas = [p.user_id for p in get_catalog().personas]
+    with get_engine(url).connect() as conn:
+        ids = [str(r[0]) for r in conn.execute(text(
+            "SELECT user_id FROM users WHERE demo_user AND user_id <> ALL(CAST(:personas AS UUID[]))"),
+            {"personas": personas})]
+    return {"users": user_service.delete_users(ids, url=url)}
