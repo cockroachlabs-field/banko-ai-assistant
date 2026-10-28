@@ -544,9 +544,10 @@ def get_simulator() -> TrafficSimulator:
     global _simulator
     with _simulator_lock:
         if _simulator is None:
-            from ..db.engine import with_application_name
+            from ..db.engine import with_application_name, with_operation_timeout
             cfg = get_config()
-            url = with_application_name(cfg.database_url, "banko-load")
+            url = with_operation_timeout(with_application_name(cfg.database_url, "banko-load"),
+                                         cfg.load_operation_timeout_seconds)
             _simulator = TrafficSimulator(url=url, pool_size=cfg.load_max_workers + 2)
         return _simulator
 

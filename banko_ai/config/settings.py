@@ -289,6 +289,8 @@ class Settings(BaseSettings):
         description="Seconds between money integrity checks while the load simulator runs.")
     load_serving_sample_seconds: int = _field(5, group="platform", env="LOAD_SERVING_SAMPLE_SECONDS",
         description="Seconds between EXPLAIN ANALYZE samples, per home region, of which regions serve the simulated reads.")
+    load_operation_timeout_seconds: int = _field(10, group="platform", env="LOAD_OPERATION_TIMEOUT_SECONDS",
+        description="Seconds a simulated operation's statement may run, and its connection wait on an unanswered packet, so a partitioned or browned-out region cannot hold every worker.")
     platform_controls: bool = _field(True, group="platform", env="PLATFORM_CONTROLS",
         description="Let signed-in users start the load simulator and run chaos actions from the Platform page. Off makes the page read-only.")
     chaos_control_url: str = _field("", group="platform", env="CHAOS_CONTROL_URL",
@@ -379,7 +381,7 @@ class Settings(BaseSettings):
             if not 0 < default <= top:
                 raise ValueError(f"LOAD_DEFAULT_{kind.upper()}={default} must be above 0 and at most "
                                  f"LOAD_MAX_{kind.upper()} ({top})")
-        for name in ("load_integrity_interval_seconds", "load_serving_sample_seconds"):
+        for name in ("load_integrity_interval_seconds", "load_serving_sample_seconds", "load_operation_timeout_seconds"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name.upper()}={getattr(self, name)} must be at least 1")
         return self

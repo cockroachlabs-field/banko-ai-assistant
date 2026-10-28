@@ -243,3 +243,10 @@ def test_a_connection_that_could_not_be_opened_is_classed_as_lost():
 
     err = OperationalError("connect", {}, psycopg.OperationalError("connection failed: Connection refused"))
     assert error_class_of(err) == "connection"
+
+
+def test_the_simulator_pool_has_an_operation_timeout(monkeypatch):
+    from banko_ai.workers import traffic as T
+
+    monkeypatch.setattr(T, "_simulator", None)
+    assert "banko_statement_timeout=10" in T.get_simulator().url

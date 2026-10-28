@@ -204,3 +204,13 @@ def test_a_homed_pool_connects_through_its_own_region():
         for _ in range(3):
             with engine.connect() as c:
                 assert c.execute(text("SELECT gateway_region()")).scalar() == region
+
+
+@needs_db
+def test_an_operation_timeout_bounds_every_statement_on_its_pool():
+    """A partition or brownout makes statements hang until TCP gives up;
+    a pool with an operation timeout ends them after that many seconds."""
+    url = E.with_operation_timeout(with_application_name(os.environ["DATABASE_URL"], "banko-timeout-test"), 7)
+    with get_engine(url, pool_size=1).connect() as c:
+        assert c.execute(text("SHOW statement_timeout")).scalar() in ("7000", "7s", "00:00:07")
+        assert c.execute(text("SHOW application_name")).scalar() == "banko-timeout-test"

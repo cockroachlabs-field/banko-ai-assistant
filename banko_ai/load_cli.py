@@ -83,11 +83,12 @@ def _simulator():
     """A simulator in this process, on banko-load pools of its own, as the
     database owner, as the app's own simulator runs."""
     from .config.settings import get_config
-    from .db.engine import with_application_name
+    from .db.engine import with_application_name, with_operation_timeout
     from .workers.traffic import TrafficSimulator
     cfg = get_config()
-    return TrafficSimulator(url=with_application_name(cfg.database_url, "banko-load"),
-                            pool_size=cfg.load_max_workers + 2)
+    url = with_operation_timeout(with_application_name(cfg.database_url, "banko-load"),
+                                 cfg.load_operation_timeout_seconds)
+    return TrafficSimulator(url=url, pool_size=cfg.load_max_workers + 2)
 
 
 def _http():

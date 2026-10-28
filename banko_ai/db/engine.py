@@ -33,6 +33,7 @@ AMBIGUOUS_SQLSTATES = {"40003"}            # result unknown: retry only idempote
 CONNECTION_SQLSTATE_PREFIXES = ("08", "57P")
 
 _GATEWAY_REGION = "banko_gateway_region"   # URL parameter: the pool's home region, never sent to the server
+_STATEMENT_TIMEOUT = "banko_statement_timeout"  # URL parameter: seconds per statement and per unanswered packet
 HOME_ATTEMPTS = 24                         # connections tried for one through the home region
 REHOME_AFTER_S = 15.0                      # how long a connection that landed elsewhere waits to try home again
 UNREACHABLE_RETRY_S = 300.0                # how often a home region this URL has never reached is tried again
@@ -44,6 +45,14 @@ def with_application_name(url: str, name: str) -> str:
     """The URL with an application_name, which gives it a pool of its own in
     get_engine and a label in SHOW SESSIONS (the load simulator's banko-load)."""
     return make_url(url).update_query_dict({"application_name": name}).render_as_string(hide_password=False)
+
+
+def with_operation_timeout(url: str, seconds: int) -> str:
+    """The URL with an operation timeout, which gives it a pool of its own in
+    get_engine whose statements end after that many seconds and whose
+    connections give up on a packet nobody answers as quickly (TCP user
+    timeout), so a partitioned node cannot hold a connection for minutes."""
+    return make_url(url).update_query_dict({_STATEMENT_TIMEOUT: str(int(seconds))}).render_as_string(hide_password=False)
 
 
 def with_gateway_region(url: str, region: str) -> str:
@@ -179,8 +188,11 @@ def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engin
             parsed = make_url(key)
             name = parsed.query.get("application_name") or "banko"
             home = parsed.query.get(_GATEWAY_REGION)
+            timeout = parsed.query.get(_STATEMENT_TIMEOUT)
+            seconds = int(timeout if isinstance(timeout, str) else timeout[0]) if timeout else None
+            limits = {"tcp_user_timeout": seconds * 1000} if seconds else {}
             engine = create_engine(
-                parsed.difference_update_query(["application_name", _GATEWAY_REGION]),
+                parsed.difference_update_query(["application_name", _GATEWAY_REGION, _STATEMENT_TIMEOUT]),
                 pool_size=pool_size or cfg.db_pool_size,
                 max_overflow=cfg.db_max_overflow,
                 pool_timeout=cfg.db_pool_timeout,
@@ -189,7 +201,8 @@ def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engin
                 connect_args={
                     "connect_timeout": cfg.db_connect_timeout,
                     "application_name": name if isinstance(name, str) else name[0],
-                    "options": "-c timezone=utc",
+                    "options": "-c timezone=utc" + (f" -c statement_timeout={seconds}s" if seconds else ""),
+                    **limits,
                 },
             )
             if home:
