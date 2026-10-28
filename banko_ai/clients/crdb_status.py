@@ -66,9 +66,10 @@ class StatusClient:
                 if r.status_code >= 400:
                     raise StatusUnavailable(f"The CockroachDB HTTP API answered {r.status_code}.")
                 try:
-                    return r.json()
+                    body: dict = r.json()
                 except ValueError:
                     raise StatusUnavailable("The CockroachDB HTTP API did not answer with JSON.") from None
+                return body
         raise StatusUnavailable("The CockroachDB HTTP API refused the login.")
 
     def nodes(self) -> list[dict]:

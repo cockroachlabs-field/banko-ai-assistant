@@ -56,7 +56,7 @@ class _Snapshot:
                 self._value, self._as_of = value, time.time()
             self._failed, self._refreshing = failed, False
         self._first.set()
-        if not failed and self._on_change is not None:
+        if not failed and value is not None and self._on_change is not None:
             try:
                 self._on_change(previous, value)
             except Exception:
@@ -96,7 +96,8 @@ _state_lock = threading.Lock()
 
 def _state() -> _State:
     with _state_lock:
-        return current_app.extensions.setdefault("banko_platform", _State())
+        state: _State = current_app.extensions.setdefault("banko_platform", _State())
+        return state
 
 
 # -- sources -----------------------------------------------------------------------------------

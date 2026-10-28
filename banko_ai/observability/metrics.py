@@ -34,7 +34,7 @@ def _bucket(ms: float) -> int:
 
 def _bucket_ms(index: int) -> float:
     """The geometric middle of a bucket."""
-    return _FLOOR_MS * _RATIO ** (index + 0.5)
+    return float(_FLOOR_MS * _RATIO ** (index + 0.5))
 
 
 class _Second:
@@ -112,7 +112,9 @@ class Metrics:
         with self._lock:
             _, window = self._window(series, window_s, now)
             totals = dict.fromkeys(OUTCOMES, 0)
-            retries, classes, hists, samples = 0, {}, [], 0
+            retries, samples = 0, 0
+            classes: dict[str, int] = {}
+            hists: list[array] = []
             for b in window:
                 if b is None:
                     continue

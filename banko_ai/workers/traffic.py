@@ -351,7 +351,10 @@ class TrafficSimulator:
             elif delay < -1.0:  # fell a second behind (a pause): catch up from now, no burst
                 next_at = self._clock()
             ops, weights = run.mix
-            op, user = rng.choices(ops, weights)[0], run.picker.pick(rng)
+            picker = run.picker
+            if picker is None:  # never once running: boot sets it before the scheduler starts
+                return
+            op, user = rng.choices(ops, weights)[0], picker.pick(rng)
             try:
                 run.queue.put_nowait((op, user, next_at))
             except queue.Full:
@@ -359,6 +362,9 @@ class TrafficSimulator:
 
     def _work(self, run: _Run, index: int) -> None:
         rng = random.Random(run.rng.random() + index)
+        runner = run.runner
+        if runner is None:  # never once running: boot sets it before any worker starts
+            return
         while not run.stop.is_set() and index < run.config.workers:
             try:
                 op, user, intended = run.queue.get(timeout=0.2)
@@ -366,7 +372,7 @@ class TrafficSimulator:
                 continue
             error_class = None
             try:
-                outcome, retries = run.runner(op, user, rng)
+                outcome, retries = runner(op, user, rng)
             except Exception as exc:  # recorded by class; the run goes on
                 outcome, retries, error_class = "error", getattr(exc, "client_retries", 0), error_class_of(exc)
                 log.debug("load operation %s failed: %s", op, error_class)

@@ -167,7 +167,7 @@ def _remote(url: str, persona: str):
 
 def _answer(r) -> dict:
     try:
-        body = r.json()
+        body: dict = r.json()
     except ValueError:
         body = {}
     if r.status_code >= 400:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from typing import cast
 from urllib.parse import urlsplit
 
 from sqlalchemy import text
@@ -142,7 +143,8 @@ def vector_stats(*, url: str | None = None) -> dict:
             row = conn.execute(text(sql.format(aost=" AS OF SYSTEM TIME follower_read_timestamp()"))).fetchone()
         except Exception:  # no follower reads on this cluster: read the current data
             row = conn.execute(text(sql.format(aost=""))).fetchone()
-    return {"vectors": int(row[0]), "users_with_vectors": int(row[1]), "index": VECTOR_INDEX}
+    vectors, users = (row[0], row[1]) if row is not None else (0, 0)
+    return {"vectors": int(vectors), "users_with_vectors": int(users), "index": VECTOR_INDEX}
 
 
 def _sink(uri: str | None) -> str | None:
@@ -165,9 +167,9 @@ def cdc_status(*, url: str | None = None) -> dict:
         except Exception:
             feeds = []
         signals = conn.execute(text(
-            "SELECT count(*) FROM spending_signals WHERE produced_at > now() - INTERVAL '10 minutes'")).scalar()
+            "SELECT count(*) FROM spending_signals WHERE produced_at > now() - INTERVAL '10 minutes'")).scalar() or 0
         nudges = conn.execute(text(
-            "SELECT count(*) FROM coach_nudges WHERE created_at > now() - INTERVAL '10 minutes'")).scalar()
+            "SELECT count(*) FROM coach_nudges WHERE created_at > now() - INTERVAL '10 minutes'")).scalar() or 0
     return {"changefeeds": feeds, "signals_per_min": round(int(signals) / 10, 1),
             "nudges_per_min": round(int(nudges) / 10, 1)}
 
@@ -178,7 +180,7 @@ def sample_serving(user_id: str, *, url: str | None = None) -> str | None:
     import psycopg
 
     with get_engine(url or get_config().database_url).connect() as conn:
-        with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
+        with psycopg.ClientCursor(cast(psycopg.Connection, conn.connection.driver_connection)) as cur:
             # Local to the implicit transaction, which the pool rolls back.
             cur.execute("SELECT set_config('banko.user_id', %s, true)", (user_id,))
             cur.execute("EXPLAIN ANALYZE SELECT account_id, balance FROM accounts WHERE user_id = %s", (user_id,))

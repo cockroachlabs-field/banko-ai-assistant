@@ -77,12 +77,13 @@ def delete_users(ids: Sequence[str], *, url: str | None = None, batch: int = 100
         for table, kind in _user_id_types().items():
             if table not in present:
                 continue
-            while True:
-                deleted = run_transaction(lambda conn, table=table, kind=kind: conn.execute(text(
-                    f"DELETE FROM {table} WHERE user_id = ANY(CAST(:ids AS {kind}[])) LIMIT {batch}"),
-                    {"ids": chunk}).rowcount, url=url)
-                if deleted < batch:
-                    break
+            sql = text(f"DELETE FROM {table} WHERE user_id = ANY(CAST(:ids AS {kind}[])) LIMIT {batch}")
+
+            def delete_batch(conn, sql=sql, chunk=chunk) -> int:
+                return int(conn.execute(sql, {"ids": chunk}).rowcount)
+
+            while run_transaction(delete_batch, url=url) >= batch:
+                pass
         if "banko_meta" in present:
             keys = [f"seed:{u}" for u in chunk] + [f"seed_lock:{u}" for u in chunk]
             run_transaction(lambda conn: conn.execute(text(
