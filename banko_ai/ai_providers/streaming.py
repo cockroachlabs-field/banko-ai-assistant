@@ -63,6 +63,18 @@ def _lc(messages: list[dict]) -> list:
     return [kinds.get(str(m.get("role", "")), HumanMessage)(content=m.get("content", "")) for m in messages]
 
 
+_RATE_LIMITED = ("429", "rate limit", "rate_limit", "too many requests", "consumption_limit", "throttl",
+                 "resource_exhausted")
+
+
+def rate_limited(exc: BaseException) -> bool:
+    """Whether a provider refused for its rate or usage limit. Its SDK has
+    usually retried with backoff before raising (watsonx's for about a
+    minute), so asking again at once only doubles the wait."""
+    status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    return status == 429 or any(p in str(exc).lower() for p in _RATE_LIMITED)
+
+
 class ProviderChat:
     """The active provider's chat model, with the model picked in Settings."""
 
@@ -93,8 +105,10 @@ class ProviderChat:
                 if piece:
                     produced = True
                     yield piece
-        except Exception:
-            if produced:
+        except Exception as exc:
+            # Fall back to one non-streamed call only for a model that cannot
+            # stream; never after tokens went out, or after a rate limit.
+            if produced or rate_limited(exc):
                 self.last_usage = usage
                 raise
         if produced:

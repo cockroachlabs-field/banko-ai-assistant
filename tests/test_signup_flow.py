@@ -141,3 +141,33 @@ def test_load_customer_names_are_reserved(client):
         r = client.post("/signup", data={"username": name, "spending_style": "saver"})
         assert r.status_code == 200 and b"reserved" in r.data, name
         assert UserManager(DB).get_by_username(name) is None
+
+
+def test_a_new_users_welcome_signal_goes_out_after_seeding(client, monkeypatch):
+    """The welcome nudge is posted from the seeding thread, after the signup
+    request is gone, so it must not need that request."""
+    import time
+
+    from banko_ai.config.settings import reset_config
+    from banko_ai.web import app as app_module
+
+    posts = []
+    monkeypatch.setattr(app_module.requests, "post", lambda url, **kw: posts.append((url, kw.get("data"))))
+    monkeypatch.setenv("CDC_WEBHOOK_HMAC_SECRET", "test-secret")
+    reset_config()
+    try:
+        r = client.post("/signup", data={"username": "flow-welcome-user", "spending_style": "saver"},
+                        follow_redirects=False)
+        assert r.status_code == 302
+        user = UserManager(DB).get_by_username("flow-welcome-user")
+        assert _wait_seeded(user["user_id"]) == "done"
+        deadline = time.monotonic() + 10
+        while not posts and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert len(posts) == 1 and posts[0][0].endswith("/api/cdc/signals")
+        assert user["user_id"].encode() in posts[0][1]
+    finally:
+        reset_config()
+        found = UserManager(DB).get_by_username("flow-welcome-user")
+        if found:
+            drop_user(found["user_id"])

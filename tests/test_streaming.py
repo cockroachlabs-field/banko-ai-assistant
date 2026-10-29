@@ -176,3 +176,29 @@ def test_one_estimated_call_marks_the_whole_count_estimated():
     reporting.complete = silent
     chat.complete([{"role": "user", "content": "q" * 80}])
     assert (chat.input_tokens, chat.output_tokens, chat.estimated) == (140, 40, True)
+
+
+class RateLimitedStream:
+    def __init__(self):
+        self.invoked = 0
+
+    def stream(self, messages):
+        raise RuntimeError('Failure during chat. Status code: 429, body: {"errors":[{"code":'
+                           '"consumption_limit_reached","message":"The usage limit for the current plan '
+                           'has been reached"}]}')
+        yield  # pragma: no cover
+
+    def invoke(self, messages):
+        self.invoked += 1
+        raise AssertionError("a rate-limited request must not be sent again at once")
+
+
+def test_a_rate_limited_stream_is_raised_not_sent_again(monkeypatch):
+    """A provider SDK retries a 429 with backoff before it gives up (watsonx's
+    for about a minute); asking again at once only doubles the wait for an
+    answer that comes back the same."""
+    llm = RateLimitedStream()
+    _use(monkeypatch, llm)
+    with pytest.raises(RuntimeError):
+        list(S.ProviderChat().stream([{"role": "user", "content": "q"}]))
+    assert llm.invoked == 0

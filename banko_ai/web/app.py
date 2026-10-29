@@ -476,12 +476,13 @@ def create_app() -> Flask:
         get_saver()
         return "checkpointer ready"
 
-    def _emit_welcome_signal(user: dict) -> None:
-        """Post a welcome signal matched to the user's spending style.
+    def _emit_welcome_signal(user: dict, base_url: str) -> None:
+        """Post a welcome signal matched to the user's spending style to this
+        same server at base_url (the signup request's host, read while that
+        request was live: this runs on the seeding thread after it ended).
 
-        The POST goes back to this same server, so it runs on a background
-        thread: a synchronous self-call inside the signup request would
-        deadlock a single-threaded server."""
+        The POST runs on a background thread: a synchronous self-call inside
+        the signup request would deadlock a single-threaded server."""
         secret = get_config().cdc_webhook_hmac_secret
         if not secret:
             print("welcome signal skipped: no webhook secret")
@@ -504,8 +505,7 @@ def create_app() -> Flask:
             "updated": f"{time.time():.10f}"}]}
         body = json.dumps(envelope).encode()
         mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        # host_url needs the request context; resolve it before the thread.
-        url = request.host_url.rstrip('/') + '/api/cdc/signals'
+        url = base_url.rstrip('/') + '/api/cdc/signals'
 
         def _post() -> None:
             try:
@@ -602,12 +602,15 @@ def create_app() -> Flask:
         user = None
         try:
             user = um.create(username, spending_style, home_region, demo_user=True)
-            def _seed_then_welcome(new_user=user):
+            # Read now: the seeding thread outlives this request.
+            base_url = request.host_url
+
+            def _seed_then_welcome(new_user=user, base_url=base_url):
                 from ..services.seeding import SIGNUP_BATCH_SIZE, seed_user
                 try:
                     # Small batches, so the person watching sees the count move.
                     seed_user(new_user["user_id"], on_progress=_emit_seeding, batch_size=SIGNUP_BATCH_SIZE)
-                    _emit_welcome_signal(new_user)
+                    _emit_welcome_signal(new_user, base_url)
                 except Exception as exc:
                     print(f"⚠️  seeding {new_user['username']} failed: {exc}")
             threading.Thread(target=_seed_then_welcome, daemon=True,
