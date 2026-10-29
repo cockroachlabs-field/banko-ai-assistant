@@ -33,7 +33,7 @@ from langgraph.runtime import Runtime
 from ..ai_providers.streaming import Chat, ProviderChat
 from ..config.settings import get_config
 from ..db.engine import get_engine
-from ..db.regions import money_region
+from ..db.regions import money_region, read_region
 from ..services import caches, ledger, memories, receipts, reports, threads
 from ..services import transactions as txns
 from ..utils.request_trace import serving_regions, trace_step
@@ -210,8 +210,9 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                   ms=(time.perf_counter() - t0) * 1000, status="warning")
             return {"answer": answers.translate(NOT_FOUND.format(subject=intent.subject),
                                                 state.get("language") or "English", deps.chat)}
-    with get_engine(url).connect() as conn:
-        region = money_region(conn, user_id, url)
+    # Named only when all the user's rows live in their home region: a sum
+    # pinned there would miss rows written elsewhere and answer "none".
+    region = read_region(user_id, url)
     narration.aggregation(intent, region)
     if region:
         _step("Region pruning", f"Scoped to {region} (REGIONAL BY ROW)")

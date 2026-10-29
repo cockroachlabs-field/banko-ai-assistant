@@ -177,6 +177,7 @@ def test_a_regional_aggregation_traces_pruning_and_the_serving_region(g, member,
     monkeypatch.setattr(aggregations, "run_aggregation", run)
     monkeypatch.setattr(aggregations, "explain_aggregation", lambda *a, **k: "• group\n  regions: us-west-2\n")
     monkeypatch.setattr(G, "money_region", lambda conn, user_id, url: "us-east-1")
+    monkeypatch.setattr(G, "read_region", lambda user_id, url: "us-east-1")
     out, events = _turn(g, member, thread, "how much did I spend on restaurants in the last 20 days",
                         ScriptedChat("- Two dinners."))
     steps = {e["label"]: e for e in events if e["type"] == "step"}
@@ -186,6 +187,31 @@ def test_a_regional_aggregation_traces_pruning_and_the_serving_region(g, member,
     labels = [e["label"] for e in events if e["type"] == "step"]
     assert labels.index("Region pruning") < labels.index("Aggregation SQL") < labels.index("Narrative cache")
     assert used["region"] == "us-east-1" and out["meta"]["region"] == "us-west-2"
+
+
+def test_an_aggregation_counts_rows_outside_the_home_region(g, member, thread, monkeypatch):
+    """A user can have purchases written outside their home region (before
+    the tables were regional, say); a sum pinned to the home region would
+    miss them and answer "no matching transactions", so the aggregation
+    names the region only when read_region says all their rows live there."""
+    from banko_ai.utils import aggregations
+    from banko_ai.utils.aggregations import AggregationResult
+    used = {}
+
+    def run(intent, user_id, url, region=None, merchant=None):
+        used["region"] = region
+        return AggregationResult(operation="sum", category="Coffee", window_start=intent.window_start,
+                                 window_end=intent.window_end, total=9.5, count=2, average=4.75,
+                                 first_date=None, last_date=None,
+                                 rows=[{"date": "2026-10-01", "merchant": "Blue Bottle", "amount": 4.75}] * 2)
+    monkeypatch.setattr(aggregations, "run_aggregation", run)
+    monkeypatch.setattr(aggregations, "explain_aggregation", lambda *a, **k: "• group\n  regions: us-east-1, eu-west-1\n")
+    monkeypatch.setattr(G, "money_region", lambda conn, user_id, url: "us-east-1")
+    monkeypatch.setattr(G, "read_region", lambda user_id, url: None)
+    out, events = _turn(g, member, thread, "what did I spend on coffee", ScriptedChat("- Two coffees."))
+    labels = [e["label"] for e in events if e["type"] == "step"]
+    assert used["region"] is None and "Region pruning" not in labels
+    assert "$9.50" in out["answer"]
 
 
 def test_the_readme_question_sums_one_category(g, member, thread):
