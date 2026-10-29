@@ -402,18 +402,25 @@ document.addEventListener("alpine:init", () => {
     cancel(p) { return this.decide(p, "cancel"); },
 
     render(text) { return Banko.renderAnswer(text); },
-    // The exchange, question and answer, ready to paste into a note.
-    async copy(m) {
-      const asked = this.messages.slice(0, this.messages.indexOf(m)).reverse().find((x) => x.role === "user");
-      const answer = Banko.stripCitations(m.answer);
-      const plain = asked ? "Q: " + asked.text + "\n\nA: " + answer : answer;
+    async copyText(plain, what) {
       try { await navigator.clipboard.writeText(plain); }
       catch (e) {
         const area = document.createElement("textarea");
         area.value = plain; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove();
       }
-      Alpine.store("toasts").push({ title: "Copied", text: asked ? "The question and answer are on your clipboard."
-                                                                 : "The answer is on your clipboard." });
+      Alpine.store("toasts").push({ title: "Copied", text: what + " on your clipboard." });
+    },
+    // The exchange, question and answer, ready to paste into a note.
+    copy(m) {
+      const asked = this.messages.slice(0, this.messages.indexOf(m)).reverse().find((x) => x.role === "user");
+      const answer = Banko.stripCitations(m.answer);
+      return asked ? this.copyText("Q: " + asked.text + "\n\nA: " + answer, "The question and answer are")
+                   : this.copyText(answer, "The answer is");
+    },
+    // One message alone: the question, or the answer.
+    copyMessage(m) {
+      return m.role === "user" ? this.copyText(m.text, "The question is")
+                               : this.copyText(Banko.stripCitations(m.answer), "The answer is");
     },
     toggleTrace(m) { m.showTrace = !m.showTrace; Banko.emit("banko:trace", { message: m }); },
     togglePlans() { this.plansOpen = !this.plansOpen; localStorage.setItem("banko.plans", this.plansOpen ? "open" : "closed"); },

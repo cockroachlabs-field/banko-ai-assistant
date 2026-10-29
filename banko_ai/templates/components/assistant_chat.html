@@ -6,7 +6,7 @@
   </div>
   <template x-for="m in messages" :key="m.id">
     <div style="display:flex;flex-direction:column;gap:6px">
-      <template x-if="m.role === 'user'"><div class="b-msg-user"><span x-text="m.text"></span><small x-show="m.lang" x-text="m.lang"></small></div></template>
+      <template x-if="m.role === 'user'"><div class="b-msg-user"><span x-text="m.text"></span><small x-show="m.lang" x-text="m.lang"></small><button type="button" class="b-copy" @click="copyMessage(m)" aria-label="Copy the question" title="Copy the question">{{ icon('copy') }}</button></div></template>
 
       <template x-if="m.role === 'receipt'">
         <div class="b-receipt">
@@ -34,6 +34,7 @@
           </div>
           <div class="b-think" x-show="working(m)" role="status"><span class="b-dots" aria-hidden="true"><i></i><i></i><i></i></span><span x-text="statusLine(m)"></span></div>
           <div class="b-ans" x-show="m.answer || m.error || m.stopped">
+            <button type="button" class="b-copy" x-show="m.answer" @click="copyMessage(m)" aria-label="Copy the answer" title="Copy the answer">{{ icon('copy') }}</button>
             <div x-html="render(m.answer)"></div>
             <div class="b-tag bad" x-show="m.error" x-text="m.error"></div>
             <div class="b-muted" x-show="m.stopped">Stopped.</div>
@@ -64,7 +65,7 @@
             <span x-show="metaLine(m)" x-text="metaLine(m)"></span>
             <span x-show="m.meta.region" x-text="'served from ' + m.meta.region + (m.meta.db_ms ? ' · ' + m.meta.db_ms + ' ms in the database' : '')"></span>
             <button type="button" class="link" x-show="hasTrace(m)" @click="toggleTrace(m)">How this was answered</button>
-            <button type="button" @click="copy(m)" title="Copy the question and answer">{{ icon('copy') }}copy</button>
+            <button type="button" @click="copy(m)" title="Copy the question and answer">{{ icon('copy') }}copy Q&amp;A</button>
             <button type="button" x-show="canSpeak" @click="speak(m.answer)">{{ icon('volume-2') }}read aloud</button>
           </div>
           <div class="b-explain" x-show="m.answered && m.meta.explain">

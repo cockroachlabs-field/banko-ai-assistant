@@ -685,9 +685,35 @@ def test_copy_puts_the_question_and_its_answer_on_the_clipboard(server, browser)
         page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
         bot = page.locator(".b-panel .b-msg-bot")
         expect(bot.locator(".b-meta")).to_be_visible()
-        bot.get_by_role("button", name="copy").click()
+        bot.get_by_role("button", name="copy Q&A").click()
         copied = page.evaluate("() => navigator.clipboard.readText()")
         assert copied == f"Q: {TITLED}\n\nA: You spent $42.10 on dining.", copied
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_question_and_the_answer_each_have_a_copy_button(server, browser):
+    """As on the old page, each message carries its own copy button at its
+    corner, shown on hover, copying that message alone."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=server)
+        _PanelApi(page)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        panel = page.locator(".b-panel")
+        expect(panel.locator(".b-msg-bot .b-meta")).to_be_visible()
+        question = panel.locator(".b-msg-user")
+        question.hover()
+        question.get_by_role("button", name="Copy the question").click()
+        assert page.evaluate("() => navigator.clipboard.readText()") == TITLED
+        answer = panel.locator(".b-msg-bot .b-ans")
+        answer.hover()
+        answer.get_by_role("button", name="Copy the answer").click()
+        assert page.evaluate("() => navigator.clipboard.readText()") == "You spent $42.10 on dining."
+        shown = question.get_by_role("button", name="Copy the question").evaluate("(el) => getComputedStyle(el).opacity")
+        assert float(shown) > 0  # hovered
         assert not errors, errors
     finally:
         ctx.close()
@@ -925,7 +951,7 @@ def test_an_answer_without_a_trace_offers_no_trace_button(server, browser):
         expect(bot).to_contain_text("You spent $12.40 on coffee.")
         expect(bot.get_by_role("button", name="How this was answered")).to_have_count(0)
         expect(bot.locator(".b-explain")).to_be_hidden()
-        expect(bot.get_by_role("button", name="copy")).to_be_visible()
+        expect(bot.get_by_role("button", name="copy Q&A")).to_be_visible()
         assert not errors, errors
     finally:
         ctx.close()
