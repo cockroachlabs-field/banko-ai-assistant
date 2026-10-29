@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import text
 
 from ..config.settings import get_config
-from ..db.engine import get_engine, run_transaction
+from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
 from ._sql import jsonable
@@ -89,7 +89,7 @@ def get_search(user_id: str, key: str, *, url: str | None = None, stat: str = "s
         """), {"k": key, "u": user_id}).fetchone()
         return None if row is None else (row[0] if isinstance(row[0], (list, dict)) else json.loads(row[0]))
 
-    results = run_transaction(fn, url=url)
+    results = run_transaction(fn, url=url, user_id=user_id)
     record_stat(stat, "hit" if results is not None else "miss")
     return results
 
@@ -109,7 +109,7 @@ def put_search(user_id: str, key: str, results: list | dict, *, url: str | None 
             VALUES ({rval}:k, CAST(:u AS UUID), CAST(:r AS JSONB), 0, now(), now() + :m * INTERVAL '1 minute')
         """), {"k": key, "u": user_id, "r": json.dumps(jsonable(results)), "m": minutes, "crdb_region": region})
 
-    run_transaction(fn, url=url)
+    run_transaction(fn, url=url, user_id=user_id)
     record_stat(stat, "write")
 
 
@@ -155,7 +155,7 @@ def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
                 return {"cache_id": cache_id, "answer": row[0], "tokens": int(row[1]), "distance": distance}
         return None
 
-    hit = run_transaction(fn, url=url)
+    hit = run_transaction(fn, url=url, user_id=user_id)
     record_stat("answer", "hit" if hit else "miss", hit["tokens"] if hit else 0)
     return hit
 
@@ -178,14 +178,14 @@ def put_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
         """), {"u": user_id, "v": int(version), "l": language, "q": query[:2000], "qvec": qvec,
                "a": answer, "t": int(tokens), "h": hours, "crdb_region": region})
 
-    run_transaction(fn, url=url, idempotent=False)
+    run_transaction(fn, url=url, user_id=user_id, idempotent=False)
     record_stat("answer", "write")
 
 
 def cache_summary(user_id: str, *, url: str | None = None) -> dict[str, Any]:
     """Counts for the Settings page and the trace."""
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         answers = conn.execute(text("SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID)"),
                                {"u": user_id}).scalar()
         searches = conn.execute(text("SELECT count(*) FROM search_cache WHERE user_id = CAST(:u AS UUID)"),

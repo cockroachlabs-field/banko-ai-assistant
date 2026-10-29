@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from sqlalchemy import text
 
-from ..db.engine import get_engine
+from ..db.engine import get_engine, routed
 from ._sql import jsonable, valid_uuid
 
 
 def get_profile(user_id: str, *, url: str | None = None) -> dict | None:
     if not valid_uuid(user_id):
         return None
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         row = conn.execute(text("""
             SELECT user_id, username, display_name, avatar_color, spending_style, home_region
             FROM users WHERE user_id = CAST(:u AS UUID)

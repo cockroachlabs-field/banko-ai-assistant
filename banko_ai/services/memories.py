@@ -10,7 +10,7 @@ import re
 from sqlalchemy import text
 
 from ..config.settings import get_config
-from ..db.engine import get_engine, run_transaction
+from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
 from ._sql import jsonable, valid_uuid
@@ -67,7 +67,7 @@ def remember(user_id: str, content: str, *, kind: str | None = None, source_thre
         bump_data_version(conn, user_id, region)
         return {"memory_id": str(mid), "content": content, "kind": kind, "created": True}
 
-    return run_transaction(fn, url=url, idempotent=False)
+    return run_transaction(fn, url=url, user_id=user_id, idempotent=False)
 
 
 def recall(user_id: str, query: str, *, k: int | None = None, url: str | None = None) -> list[dict]:
@@ -93,12 +93,12 @@ def recall(user_id: str, query: str, *, k: int | None = None, url: str | None = 
         return [{"memory_id": m, "kind": rows[m][1], "content": rows[m][2], "distance": round(d, 4)}
                 for m, d in near if m in rows]
 
-    return run_transaction(fn, url=url)
+    return run_transaction(fn, url=url, user_id=user_id)
 
 
 def list_memories(user_id: str, *, url: str | None = None) -> list[dict]:
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         rows = conn.execute(text("""
             SELECT memory_id, kind, content, use_count, created_at, last_used_at
             FROM memories@memories_user_idx WHERE user_id = CAST(:u AS UUID) ORDER BY created_at DESC
@@ -120,7 +120,7 @@ def forget(user_id: str, memory_id: str, *, url: str | None = None) -> bool:
             bump_data_version(conn, user_id, money_region(conn, user_id, url))
         return bool(deleted)
 
-    return run_transaction(fn, url=url)
+    return run_transaction(fn, url=url, user_id=user_id)
 
 
 def forget_matching(user_id: str, phrase: str, *, url: str | None = None) -> list[str]:
@@ -142,4 +142,4 @@ def forget_matching(user_id: str, phrase: str, *, url: str | None = None) -> lis
         bump_data_version(conn, user_id, money_region(conn, user_id, url))
         return [row[0]]
 
-    return run_transaction(fn, url=url)
+    return run_transaction(fn, url=url, user_id=user_id)

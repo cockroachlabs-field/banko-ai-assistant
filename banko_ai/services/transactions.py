@@ -14,7 +14,7 @@ from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine, run_transaction
+from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import money_region, read_region, regional_tables_ready
 from ..db.rls import request_url
 from ..utils.request_trace import trace_step
@@ -510,7 +510,7 @@ def explain_merchant_visits(user_id: str, name: str, *, date_from: date | None =
     from ..utils.aggregations import _to_pyformat
     url = request_url(url)
     where, params = _visits_where(user_id, name, date_from, date_to)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
             cur.execute("EXPLAIN ANALYZE " + _to_pyformat(_visits_sql(where)), params)
             return "\n".join(str(r[0]) for r in cur.fetchall())
@@ -522,7 +522,7 @@ def explain_semantic(user_id: str, q: str, *, url: str | None = None) -> str:
     from ..utils.aggregations import _to_pyformat
     url = request_url(url)
     qvec = _qvec(q)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
             cur.execute("EXPLAIN ANALYZE " + _to_pyformat(semantic_sql()),
                         {"u": user_id, "qvec": qvec, "k": SEARCH_WINDOW})

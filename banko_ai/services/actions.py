@@ -41,7 +41,7 @@ def propose(user_id: str, kind: str, args: dict, summary: str, *, thread_id: str
                "a": json.dumps(args), "s": summary[:300], "h": hours, "crdb_region": region}).scalar()
         return _out(str(aid), kind, summary[:300], "pending")
 
-    return run_transaction(fn, url=url, idempotent=False)
+    return run_transaction(fn, url=url, user_id=user_id, idempotent=False)
 
 
 def _claim(user_id: str, action_id: str, to_status: str, url: str | None):
@@ -63,7 +63,7 @@ def _claim(user_id: str, action_id: str, to_status: str, url: str | None):
         args = row[1] if isinstance(row[1], dict) else json.loads(row[1])
         return row[0], args, row[2], row[3]
 
-    return run_transaction(fn, url=url)
+    return run_transaction(fn, url=url, user_id=user_id)
 
 
 def confirm(user_id: str, action_id: str, *, url: str | None = None) -> dict:
@@ -80,7 +80,7 @@ def confirm(user_id: str, action_id: str, *, url: str | None = None) -> dict:
         # Put it back so the user can try again; the error surfaces neutrally upstream.
         run_transaction(lambda conn: conn.execute(text(
             "UPDATE assistant_actions SET status = 'pending' WHERE action_id = CAST(:a AS UUID)"),
-            {"a": action_id}), url=url)
+            {"a": action_id}), url=url, user_id=user_id)
         raise
     return _out(action_id, kind, summary, "done")
 

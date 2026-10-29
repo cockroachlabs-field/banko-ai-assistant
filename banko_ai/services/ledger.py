@@ -19,7 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from ..config.settings import get_config
-from ..db.engine import get_engine, run_transaction
+from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import SCOPED_REGION_VALUE, home_region, money_region, region_columns, scoped_key
 from ..db.rls import request_url
 from ._sql import vector_text
@@ -117,7 +117,7 @@ def bump_data_version(conn: Connection, user_id: str, region: str | None) -> Non
 
 def data_version(user_id: str, url: str | None = None) -> int:
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         value = conn.execute(text("SELECT version FROM user_data_versions WHERE user_id = CAST(:u AS UUID)"),
                              {"u": user_id}).scalar()
     return int(value or 0)

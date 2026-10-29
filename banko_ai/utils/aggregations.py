@@ -88,8 +88,8 @@ def resolve_merchant(subject: str | None, user_id: str, database_url: str) -> st
     phrases of four letters or more, then a close fuzzy match."""
     if not subject:
         return None
-    from ..db.engine import get_engine
-    with get_engine(database_url).connect() as c:
+    from ..db.engine import get_engine, routed
+    with get_engine(routed(database_url, user_id)).connect() as c:
         names = [r[0] for r in c.execute(text(
             "SELECT DISTINCT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL"),
             {"u": user_id}) if r[0]]
@@ -133,11 +133,11 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
                     database_url: str,
                     region: str | None = None,
                     merchant: str | None = None) -> AggregationResult:
-    from ..db.engine import get_engine
+    from ..db.engine import get_engine, routed
     category = None if merchant else resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region, merchant)
 
-    eng = get_engine(database_url)
+    eng = get_engine(routed(database_url, user_id))
     with eng.connect() as c:
         agg = c.execute(text(f"""
             SELECT COALESCE(SUM(expense_amount), 0),
@@ -194,8 +194,8 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
         FROM expenses {where_pyformat}
     """
 
-    from ..db.engine import get_engine
-    eng = get_engine(database_url)
+    from ..db.engine import get_engine, routed
+    eng = get_engine(routed(database_url, user_id))
     with eng.connect() as c:
         # Get the raw psycopg connection for client-side binding
         raw_conn = c.connection.driver_connection

@@ -32,7 +32,7 @@ from langgraph.runtime import Runtime
 
 from ..ai_providers.streaming import Chat, ProviderChat
 from ..config.settings import get_config
-from ..db.engine import get_engine
+from ..db.engine import get_engine, routed
 from ..db.regions import money_region, read_region
 from ..services import caches, ledger, memories, receipts, reports, threads
 from ..services import transactions as txns
@@ -110,6 +110,13 @@ def _running(key: str, label: str) -> None:
 
 def _since(t0: float) -> float:
     return (time.perf_counter() - t0) * 1000
+
+
+def home_region_of(user_id: str, url: str | None) -> str | None:
+    """The user's home region for the region badge, None off REGIONAL BY ROW."""
+    url = url or get_config().database_url
+    with get_engine(routed(url, user_id)).connect() as conn:
+        return money_region(conn, user_id, url)
 
 
 # The tools that search the user's history get a phase of their own.
@@ -270,9 +277,7 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     place = state["route"].get("payload") or ""
     window = extract_window(state["message"])
     days = {"date_from": window[0], "date_to": window[1] - timedelta(days=1)} if window else {}
-    url = deps.url or get_config().database_url
-    with get_engine(url).connect() as conn:
-        region = money_region(conn, user_id, url)
+    region = home_region_of(user_id, deps.url)
     _running("sql", "Running the numbers in CockroachDB")
     t0 = time.perf_counter()
     found = txns.merchant_history(user_id, place, recent=10, url=deps.url, **days)
@@ -510,9 +515,7 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
               "date": i["posted_at"]} for i in found["items"]]
     _step("Next page", f"{len(items)} more for '{last['q']}'", ms=db_ms, status="success", key="tool:1")
     page = {**last, "next": found["next_cursor"]}
-    url = deps.url or get_config().database_url
-    with get_engine(url).connect() as conn:
-        home = money_region(conn, state["user_id"], url)
+    home = home_region_of(state["user_id"], deps.url)
     line = MORE_LINE.format(n=len(items), q=last["q"]) if items else ALL_SHOWN.format(q=last["q"])
     return {"answer": answers.translate(line, language, deps.chat), "page": page,
             "meta": {"region": home, "db_ms": int(db_ms), "search": {**page, "items": items}}}
@@ -524,9 +527,7 @@ def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
     db_ms = int(sum(r.get("ms") or 0 for r in results))
     query = next(((r.get("args") or {}).get("query") for r in results
                   if r["tool"] == "search_transactions" and r["ok"]), None)
-    url = deps.url or get_config().database_url
-    with get_engine(url).connect() as conn:
-        home = money_region(conn, state["user_id"], url)
+    home = home_region_of(state["user_id"], deps.url)
     if not query:
         return {"region": home, "db_ms": db_ms}
     _running("explain", "Reading the query plan")

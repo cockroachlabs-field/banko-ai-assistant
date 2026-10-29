@@ -17,7 +17,7 @@ from sqlalchemy import text
 from ..assistant import narration
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine, run_transaction
+from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
 from . import accounts as accounts_service
@@ -41,7 +41,7 @@ def get_receipt(user_id: str, document_id: str, *, url: str | None = None) -> di
     if not valid_uuid(document_id):
         return None
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         r = conn.execute(text(f"SELECT {_COLS} FROM receipts WHERE document_id = CAST(:d AS UUID) "
                               "AND user_id = CAST(:u AS UUID)"), {"d": document_id, "u": user_id}).fetchone()
     return _row(r) if r else None
@@ -49,7 +49,7 @@ def get_receipt(user_id: str, document_id: str, *, url: str | None = None) -> di
 
 def latest_receipt(user_id: str, *, url: str | None = None) -> dict | None:
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         r = conn.execute(text(f"""
             SELECT {_COLS} FROM receipts@receipts_user_idx
             WHERE user_id = CAST(:u AS UUID) AND status IN ('posted', 'duplicate')
@@ -153,7 +153,7 @@ def _insert(user_id: str, filename: str, mime: str, thumb: bytes | None, url: st
             INSERT INTO receipts ({rcol}user_id, filename, mime, status, thumbnail)
             VALUES ({rval}CAST(:u AS UUID), :f, :m, 'processing', :t) RETURNING document_id
         """), {"u": user_id, "f": filename[:200], "m": mime, "t": thumb, "crdb_region": region}).scalar())
-    return run_transaction(fn, url=url, idempotent=False)
+    return run_transaction(fn, url=url, user_id=user_id, idempotent=False)
 
 
 _CASTS = {"extracted": "CAST(:extracted AS JSONB)", "expense_id": "CAST(:expense_id AS UUID)"}
@@ -167,7 +167,7 @@ def _finish(document_id: str, user_id: str, url: str | None, **cols) -> None:
         params["extracted"] = json.dumps(params["extracted"], default=str)
     run_transaction(lambda conn: conn.execute(text(
         f"UPDATE receipts SET {sets} WHERE document_id = CAST(:d AS UUID) AND user_id = CAST(:u AS UUID)"),
-        params), url=url)
+        params), url=url, user_id=user_id)
 
 
 def _account_for(user_id: str, payment_method: str | None, url: str | None) -> str:
@@ -343,7 +343,7 @@ def receipt_for_expense(user_id: str, expense_id: str, *, url: str | None = None
     if not valid_uuid(expense_id):
         return None
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         r = conn.execute(text(f"""
             SELECT {_COLS}, thumbnail IS NOT NULL FROM receipts@receipts_expense_idx
             WHERE expense_id = CAST(:x AS UUID) AND user_id = CAST(:u AS UUID)
@@ -356,7 +356,7 @@ def thumbnail(user_id: str, document_id: str, *, url: str | None = None) -> byte
     if not valid_uuid(document_id):
         return None
     url = request_url(url)
-    with get_engine(url).connect() as conn:
+    with get_engine(routed(url, user_id)).connect() as conn:
         data = conn.execute(text("SELECT thumbnail FROM receipts WHERE document_id = CAST(:d AS UUID) "
                                  "AND user_id = CAST(:u AS UUID)"), {"d": document_id, "u": user_id}).scalar()
     return bytes(data) if data else None
