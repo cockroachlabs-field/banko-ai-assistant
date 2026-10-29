@@ -64,7 +64,7 @@
             <span x-show="metaLine(m)" x-text="metaLine(m)"></span>
             <span x-show="m.meta.region" x-text="'served from ' + m.meta.region + (m.meta.db_ms ? ' · ' + m.meta.db_ms + ' ms in the database' : '')"></span>
             <button type="button" class="link" x-show="hasTrace(m)" @click="toggleTrace(m)">How this was answered</button>
-            <button type="button" @click="copy(m.answer)">{{ icon('copy') }}copy</button>
+            <button type="button" @click="copy(m)" title="Copy the question and answer">{{ icon('copy') }}copy</button>
             <button type="button" x-show="canSpeak" @click="speak(m.answer)">{{ icon('volume-2') }}read aloud</button>
           </div>
           <div class="b-explain" x-show="m.answered && m.meta.explain">

@@ -674,6 +674,25 @@ def test_the_answer_shows_its_meta_and_plan_while_the_stream_stays_open(server, 
         ctx.close()
 
 
+def test_copy_puts_the_question_and_its_answer_on_the_clipboard(server, browser):
+    """Copy takes the exchange, question and answer, as the old page's
+    per-message buttons together did, ready to paste into a note."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin=server)
+        _PanelApi(page)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", TITLED)
+        bot = page.locator(".b-panel .b-msg-bot")
+        expect(bot.locator(".b-meta")).to_be_visible()
+        bot.get_by_role("button", name="copy").click()
+        copied = page.evaluate("() => navigator.clipboard.readText()")
+        assert copied == f"Q: {TITLED}\n\nA: You spent $42.10 on dining.", copied
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_the_plan_shows_under_every_answer_without_a_click(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

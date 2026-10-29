@@ -402,14 +402,18 @@ document.addEventListener("alpine:init", () => {
     cancel(p) { return this.decide(p, "cancel"); },
 
     render(text) { return Banko.renderAnswer(text); },
-    async copy(text) {
-      const plain = Banko.stripCitations(text);
+    // The exchange, question and answer, ready to paste into a note.
+    async copy(m) {
+      const asked = this.messages.slice(0, this.messages.indexOf(m)).reverse().find((x) => x.role === "user");
+      const answer = Banko.stripCitations(m.answer);
+      const plain = asked ? "Q: " + asked.text + "\n\nA: " + answer : answer;
       try { await navigator.clipboard.writeText(plain); }
       catch (e) {
         const area = document.createElement("textarea");
         area.value = plain; document.body.appendChild(area); area.select(); document.execCommand("copy"); area.remove();
       }
-      Alpine.store("toasts").push({ title: "Copied", text: "The answer is on your clipboard." });
+      Alpine.store("toasts").push({ title: "Copied", text: asked ? "The question and answer are on your clipboard."
+                                                                 : "The answer is on your clipboard." });
     },
     toggleTrace(m) { m.showTrace = !m.showTrace; Banko.emit("banko:trace", { message: m }); },
     togglePlans() { this.plansOpen = !this.plansOpen; localStorage.setItem("banko.plans", this.plansOpen ? "open" : "closed"); },
