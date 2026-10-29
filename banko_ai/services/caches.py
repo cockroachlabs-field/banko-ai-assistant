@@ -2,14 +2,16 @@
 version, so a cached answer or search result never crosses users and never
 outlives a write that changed the user's data (a new receipt, a
 recategorization, a memory added or deleted). Hits and misses land in
-cache_stats, so /cache-stats keeps its shape."""
+cache_stats, so /cache-stats keeps its shape, written behind the request."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import queue
 import re
+import threading
 from typing import Any
 
 from sqlalchemy import text
@@ -29,13 +31,46 @@ def estimate_tokens(text_value: str) -> int:
     return len(text_value or "") // 4
 
 
+# cache_stats lives in the primary region: written inline, every lookup on a
+# multi-region cluster (hits included) would wait on a cross-region commit.
+_stats: queue.Queue[tuple[str, str, int]] = queue.Queue()
+_writer: threading.Thread | None = None
+_writer_lock = threading.Lock()
+
+
 def record_stat(cache_type: str, operation: str, tokens_saved: int = 0) -> None:
-    try:
-        with get_engine().begin() as conn:
-            conn.execute(text("INSERT INTO cache_stats (cache_type, operation, tokens_saved) "
-                              "VALUES (:t, :o, :n)"), {"t": cache_type, "o": operation, "n": int(tokens_saved)})
-    except Exception:  # stats never break an answer
-        log.debug("cache stat not recorded", exc_info=True)
+    global _writer
+    _stats.put((cache_type, operation, int(tokens_saved)))
+    with _writer_lock:
+        if _writer is None or not _writer.is_alive():
+            _writer = threading.Thread(target=_write_stats, name="banko-cache-stats", daemon=True)
+            _writer.start()
+
+
+def flush_stats() -> None:
+    """Wait until every stat recorded so far is written (or given up on)."""
+    _stats.join()
+
+
+def _write_stats() -> None:
+    while True:
+        rows = [_stats.get()]
+        while True:
+            try:
+                rows.append(_stats.get_nowait())
+            except queue.Empty:
+                break
+        try:
+            with get_engine().begin() as conn:
+                conn.execute(text("""
+                    INSERT INTO cache_stats (cache_type, operation, tokens_saved)
+                    SELECT * FROM unnest(CAST(:t AS STRING[]), CAST(:o AS STRING[]), CAST(:n AS INT8[]))
+                """), {"t": [r[0] for r in rows], "o": [r[1] for r in rows], "n": [r[2] for r in rows]})
+        except Exception:  # stats never break an answer
+            log.debug("cache stats not recorded", exc_info=True)
+        finally:
+            for _ in rows:
+                _stats.task_done()
 
 
 def search_key(user_id: str, version: int, payload: dict) -> str:

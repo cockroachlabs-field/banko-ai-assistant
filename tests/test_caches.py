@@ -130,13 +130,20 @@ def test_nearest_ranks_exactly_when_the_index_comes_back_short(two):
     assert [d for _, d in found] == sorted(d for _, d in found)
 
 
-def test_record_stat_feeds_cache_stats():
-    with get_engine().connect() as c:
+def test_record_stat_feeds_cache_stats_behind_the_request(monkeypatch):
+    """cache_stats lives in the primary region; the lookup that counts a hit
+    never waits on that write."""
+    import threading
+    caller, opened, real = threading.current_thread(), [], C.get_engine
+    monkeypatch.setattr(C, "get_engine", lambda url=None, **kw: opened.append(threading.current_thread()) or real(url, **kw))
+    with real().connect() as c:
         before = c.execute(text("SELECT count(*) FROM cache_stats WHERE cache_type = 'answer'")).scalar()
     C.record_stat("answer", "hit", 12)
-    with get_engine().connect() as c:
+    assert caller not in opened
+    C.flush_stats()
+    with real().connect() as c:
         after = c.execute(text("SELECT count(*) FROM cache_stats WHERE cache_type = 'answer'")).scalar()
-    assert after == before + 1
+    assert after == before + 1 and opened and caller not in opened
 
 
 def test_estimate_tokens():
