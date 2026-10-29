@@ -60,9 +60,11 @@ def get_search(user_id: str, key: str, *, url: str | None = None, stat: str = "s
 
 
 def put_search(user_id: str, key: str, results: list | dict, *, url: str | None = None,
-               stat: str = "search") -> None:
+               stat: str = "search", minutes: int | None = None) -> None:
+    """minutes defaults to SEARCH_CACHE_TTL_MINUTES, the life of a search
+    window someone pages through; a narrative passes the answer cache's."""
     url = request_url(url)
-    minutes = get_config().search_cache_ttl_minutes
+    minutes = minutes or get_config().search_cache_ttl_minutes
 
     def fn(conn) -> None:
         region = money_region(conn, user_id, url)

@@ -252,8 +252,9 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             _step("LLM answer", "narrative streamed" if finished else "the model stopped early; its words are kept",
                   ms=_since(t0), status="success" if finished else "warning", key="answer")
         if key is not None and finished:  # a narrative the model never finished is never replayed
+            # Kept as long as a cached answer: the key holds the data version and the exact figures.
             background.submit("narrative cache write", caches.put_search, user_id, key, [{"answer": text}],
-                              url=deps.url, stat="narrative")
+                              url=deps.url, stat="narrative", minutes=get_config().cache_ttl_hours * 60)
     explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region, merchant=merchant),
                                   region)
     return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,

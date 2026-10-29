@@ -157,3 +157,19 @@ def test_answer_cache_write_retires_older_versions(two):
     assert old_count == 0
     hit = C.get_answer(a, version=2, language="English", query=q, qvec=qv)
     assert hit and hit["answer"] == "new answer"
+
+
+def test_a_narrative_keeps_the_answer_caches_lifetime(two):
+    """The search cache's 10 minutes suit a search window someone pages
+    through; a narrative is keyed by the data version and its exact figures,
+    so it keeps as long as a cached answer (CACHE_TTL_HOURS)."""
+    from banko_ai.config.settings import get_config
+
+    a, _ = two
+    key = C.search_key(a, 1, {"agg": ["sum", "Coffee", 21], "lang": "English"})
+    C.put_search(a, key, [{"answer": "You spent $162.27"}], stat="narrative",
+                 minutes=get_config().cache_ttl_hours * 60)
+    with get_engine().connect() as c:
+        lifetime = c.execute(text("SELECT expires_at - created_at FROM search_cache WHERE cache_key = :k"),
+                             {"k": key}).scalar()
+    assert lifetime.total_seconds() == get_config().cache_ttl_hours * 3600

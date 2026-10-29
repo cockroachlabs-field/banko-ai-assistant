@@ -214,6 +214,21 @@ def test_an_aggregation_counts_rows_outside_the_home_region(g, member, thread, m
     assert "$9.50" in out["answer"]
 
 
+def test_an_aggregation_narrative_is_kept_as_long_as_a_cached_answer(g, member, thread, monkeypatch):
+    """Asked again twenty minutes later, the same question with the same
+    figures must still find its narrative: it lives as long as a cached
+    answer, not the search cache's ten minutes."""
+    from banko_ai.config.settings import get_config
+    from banko_ai.services import caches
+    kept = []
+    real = caches.put_search
+    monkeypatch.setattr(caches, "put_search", lambda *a, **kw: kept.append(kw) or real(*a, **kw))
+    _turn(g, member, thread, "how much did I spend on groceries in the last 60 days", ScriptedChat("- Steady."))
+    assert background.drain()
+    narratives = [kw for kw in kept if kw.get("stat") == "narrative"]
+    assert narratives and narratives[0].get("minutes") == get_config().cache_ttl_hours * 60
+
+
 def test_the_readme_question_sums_one_category(g, member, thread):
     out, _ = _turn(g, member, thread, "what did I spend on dining last month?", ScriptedChat("- steady"))
     assert out["route"]["kind"] == "aggregate"
