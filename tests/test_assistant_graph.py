@@ -822,3 +822,15 @@ def test_a_place_that_is_not_a_merchant_goes_to_the_planner(g, member, thread):
     out, events = _turn(g, member, thread, "did I go to the moon base?", chat)
     assert out["route"]["kind"] == "plan" and chat.calls
     assert any(e["type"] == "step" and e["label"] == "Merchant lookup" and e["status"] == "warning" for e in events)
+
+
+def test_an_answer_with_any_failed_tool_call_is_not_cached(g, member, thread):
+    """One search ran and one was rejected: the answer rests on half the
+    evidence, so it is never replayed from the cache."""
+    q = "which dinners out could I skip?"
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "dinner", "date_from": "lately"}},'
+                        ' {"tool": "search_transactions", "args": {"query": "dinner"}}]}',
+                        '{"steps": []}', "Here are a few dinners you could skip.")
+    out, _ = _turn(g, member, thread, q, chat)
+    assert out["route"]["kind"] == "plan" and out["answer"].startswith("Here are a few dinners")
+    assert _answer_rows(member, q) == 0

@@ -11,9 +11,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
@@ -47,6 +47,17 @@ class Tool:
     fn: Callable[[ToolContext, Any], Any]
 
 
+def _clamped(low: int, high: int) -> BeforeValidator:
+    """A count a model may overshoot: asking for 100 rows gets the most a
+    call returns, not a rejected call that drops its filters with it."""
+    def clamp(value):
+        try:
+            return min(max(int(value), low), high)
+        except (TypeError, ValueError):
+            return value  # not a number: pydantic reports it
+    return BeforeValidator(clamp)
+
+
 class NoArgs(BaseModel):
     pass
 
@@ -56,7 +67,7 @@ class SearchArgs(BaseModel):
     category: str | None = None
     date_from: date | None = None
     date_to: date | None = None
-    limit: int = Field(default_factory=txns.search_page_size, ge=1, le=txns.SEARCH_PAGE_MAX)
+    limit: Annotated[int, _clamped(1, txns.SEARCH_PAGE_MAX)] = Field(default_factory=txns.search_page_size)
 
 
 class SpendArgs(BaseModel):
@@ -72,7 +83,7 @@ class ReceiptArgs(BaseModel):
 
 class ExpenseArgs(BaseModel):
     expense_id: str
-    limit: int = Field(5, ge=1, le=20)
+    limit: Annotated[int, _clamped(1, 20)] = 5
 
 
 class MerchantArgs(BaseModel):
@@ -80,7 +91,7 @@ class MerchantArgs(BaseModel):
 
 
 class MonthsArgs(BaseModel):
-    months: int = Field(3, ge=1, le=12)
+    months: Annotated[int, _clamped(1, 12)] = 3
 
 
 class QueryArgs(BaseModel):

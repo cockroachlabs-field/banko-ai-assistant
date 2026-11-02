@@ -655,10 +655,11 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         _emit({"type": "token", "text": f"\n\n{line}" if answer else line})
         answer = f"{answer}\n\n{line}" if answer else line
     # Only answers whose whole value is in the text are cached: a proposal
-    # card or an empty reply would replay wrong on a hit, and an answer no
-    # tool grounded would keep a guess for every later ask.
+    # card or an empty reply would replay wrong on a hit, and an answer that
+    # any failed tool call left short of evidence would keep that gap for
+    # every later ask.
     elif (generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer
-          and any(r.get("ok") for r in results)):
+          and results and all(r.get("ok") for r in results)):
         background.submit("answer cache write", _keep_answer, state["user_id"], language, state["message"],
                           answer, deps.url)
     for c in citations:

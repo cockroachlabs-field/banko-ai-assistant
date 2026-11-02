@@ -232,9 +232,22 @@ def test_rejected_tool_arguments_name_the_fields_in_the_log_but_not_the_values(c
     never repeats what the user typed."""
     import logging
     caplog.set_level(logging.INFO, logger="banko.assistant")
-    out = T.run_tool("search_transactions", {"query": "my secret dinner", "limit": 500, "date_from": "lately"},
+    out = T.run_tool("search_transactions", {"query": "my secret dinner", "category": ["my secret dinner"],
+                                             "date_from": "lately"},
                      T.ToolContext(user_id="00000000-0000-0000-0000-000000000000"))
     assert out["ok"] is False and out["error"] == "bad arguments"
     logged = " ".join(r.getMessage() for r in caplog.records)
-    assert "search_transactions" in logged and "limit" in logged and "date_from" in logged
-    assert "secret dinner" not in logged and "lately" not in logged and "500" not in logged
+    assert "search_transactions" in logged and "category" in logged and "date_from" in logged
+    assert "secret dinner" not in logged and "lately" not in logged
+
+
+def test_an_oversized_page_is_clamped_not_rejected(ctx):
+    """watsonx asked for 100 of this month's restaurant purchases; rejecting
+    the call dropped its date and category filters with it."""
+    from banko_ai.services.transactions import SEARCH_PAGE_MAX
+    out = T.run_tool("search_transactions", {"query": "coffee", "limit": 100}, ctx)
+    assert out["ok"] is True
+    assert T.SearchArgs.model_validate({"query": "coffee", "limit": 100}).limit == SEARCH_PAGE_MAX
+    assert T.SearchArgs.model_validate({"query": "coffee", "limit": 0}).limit == 1
+    assert T.MonthsArgs.model_validate({"months": 40}).months == 12
+    assert T.ExpenseArgs.model_validate({"expense_id": "x", "limit": 99}).limit == 20
