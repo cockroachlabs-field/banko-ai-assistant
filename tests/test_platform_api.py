@@ -127,8 +127,25 @@ def test_chaos_without_a_plane_is_404_and_the_cluster_card_has_no_chaos(monkeypa
     assert client.post("/api/v1/platform/chaos", json={"action": "outage", "kind": "region", "value": "x"}).status_code == 404
     body = client.get("/api/v1/platform/cluster").get_json()
     assert body["chaos"] is None and body["topology"]["source"] in ("sql", "status_api")
-    # The test database's derived console address is another cluster's: never trusted.
-    assert body["topology"]["source"] == "sql"
+
+
+@pytest.mark.parametrize("node_region, source", [("us-west-2", "sql"), (None, "status_api")])
+def test_a_derived_console_counts_only_when_its_regions_are_the_databases(monkeypatch, node_region, source):
+    """localhost:8080 can be another local cluster's DB Console. The test
+    database has no regions, so a console whose nodes sit in us-west-2 is
+    someone else's and the card falls back to SQL."""
+    client = _signed_in(monkeypatch, CHAOS_CONTROL_URL="", CRDB_ADMIN_URL="")
+
+    class DerivedApi:
+        base_url = "http://localhost:8080"
+
+        def nodes(self):
+            return [{"node_id": 1, "address": None, "region": node_region, "zone": None, "live": True,
+                     "status": "live", "replicas": 9, "leases": 4}]
+
+    monkeypatch.setattr(PA, "chaos_client", lambda: None)
+    monkeypatch.setattr(PA, "status_client", lambda: DerivedApi())
+    assert client.get("/api/v1/platform/cluster").get_json()["topology"]["source"] == source
 
 
 def test_a_slow_plane_does_not_hold_the_cluster_card(monkeypatch):
