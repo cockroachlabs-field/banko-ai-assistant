@@ -52,7 +52,6 @@ from ..services.profile import get_profiles
 from ..utils.cache_manager import BankoCacheManager
 from ..utils.db_retry import get_database_url
 from ..utils.embeddings import ModelWarmingUp
-from ..vector_search.generator import EnhancedExpenseGenerator
 from ..vector_search.search import VectorSearchEngine
 from ..workers.warmup import Readiness, start_warmup
 from .auth import UserManager
@@ -87,41 +86,6 @@ def bounded_connection_test(provider, seconds: float = PROVIDER_CHECK_SECONDS) -
     worker.start()
     worker.join(seconds)
     return bool(result and result[0])
-
-
-def auto_setup_data_if_needed(database_url: str) -> str:
-    """Generate demo data when the database has almost none. Runs in the
-    warm-up thread, never before the server listens."""
-    if get_config().banko_skip_autosetup:
-        print("Skipping data generation (--no-data or BANKO_SKIP_AUTOSETUP)", flush=True)
-        return "skipped (BANKO_SKIP_AUTOSETUP)"
-    # Persona history does not count: it can land first, and must never stop
-    # the sample rows the search demo needs from being generated.
-    from ..config.catalog import CatalogError
-    try:
-        personas = [p.user_id for p in get_catalog().personas]
-    except CatalogError:
-        personas = []
-    with get_engine(database_url).connect() as conn:
-        rows = conn.execute(text("""
-            SELECT count(*) FROM (SELECT 1 FROM expenses
-                                  WHERE user_id IS NULL OR user_id <> ALL(CAST(:personas AS UUID[]))
-                                  LIMIT 100)
-        """), {"personas": personas}).scalar() or 0
-        if rows >= 100:
-            # Only for the narration; this is the warm-up thread, not boot.
-            total = conn.execute(text("SELECT count(*) FROM expenses")).scalar()
-    if rows >= 100:
-        print(f"✅ Database already contains {total} expense records", flush=True)
-        return f"{total} expenses present"
-    print("🔍 Checking database setup...", flush=True)
-    print(f"Using database: {mask_url(database_url)}", flush=True)
-    count = get_config().sample_data_count
-    print(f"Generating {count} sample expense records...", flush=True)
-    from ..vector_search.generator import EnhancedExpenseGenerator
-    generated = EnhancedExpenseGenerator(database_url).generate_and_save(count, user_id=None, clear_existing=False)
-    print(f"✅ Successfully generated {generated} expense records", flush=True)
-    return f"generated {generated} sample expenses"
 
 
 def create_app() -> Flask:
@@ -1395,126 +1359,6 @@ def create_app() -> Flask:
                    else "degraded")
         return jsonify({"status": overall, "components": components}), 200
 
-    # Data Generator Routes
-    generation_state = {'running': False, 'should_stop': False}
-
-    @app.route('/api/generate-data', methods=['POST'])
-    def start_generation():
-        """Start data generation with real-time updates."""
-        if generation_state['running']:
-            return jsonify({'error': 'Generation already running'}), 400
-        
-        data = request.json
-        count = data.get('count', 1000)
-        clear_existing = data.get('clear_existing', False)
-        continuous = data.get('continuous', False)
-        # Clearing wipes every user's expenses, personas included, so the
-        # request has to say so in words, not just tick a box.
-        if clear_existing and data.get('confirm_clear') != 'all users':
-            return jsonify({'success': False,
-                            'error': 'Clearing deletes every user\'s expenses. Confirm with "all users".'}), 400
-        
-        def generate_in_background():
-            # CRITICAL: Need Flask app context for SocketIO in background thread
-            # Use app.socketio to ensure we have the right instance
-            with app.app_context():
-                generation_state['running'] = True
-                generation_state['should_stop'] = False
-                generator = EnhancedExpenseGenerator(config.database_url)
-                sock = app.socketio  # Get socketio instance from app
-                
-                try:
-                    print("🚀 Starting generation...")
-                    sock.emit('generation_progress', {
-                        'current': 0, 
-                        'total': count, 
-                        'message': 'Starting generation...'
-                    })
-                    
-                    if clear_existing:
-                        print("🗑️  Clearing existing data...")
-                        sock.emit('generation_progress', {
-                            'current': 0, 
-                            'total': count, 
-                            'message': 'Clearing data...'
-                        })
-                        generator.clear_expenses()
-
-
-                    # Use same batch size as generator for consistency
-                    batch_size = get_config().data_gen_batch_size
-                    import time
-                    
-                    # Main generation loop - supports continuous mode
-                    while not generation_state['should_stop']:
-                        total_generated = 0
-                        start_time = time.time()
-                        
-                        # Generate one batch of records
-                        while total_generated < count and not generation_state['should_stop']:
-                            batch = min(batch_size, count - total_generated)
-                            generated = generator.generate_and_save(count=batch, clear_existing=False)
-                            total_generated += generated
-                            
-                            elapsed = time.time() - start_time
-                            speed = total_generated / elapsed if elapsed > 0 else 0
-                            
-                            progress_data = {
-                                'current': total_generated,
-                                'total': count,
-                                'speed': round(speed, 1),
-                                'message': f'Generated {total_generated:,} / {count:,} ({speed:.0f} rec/sec)'
-                            }
-                            print(f"📊 Progress: {total_generated}/{count} ({speed:.0f} rec/sec)")
-                            sock.emit('generation_progress', progress_data)
-                        
-                        print(f"✅ Generation complete: {total_generated} records")
-                        sock.emit('generation_complete', {
-                            'total_generated': total_generated,
-                            'elapsed': round(time.time() - start_time, 1),
-                            'continuous': continuous
-                        })
-                        
-                        # If not continuous mode or stopped, exit
-                        if not continuous or generation_state['should_stop']:
-                            break
-                        
-                        # Brief pause before next cycle in continuous mode
-                        time.sleep(1)
-                        print("🔄 Continuous mode: Restarting generation...")
-                        sock.emit('generation_progress', {
-                            'current': 0,
-                            'total': count,
-                            'message': 'Continuous mode: Restarting...'
-                        })
-                except Exception as e:
-                    print(f"❌ Error during generation: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    sock.emit('generation_error', {'message': str(e)})
-                finally:
-                    generation_state['running'] = False
-
-        import threading
-        thread = threading.Thread(target=generate_in_background)
-        thread.daemon = True
-        thread.start()
-        
-        return jsonify({'status': 'started'})
-    
-    @app.route('/api/stop-generation', methods=['POST'])
-    def stop_generation():
-        """Stop data generation."""
-        generation_state['should_stop'] = True
-        return jsonify({'status': 'stopping'})
-    
-    @app.route('/api/reset-generation', methods=['POST'])
-    def reset_generation():
-        """Reset generation state."""
-        generation_state['running'] = False
-        generation_state['should_stop'] = False
-        return jsonify({'status': 'reset'})
-    
     # Error handlers
     def _wants_json() -> bool:
         return request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json"
@@ -1579,7 +1423,6 @@ def create_app() -> Flask:
         ("demo_users", _expiry_step),
         ("coach", _coach_step),
         ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
-        ("sample_data", lambda: auto_setup_data_if_needed(config.database_url)),
     ], stop=warmup_stop, name="banko-warmup-db")
     # Lane C: persona history. Background, so the ready line never waits
     # for it; progress shows on /api/health and the "seeding" socket event.

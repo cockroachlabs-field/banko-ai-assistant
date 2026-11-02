@@ -95,7 +95,7 @@ def server():
     # tests, and the pages here need the personas' history. They never read
     # the legacy sample expenses, so none are written into the test database.
     env = {**os.environ, "AI_SERVICE": "ollama", "COACH_KAFKA_ENABLED": "false", "BANKO_SKIP_AUTOSETUP": "0",
-           "SAMPLE_DATA_COUNT": "0", "CDC_WEBHOOK_HMAC_SECRET": "dev-only-secret", "PYTHONUNBUFFERED": "1"}
+           "CDC_WEBHOOK_HMAC_SECRET": "dev-only-secret", "PYTHONUNBUFFERED": "1"}
     assert ":26258/" in env.get("DATABASE_URL", ""), "the browser pass runs against the test database only"
     # `python -m banko_ai` ignores its arguments, so call the click group directly.
     proc = subprocess.Popen([sys.executable, "-c", "from banko_ai.cli import cli; cli()",

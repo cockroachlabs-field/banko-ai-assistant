@@ -10,9 +10,4 @@ def get_vector_search_engine():
     from .search import VectorSearchEngine
     return VectorSearchEngine
 
-def get_enhanced_expense_generator():
-    """Get EnhancedExpenseGenerator (lazy import)."""
-    from .generator import EnhancedExpenseGenerator
-    return EnhancedExpenseGenerator
-
-__all__ = ["get_data_enricher", "get_vector_search_engine", "get_enhanced_expense_generator"]
+__all__ = ["get_data_enricher", "get_vector_search_engine"]

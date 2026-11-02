@@ -32,12 +32,16 @@ def cli(ctx):
 @click.option('--host', default=None, help='Host to bind to')
 @click.option('--port', default=None, type=int, help='Port to bind to')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-@click.option('--generate-data', type=int, default=None, help='Sample expenses to generate when the database is empty (default: SAMPLE_DATA_COUNT, 5000)')
-@click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
-@click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
+@click.option('--no-data', is_flag=True, help='Start without seeding the personas')
 @click.option('--background', is_flag=True, help='Run in background mode (suppress Flask output)')
-def run(host, port, debug, generate_data, no_data, clear_data, background):
+@click.option('--generate-data', hidden=True, default=None)
+@click.option('--clear-data', hidden=True, is_flag=True)
+def run(host, port, debug, no_data, background, generate_data, clear_data):
     """Run the Banko AI Assistant web application."""
+    if generate_data is not None:
+        raise click.UsageError("there is no sample data any more: each user's history is seeded. See banko-ai seed.")
+    if clear_data:
+        raise click.UsageError("to start a user over, use banko-ai reset.")
     config = get_config()
     host = host or config.host
     port = port or config.port
@@ -49,17 +53,9 @@ def run(host, port, debug, generate_data, no_data, clear_data, background):
         click.echo(f"🤖 AI Service: {config.ai_service}")
     click.echo("=" * 44)
 
-    if generate_data is not None:
-        # The warm-up's sample-data step reads this setting.
-        config = config.model_copy(update={"sample_data_count": generate_data})
-        set_config(config)
     if no_data:
-        # The warm-up's sample-data step reads this setting.
+        # The warm-up's seeding steps read this setting.
         set_config(config.model_copy(update={"banko_skip_autosetup": True}))
-    elif clear_data:
-        from .vector_search.generator import EnhancedExpenseGenerator
-        click.echo("Clearing existing data...")
-        EnhancedExpenseGenerator(config.database_url).clear_expenses()
 
     from .web.app import create_app
     from .web.server import serve
@@ -99,40 +95,17 @@ def run(host, port, debug, generate_data, no_data, clear_data, background):
     serve(app, host, port, on_ready=announce)
 
 
-@cli.command()
-@click.option('--count', default=1000, help='Number of records to generate')
-@click.option('--user-id', help='User ID for generated records')
-@click.option('--clear', is_flag=True, help='Clear existing data before generating')
-def generate_data(count, user_id, clear):
-    """Generate sample expense data."""
-    from .vector_search.generator import EnhancedExpenseGenerator
-
-    config = get_config()
-    generator = EnhancedExpenseGenerator(config.database_url)
-    
-    click.echo(f"Generating {count} expense records...")
-    
-    generated_count = generator.generate_and_save(
-        count=count,
-        user_id=user_id,
-        clear_existing=clear
-    )
-    
-    click.echo(f"Successfully generated {generated_count} expense records")
+def _moved(name: str, replacement: str, why: str):
+    """A 1.x command kept as a hidden pointer to what replaced it."""
+    @cli.command(name, hidden=True, context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+    def moved():
+        raise click.UsageError(f"{why} Use {replacement}.")
+    moved.__doc__ = f"Moved: use {replacement}."
+    return moved
 
 
-@cli.command()
-def clear_data():
-    """Clear all expense data."""
-    from .vector_search.generator import EnhancedExpenseGenerator
-
-    config = get_config()
-    generator = EnhancedExpenseGenerator(config.database_url)
-    
-    if generator.clear_expenses():
-        click.echo("Successfully cleared all expense data")
-    else:
-        click.echo("Failed to clear expense data")
+_moved("generate-data", "banko-ai seed", "there is no sample data any more: each user's history is seeded.")
+_moved("clear-data", "banko-ai reset", "expenses belong to users now.")
 
 
 @cli.command()
@@ -218,11 +191,12 @@ def clear_agents(agents, cache, clear_all):
 @cli.command()
 def status():
     """Show application status."""
-    from .vector_search.generator import EnhancedExpenseGenerator
+    from sqlalchemy import text
+
+    from .db.engine import get_engine
 
     config = get_config()
-    generator = EnhancedExpenseGenerator(config.database_url)
-    
+
     # Show current configuration
     click.echo("🔧 Current Configuration:")
     click.echo(f"   AI Service: {config.ai_service}")
@@ -241,7 +215,8 @@ def status():
     
     # Check database connection
     try:
-        count = generator.get_expense_count()
+        with get_engine(config.database_url).connect() as conn:
+            count = conn.execute(text("SELECT count(*) FROM expenses")).scalar()
         click.echo(f"✅ Database connected - {count} expense records")
     except Exception as e:
         click.echo(f"❌ Database error: {e}")
@@ -267,14 +242,12 @@ def status():
 @cli.command()
 @click.option('--host', default=None, help='Host to bind to')
 @click.option('--port', default=None, type=int, help='Port to bind to')
-@click.option('--generate-data', type=int, default=None, help='Sample expenses to generate when the database is empty (default: SAMPLE_DATA_COUNT, 5000)')
-@click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
-@click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
+@click.option('--no-data', is_flag=True, help='Start without seeding the personas')
 @click.pass_context
-def start(ctx, host, port, generate_data, no_data, clear_data):
+def start(ctx, host, port, no_data):
     """Start Banko AI in background mode (equivalent to 'run --background')."""
-    ctx.invoke(run, host=host, port=port, debug=False, generate_data=generate_data,
-               no_data=no_data, clear_data=clear_data, background=True)
+    ctx.invoke(run, host=host, port=port, debug=False, no_data=no_data, background=True,
+               generate_data=None, clear_data=False)
 
 
 @cli.command()
