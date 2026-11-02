@@ -261,7 +261,11 @@ def run_tool(name: str, args: dict | None, ctx: ToolContext) -> dict:
         return done(ok=False, error="unknown tool")
     try:
         parsed = tool.args.model_validate(args or {})
-    except ValidationError:
+    except ValidationError as exc:
+        # Field names and pydantic's reasons only: the values can be the user's own words.
+        problems = "; ".join(f"{'.'.join(map(str, e['loc'])) or 'args'}: {e['msg']}"
+                             for e in exc.errors(include_input=False, include_url=False))
+        log.info("tool %s: bad arguments (%s)", name, problems)
         trace_step("tool", name, "bad arguments, skipped", status="warning")
         return done(ok=False, error="bad arguments")
     try:

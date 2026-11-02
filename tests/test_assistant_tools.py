@@ -225,3 +225,16 @@ def test_library_value_error_becomes_failed(ctx, monkeypatch):
     out = T.run_tool("recall", {"query": "anything"}, ctx)
     assert not out["ok"] and out["error"] == "failed"
     assert "secret" not in str(out)
+
+
+def test_rejected_tool_arguments_name_the_fields_in_the_log_but_not_the_values(caplog):
+    """A planner's bad call is diagnosable from the server log, and the log
+    never repeats what the user typed."""
+    import logging
+    caplog.set_level(logging.INFO, logger="banko.assistant")
+    out = T.run_tool("search_transactions", {"query": "my secret dinner", "limit": 500, "date_from": "lately"},
+                     T.ToolContext(user_id="00000000-0000-0000-0000-000000000000"))
+    assert out["ok"] is False and out["error"] == "bad arguments"
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "search_transactions" in logged and "limit" in logged and "date_from" in logged
+    assert "secret dinner" not in logged and "lately" not in logged and "500" not in logged
