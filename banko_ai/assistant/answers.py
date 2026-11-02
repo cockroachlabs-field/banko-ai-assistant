@@ -100,7 +100,7 @@ def aggregation_insights(agg, question: str, chat) -> str | None:
 def translation_messages(text: str, language: str) -> list[dict]:
     return [{"role": "user", "content": (
         f"Translate the following financial summary into {language}. Keep every number, "
-        "currency amount, percentage, date, and merchant name exactly as written. Keep the "
+        "currency amount, percentage, date, merchant name and category name exactly as written. Keep the "
         f"markdown formatting. Output only the translation.\n\n{text}")}]
 
 

@@ -156,3 +156,10 @@ def test_a_translation_wrapped_in_html_paragraphs_comes_back_as_markdown():
             return "<p>Hola **$1**</p>"
 
     assert A.translate("Hello **$1**", "Spanish", Wraps()) == "Hola **$1**"
+
+
+def test_a_translation_keeps_category_names_as_the_page_shows_them():
+    """granite translated "Groceries" as "Leche en el supermercado"; the page
+    shows category names as written, so the answer does too."""
+    prompt = A.translation_messages("You spent $1 on Groceries.", "Spanish")[0]["content"]
+    assert "category name" in prompt and "merchant name" in prompt
