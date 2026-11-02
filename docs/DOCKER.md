@@ -215,7 +215,7 @@ Mount volumes for persistent cache or custom configurations:
 
 ```bash
 docker run -d \
-  -v ./cache:/home/bankoai/.cache \
+  -v ./cache:/opt/banko/cache/huggingface \
   -v ./config:/app/config \
   virag/banko-ai-assistant:latest
 ```

@@ -100,7 +100,7 @@ services:
     volumes:
       # Persistent embedding-model cache: preload-models.sh warms it while
       # online, so even an app image without the baked model works offline
-      - hf-cache:/root/.cache/huggingface
+      - hf-cache:/opt/banko/cache/huggingface
     networks:
       - banko-airgap
 
