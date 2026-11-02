@@ -127,3 +127,14 @@ def test_a_visits_card_says_how_many_it_lists():
     assert card.startswith("You went to **IKEA** 12 times since 2026-07-01 and spent **$150.00** there")
     assert "The last visit was on 2026-09-20 ($12.50)." in card
     assert card.count("| $12.50 | Shopping |") == 10 and card.endswith("The latest 10 of 12 visits.")
+
+
+# What watsonx (openai/gpt-oss-120b) wrote: it copied the tool result's "cite" key into the marker.
+WATSONX_CITE = f"$34.83 at Pizza Hut [cite:txn:{RECEIPT_EXPENSE}] and $69.59 at Domino's [ cite : txn: <{MEMORY_ID}> ]."
+
+
+def test_a_marker_that_names_its_cite_key_is_still_a_citation():
+    assert A.citation_ids(WATSONX_CITE) == [RECEIPT_EXPENSE, MEMORY_ID]
+    assert A.strip_citations(WATSONX_CITE) == "$34.83 at Pizza Hut and $69.59 at Domino's."
+    assert A.resolve_citations(WATSONX_CITE, {RECEIPT_EXPENSE}) == \
+        f"$34.83 at Pizza Hut [txn:{RECEIPT_EXPENSE}] and $69.59 at Domino's."

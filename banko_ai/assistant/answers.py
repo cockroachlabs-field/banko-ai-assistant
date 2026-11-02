@@ -14,8 +14,9 @@ LANGUAGES = {
 }
 # Any [txn:...] marker a model writes, with the spaces before it on the same
 # line. Models copy the template loosely: angle brackets around the id
-# ([txn:<uuid>]), the bare placeholder ([txn:<expense_id>]), stray spaces.
-_MARKER = re.compile(r"[ \t]*\[\s*txn\s*:([^\]]*)\]", re.I)
+# ([txn:<uuid>]), the bare placeholder ([txn:<expense_id>]), stray spaces, and
+# the tool result's key copied in ([cite:txn:<uuid>]).
+_MARKER = re.compile(r"[ \t]*\[\s*(?:cite\s*:\s*)?txn\s*:([^\]]*)\]", re.I)
 _MARKER_ID = re.compile(r"\s*<?\s*([0-9a-fA-F-]{36})\s*>?\s*")
 
 

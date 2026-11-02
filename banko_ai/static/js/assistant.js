@@ -5,7 +5,7 @@ document.addEventListener("alpine:init", () => {
   "use strict";
   let seq = 0;
   // The same shape answers.strip_citations removes: any [txn:...] marker, well formed or not.
-  const MARKER = /[ \t]*\[\s*txn\s*:[^\]]*\]/gi;
+  const MARKER = /[ \t]*\[\s*(?:cite\s*:\s*)?txn\s*:[^\]]*\]/gi;
   Banko.stripCitations = (text) => String(text || "").replace(MARKER, "");
   // Model answers are Markdown, so only the tags Markdown makes survive: no
   // style (one answer could blank the app), no forms and no images (an

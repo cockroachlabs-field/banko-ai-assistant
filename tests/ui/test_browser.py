@@ -237,7 +237,7 @@ def test_assistant_markup_is_sanitized(server, browser):
         _login(page, server, "maya")
         html = page.evaluate("""() => DOMPurify.sanitize(marked.parse('<img src=x onerror=alert(1)><script>alert(2)</script>**ok**'))""")
         assert "onerror" not in html and "<script" not in html and "<strong>ok</strong>" in html
-        plain = page.evaluate("""() => Banko.stripCitations('Lunch [txn:abc] and [ txn : 1234 ] done')""")
+        plain = page.evaluate("""() => Banko.stripCitations('Lunch [txn:abc] and [ txn : 1234 ] done [cite:txn:ef]')""")
         assert plain == "Lunch and done"
         # What the assistant really renders: one answer must not be able to
         # blank the app, collect a PIN, or fetch an outside image.
