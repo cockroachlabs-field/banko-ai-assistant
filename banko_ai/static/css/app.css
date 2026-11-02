@@ -364,3 +364,9 @@ button { font: inherit; color: inherit; }
   .b-threads, .b-trace { display: none; }
   .b-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Agent text in the feed is model-written Markdown, rendered and sanitized; three lines until clicked. */
+.b-feed-detail { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.b-feed-detail.open { display: block; -webkit-line-clamp: unset; }
+.b-feed-detail p, .b-feed-detail ul, .b-feed-detail ol { margin: 0; }
+.b-feed-detail ul, .b-feed-detail ol { padding-left: 18px; }

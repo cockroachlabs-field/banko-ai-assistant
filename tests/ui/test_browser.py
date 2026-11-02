@@ -1668,3 +1668,32 @@ def test_a_refused_start_says_why_in_plain_words(server, browser):
         expect(page.get_by_text("The rate must be between 0.1 and 2000")).to_be_visible()
     finally:
         ctx.close()
+
+
+def test_an_agents_markdown_reads_as_formatting_not_asterisks(server, browser):
+    """Agents write their reasoning in Markdown; the feed shows it rendered
+    (marked, then DOMPurify), never as raw ** markers."""
+    import psycopg
+
+    from banko_ai.config.catalog import get_catalog
+    from banko_ai.utils.db_retry import to_libpq_url
+    db = to_libpq_url(os.environ["DATABASE_URL"])
+    maya = next(p.user_id for p in get_catalog().personas if p.username == "maya")
+    reasoning = "**Fraud Assessment** - **Duplicate Check:** no match <script>window.pwned = 1</script>"
+    with psycopg.connect(db, autocommit=True) as conn:
+        decision = conn.execute(
+            "INSERT INTO agent_decisions (decision_type, context, reasoning, confidence) "
+            "VALUES ('fraud_analysis', %s, %s, 0.0) RETURNING decision_id",
+            (json.dumps({"user_id": maya}), reasoning)).fetchone()[0]
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _login(page, server, "maya")
+        page.goto(server + "/agents")
+        item = page.locator(".b-feed-detail", has_text="Fraud Assessment").first
+        expect(item.locator("strong", has_text="Fraud Assessment")).to_be_visible()
+        assert "**" not in item.inner_text()
+        assert page.evaluate("() => window.pwned") is None
+    finally:
+        ctx.close()
+        with psycopg.connect(db, autocommit=True) as conn:
+            conn.execute("DELETE FROM agent_decisions WHERE decision_id = %s", (decision,))
