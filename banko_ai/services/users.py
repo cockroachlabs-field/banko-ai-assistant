@@ -1,4 +1,4 @@
-"""Removing users. Every cleanup (load users, clear-demo-users, the demo
+"""Finding and removing users. Every cleanup (load users, clear-demo-users, the demo
 user expiry) goes through delete_users, so none of them can leave a user's
 rows behind in a table it forgot about: the table list comes from the
 schema registry."""
@@ -16,6 +16,14 @@ from ..db.schema import tables
 from ..utils.db_retry import normalize_db_url
 
 log = logging.getLogger("banko.users")
+
+
+def user_ids_by_name(usernames: Sequence[str], *, url: str | None = None) -> dict[str, str]:
+    """username -> user_id for the names that exist; the rest are left out."""
+    with get_engine(url).connect() as conn:
+        rows = conn.execute(text("SELECT username, user_id FROM users WHERE username = ANY(:names)"),
+                            {"names": list(usernames)}).fetchall()
+    return {r[0]: str(r[1]) for r in rows}
 
 
 def _user_id_types() -> dict[str, str]:

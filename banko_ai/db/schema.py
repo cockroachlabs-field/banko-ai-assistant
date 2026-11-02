@@ -910,6 +910,18 @@ def _write_fingerprint(conn: Connection, fp: str, topo: Topology, *, rls_on: boo
                  {"k": FINGERPRINT_KEY, "v": value})
 
 
+def schema_state(url: str | None = None) -> str:
+    """"current", "outdated" or "missing", from the stored fingerprint: the
+    same one SELECT as ensure_schema's fast path, and nothing written."""
+    with get_engine(url).connect() as conn:
+        stored = _stored(conn)
+    if not stored:
+        return "missing"
+    want = fingerprint(Topology(regional=bool(stored.get("regional"))), rls=bool(stored.get("rls")))
+    same = stored.get("fingerprint") == want and stored.get("rls_mode") == get_config().rls_mode
+    return "current" if same else "outdated"
+
+
 def ensure_schema(url: str | None = None, *, force: bool = False,
                   primary_region: str | None = None,
                   on_progress: Callable[[str], None] | None = None) -> SchemaResult:
