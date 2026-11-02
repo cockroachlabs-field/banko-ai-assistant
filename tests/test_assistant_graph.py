@@ -841,3 +841,10 @@ def test_the_model_hears_which_counts_were_capped():
     facts = G._facts([{"tool": "cashflow", "ok": True, "result": {"months": []}, "clamped": {"months": 12}}])
     assert '"capped_at": {"months": 12}' in facts
     assert "capped_at" not in G._facts([{"tool": "cashflow", "ok": True, "result": {"months": []}}])
+
+
+def test_a_streamed_translation_in_html_paragraphs_is_stored_as_markdown(g, member, thread):
+    question = "how much did I spend on groceries in the last 41 days"
+    out, _ = _turn(g, member, thread, question, ScriptedChat("- Estable.", "<p>Gastaste **$1** en Groceries.</p>"),
+                   language_code="es-ES")
+    assert out["answer"] == "Gastaste **$1** en Groceries."

@@ -138,3 +138,21 @@ def test_a_marker_that_names_its_cite_key_is_still_a_citation():
     assert A.strip_citations(WATSONX_CITE) == "$34.83 at Pizza Hut and $69.59 at Domino's."
     assert A.resolve_citations(WATSONX_CITE, {RECEIPT_EXPENSE}) == \
         f"$34.83 at Pizza Hut [txn:{RECEIPT_EXPENSE}] and $69.59 at Domino's."
+
+
+def test_a_translation_wrapped_in_html_paragraphs_comes_back_as_markdown():
+    """granite3.3:8b returned '<p>Gastaste **$959.67** ...</p>': Markdown inside
+    an HTML block is not parsed, so the page showed the asterisks."""
+    assert A.unwrap_html("<p>Gastaste **$959.67** en Restaurante.</p>") == "Gastaste **$959.67** en Restaurante."
+    assert A.unwrap_html("<p>Uno</p>\n<p>Dos<br>tres</p>") == "Uno\n\nDos\ntres"
+    assert A.unwrap_html("Plain **text**, where a < b and c > d.") == "Plain **text**, where a < b and c > d."
+    # What granite also wrote: a closed first paragraph, then an HTML table (which the page renders).
+    table = "<table>\n  <tr><td>Pizza Hut</td><td>$34.83</td></tr>\n</table>"
+    assert A.unwrap_html(f"<p>Gastaste **$1**.</p>\n\n{table}") == f"Gastaste **$1**.\n\n{table}"
+    assert A.unwrap_html(f"Gastaste **$1**.</p>\n\n{table}") == f"Gastaste **$1**.\n\n{table}"
+
+    class Wraps:
+        def complete(self, messages, *, temperature=0.3):
+            return "<p>Hola **$1**</p>"
+
+    assert A.translate("Hello **$1**", "Spanish", Wraps()) == "Hola **$1**"

@@ -104,6 +104,20 @@ def translation_messages(text: str, language: str) -> list[dict]:
         f"markdown formatting. Output only the translation.\n\n{text}")}]
 
 
+_PARAGRAPH_TAG = re.compile(r"[ \t]*</?p>[ \t]*\n?", re.I)
+_LINE_BREAK = re.compile(r"<br\s*/?>", re.I)
+_BLANK_LINES = re.compile(r"\n{3,}")
+
+
+def unwrap_html(text: str) -> str:
+    """Markdown back out of the <p> and <br> some models wrap a translation
+    in: Markdown inside an HTML block is not parsed, so the page would show
+    the asterisks. Nothing else is touched (an HTML table renders as is, and
+    the page sanitizes the rest)."""
+    out = _PARAGRAPH_TAG.sub("\n\n", _LINE_BREAK.sub("\n", text or ""))
+    return _BLANK_LINES.sub("\n\n", out).strip()
+
+
 def translate(text: str, language: str, chat) -> str:
     if not text or language == "English":
         return text
@@ -111,7 +125,7 @@ def translate(text: str, language: str, chat) -> str:
         out = chat.complete(translation_messages(text, language), temperature=0.1)
     except Exception:
         return text
-    return out.strip() or text
+    return unwrap_html(out.strip()) or text
 
 
 def _marker_id(inner: str) -> str | None:

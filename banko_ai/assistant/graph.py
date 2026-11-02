@@ -375,6 +375,7 @@ def _narrate(agg, question: str, language: str, chat: Chat) -> tuple[str, bool]:
     if not translated:  # no translation came back: the English, figures and all, never cached as the translation
         _emit_text(english)
         return english, False
+    translated = answers.unwrap_html(translated)
     if translated != english:
         narration.rendered(language)
     return translated, finished and (notes is not None or not agg.count)
