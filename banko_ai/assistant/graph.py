@@ -572,7 +572,7 @@ def _facts(results: list[dict]) -> str:
             if isinstance(result, dict):  # the page cursor is for the chat, not the model
                 result = {k: v for k, v in result.items() if k != "next_cursor"}
             result = _with_cites(result)
-        useful.append({"tool": r["tool"], "result": result})
+        useful.append({"tool": r["tool"], "result": result, **({"capped_at": r["clamped"]} if r.get("clamped") else {})})
     return json.dumps(useful, default=str)[:8000] if useful else "[]"
 
 

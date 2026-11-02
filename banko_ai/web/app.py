@@ -722,7 +722,6 @@ def create_app() -> Flask:
             print(f"RAG error: {e}")
             return jsonify({'success': False, 'error': neutral_error(e)}), 500
     
-    # OLD ROUTE REMOVED - replaced by /api/generate-data with SocketIO support below
     
     @app.route('/api/user-summary')
     def api_user_summary():

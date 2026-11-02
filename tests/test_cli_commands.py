@@ -116,3 +116,31 @@ def test_the_command_list_is_the_v2_set():
         assert f"  {name} " in listed, name
     for gone in ("status", "generate-data", "clear-data"):
         assert f"  {gone} " not in listed, gone
+
+
+@needs_db
+def test_reset_without_names_resets_the_personas_by_id_not_by_username(personas, monkeypatch):
+    """An ordinary user who signed up as "maya" before the persona existed is
+    never the one a bare reset wipes."""
+    reset = []
+    monkeypatch.setattr("banko_ai.services.users.user_ids_by_name", lambda names, url=None: {n: "someone-else" for n in names})
+    monkeypatch.setattr("banko_ai.services.seeding.reset_user", lambda uid, **kw: reset.append(uid) or 10)
+    assert _invoke("reset", "--yes").exit_code == 0
+    assert sorted(reset) == sorted(personas.values())
+
+
+@needs_db
+def test_reset_exits_1_when_a_user_was_busy_seeding(personas, monkeypatch):
+    monkeypatch.setattr("banko_ai.services.seeding.reset_user", lambda uid, **kw: 0)
+    result = _invoke("reset", "maya", "--yes")
+    assert result.exit_code == 1 and "busy" in result.output
+
+
+def test_seed_months_needs_users():
+    result = _invoke("seed", "--months", "2")
+    assert result.exit_code == 2 and "--users" in result.output
+
+
+def test_nothing_points_at_the_removed_status_command():
+    import inspect
+    assert "banko-ai status" not in inspect.getsource(cli)

@@ -53,8 +53,8 @@ def _clamped(low: int, high: int) -> BeforeValidator:
     def clamp(value):
         try:
             return min(max(int(value), low), high)
-        except (TypeError, ValueError):
-            return value  # not a number: pydantic reports it
+        except (TypeError, ValueError, OverflowError):
+            return value  # not a finite number: pydantic reports it
     return BeforeValidator(clamp)
 
 
@@ -288,8 +288,13 @@ def run_tool(name: str, args: dict | None, ctx: ToolContext) -> dict:
         log.warning("tool %s failed", name, exc_info=True)
         trace_step("tool", name, "failed; details are in the server log", status="error")
         return done(ok=False, error="failed")
-    out = done(ok=True, result=result)
-    trace_step("tool", name, _summary(result), ms=out["ms"], status="success")
+    # Counts that were cut to their range, so the answer never claims the 100 rows or 24 months it asked for.
+    clamped = {k: getattr(parsed, k) for k, v in (args or {}).items()
+               if k in type(parsed).model_fields and isinstance(v, (int, float)) and not isinstance(v, bool)
+               and getattr(parsed, k) != v}
+    out = done(ok=True, result=result, **({"clamped": clamped} if clamped else {}))
+    trace_step("tool", name, _summary(result) + "".join(f", {k} capped at {v}" for k, v in clamped.items()),
+               ms=out["ms"], status="success")
     return out
 
 

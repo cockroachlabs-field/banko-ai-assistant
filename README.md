@@ -238,6 +238,10 @@ app's state. Routes and examples are in [`docs/API.md`](docs/API.md).
 - There is no ownerless sample data any more: personas and new users get
   their own seeded history. `generate-data` and `clear-data` point to
   `banko-ai seed` and `banko-ai reset`, and `status` to `banko-ai doctor`.
+- The image runs as any user in group 0. If you used the 1.x airgap compose
+  file, remove its old model volume once (`docker volume rm <project>_hf-cache`);
+  the model is baked into the image and the volume comes back with the
+  right owner.
 
 ## Testing
 

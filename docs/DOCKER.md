@@ -211,12 +211,18 @@ All configuration is done via environment variables. See the main [README.md](ht
 
 ### Volume Mounts (Optional)
 
-Mount volumes for persistent cache or custom configurations:
+The embedding model is baked into the image, so no volume is needed for
+it. To keep a model cache across image upgrades, use a named volume: Docker
+fills it from the image on first use. A bind mount of an empty host
+directory would hide the baked model and need the network on the first
+boot. The image runs as uid 1000, or any uid in group 0, so a mounted
+directory must be writable by group 0. Your own categories, personas or
+seed profiles can come from a mounted directory:
 
 ```bash
 docker run -d \
-  -v ./cache:/opt/banko/cache/huggingface \
-  -v ./config:/app/config \
+  -v banko-hf-cache:/opt/banko/cache/huggingface \
+  -v ./config:/app/config -e CATEGORIES_FILE=/app/config/categories.yaml \
   virag/banko-ai-assistant:latest
 ```
 

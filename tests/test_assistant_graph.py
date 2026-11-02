@@ -834,3 +834,10 @@ def test_an_answer_with_any_failed_tool_call_is_not_cached(g, member, thread):
     out, _ = _turn(g, member, thread, q, chat)
     assert out["route"]["kind"] == "plan" and out["answer"].startswith("Here are a few dinners")
     assert _answer_rows(member, q) == 0
+
+
+def test_the_model_hears_which_counts_were_capped():
+    from banko_ai.assistant import graph as G
+    facts = G._facts([{"tool": "cashflow", "ok": True, "result": {"months": []}, "clamped": {"months": 12}}])
+    assert '"capped_at": {"months": 12}' in facts
+    assert "capped_at" not in G._facts([{"tool": "cashflow", "ok": True, "result": {"months": []}}])

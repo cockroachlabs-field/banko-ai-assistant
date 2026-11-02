@@ -26,10 +26,31 @@ class Check:
     detail: str
 
 
+def _reachable(url: str) -> bool:
+    """A TCP connect bounded by TIMEOUT, before the pool's own connect
+    timeout (ten seconds by default) gets a chance to hold the line."""
+    from sqlalchemy.engine import make_url
+
+    from .utils.db_retry import normalize_db_url
+    try:
+        u = make_url(normalize_db_url(url))
+    except Exception:
+        return True  # let the real connect explain it
+    if not u.host:
+        return True
+    try:
+        socket.create_connection((u.host, u.port or 26257), TIMEOUT).close()
+        return True
+    except OSError:
+        return False
+
+
 def _database(cfg: Settings) -> Check:
     from sqlalchemy import text
 
     from .db.engine import get_engine
+    if not _reachable(cfg.database_url):
+        return Check("database", FAIL, "unreachable (no answer on its host and port); check DATABASE_URL")
     try:
         with get_engine(cfg.database_url).connect() as conn:
             version = str(conn.execute(text("SELECT version()")).scalar() or "")
@@ -134,14 +155,16 @@ def _status_api(cfg: Settings) -> Check:
 
 def _chaos(cfg: Settings) -> Check:
     from .clients.chaos import ChaosError, chaos_client
+    from .db.engine import mask_url
     client = chaos_client()
     if client is None:
         return Check("chaos control", SKIP, "not configured (CHAOS_CONTROL_URL)")
+    shown = mask_url(cfg.chaos_control_url)
     try:
         client.state()
     except ChaosError:
-        return Check("chaos control", FAIL, f"{cfg.chaos_control_url} did not answer")
-    return Check("chaos control", OK, f"{cfg.chaos_control_url} answers")
+        return Check("chaos control", FAIL, f"{shown} did not answer")
+    return Check("chaos control", OK, f"{shown} answers")
 
 
 CHECKS: tuple[Callable[[Settings], Check], ...] = (

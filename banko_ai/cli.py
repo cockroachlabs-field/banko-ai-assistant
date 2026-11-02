@@ -84,7 +84,7 @@ def run(host, port, debug, no_data, background, generate_data, clear_data):
         for url in urls:
             click.echo(f" * Running on {url}")
         if background:
-            click.echo("💡 Use 'banko-ai status' to check if it's running")
+            click.echo("💡 Use 'banko-ai doctor' to check it")
             click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
         threading.Thread(target=announce_when_warm, name="banko-ready-line", daemon=True).start()
 
@@ -275,8 +275,13 @@ def reset(usernames, yes):
     from .services import seeding
     from .services.users import user_ids_by_name
 
-    names = list(usernames) or [p.username for p in get_catalog().personas]
-    found = user_ids_by_name(names)
+    if usernames:
+        names = list(usernames)
+        found = user_ids_by_name(names)
+    else:
+        # The personas by id: someone who signed up as "maya" first is not the persona.
+        personas = get_catalog().personas
+        names, found = [p.username for p in personas], {p.username: p.user_id for p in personas}
     missing = [n for n in names if n not in found]
     if missing:
         click.echo(f"No user called {', '.join(missing)}; nothing was reset.")
@@ -284,9 +289,14 @@ def reset(usernames, yes):
     if not yes and not click.confirm(f"Reset {', '.join(names)}? Their history is deleted and reseeded."):
         click.echo("Aborted.")
         return
+    busy = []
     for name in names:
         written = seeding.reset_user(found[name], on_progress=_progress())
         click.echo(f"{name}: {written:,} entries seeded" if written else f"{name}: busy seeding, try again shortly")
+        if not written:
+            busy.append(name)
+    if busy:
+        raise SystemExit(1)
 
 
 @cli.command()
@@ -296,6 +306,8 @@ def seed(users, months):
     """Seed the personas' history, or create new demo users with theirs."""
     from .services import seeding
 
+    if months and not users:
+        raise click.UsageError("--months sets the history of new users; use it with --users.")
     if users:
         made = seeding.seed_generated_users(users, months=months, on_progress=_progress())
         click.echo(f"{len(made)} demo users created and seeded")

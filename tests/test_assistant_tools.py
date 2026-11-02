@@ -251,3 +251,17 @@ def test_an_oversized_page_is_clamped_not_rejected(ctx):
     assert T.SearchArgs.model_validate({"query": "coffee", "limit": 0}).limit == 1
     assert T.MonthsArgs.model_validate({"months": 40}).months == 12
     assert T.ExpenseArgs.model_validate({"expense_id": "x", "limit": 99}).limit == 20
+
+
+def test_an_infinite_count_is_a_bad_argument_not_a_crash(ctx):
+    """json.loads turns 1e999 into inf, and int(inf) raises OverflowError."""
+    out = T.run_tool("search_transactions", {"query": "coffee", "limit": float("inf")}, ctx)
+    assert out["ok"] is False and out["error"] == "bad arguments"
+
+
+def test_a_clamped_count_is_reported_back_to_the_model(ctx):
+    """The model asked for 100 and got 25; it should know, so it never
+    narrates a period or a count it did not get."""
+    out = T.run_tool("search_transactions", {"query": "coffee", "limit": 100}, ctx)
+    assert out["ok"] is True and out["clamped"] == {"limit": 25}
+    assert "clamped" not in T.run_tool("search_transactions", {"query": "coffee", "limit": 5}, ctx)

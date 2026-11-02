@@ -163,3 +163,27 @@ def test_a_silent_status_api_is_red_only_when_someone_configured_it(env, monkeyp
     env(CRDB_ADMIN_URL=configured)
     monkeypatch.setattr("banko_ai.clients.crdb_status.status_client", lambda: Silent())
     assert doctor._status_api(doctor.get_config()).state == state
+
+
+def test_the_chaos_url_is_shown_without_its_credentials(env, monkeypatch):
+    from banko_ai import doctor
+    from banko_ai.clients.chaos import ChaosUnavailable
+
+    class Down:
+        def state(self):
+            raise ChaosUnavailable("down")
+
+    env(CHAOS_CONTROL_URL="http://admin:hunter2@chaos:8088")
+    monkeypatch.setattr("banko_ai.clients.chaos.chaos_client", lambda: Down())
+    line = doctor._chaos(doctor.get_config())
+    assert line.state == "fail" and "hunter2" not in line.detail and "chaos:8088" in line.detail
+
+
+def test_an_unreachable_database_host_answers_within_seconds(env):
+    """A black-holed address (venue wifi half up) must not hold the line for
+    the pool's ten-second connect timeout."""
+    from banko_ai import doctor
+    env(DATABASE_URL="postgresql://root@10.255.255.1:26257/defaultdb?sslmode=require")
+    started = time.monotonic()
+    line = doctor._database(doctor.get_config())
+    assert line.state == "fail" and time.monotonic() - started < doctor.TIMEOUT + 2
