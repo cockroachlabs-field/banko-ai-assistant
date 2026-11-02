@@ -19,6 +19,25 @@ from .tools.analysis_tools import create_analysis_tools
 from .tools.search_tools import create_search_tools
 
 
+def reasoning_prompt(expense: dict, result: dict) -> str:
+    """What the agent asks the model; the answer shows on the Agents page,
+    so it is about the bank's customer and kept short."""
+    return f"""A bank customer's card purchase was checked for fraud.
+
+Purchase:
+- Merchant: {expense['merchant']}
+- Amount: ${expense['amount']}
+- Date: {expense['date']}
+- Category: {expense['category']}
+
+Fraud signals found:
+{json.dumps(result['signals'], indent=2)}
+
+Fraud confidence: {result['confidence']:.2%}
+
+In two or three sentences, say why this purchase is or is not likely fraud, naming the signals that decided it. Refer to the person as the customer."""
+
+
 class FraudAgent(BaseAgent):
     """
     Specialized agent for fraud detection and prevention.
@@ -248,22 +267,7 @@ Be thorough but not overly cautious. False positives are costly."""
                 result['recommendation'] = 'approve'
             
             # Generate reasoning with LLM
-            reasoning_prompt = f"""Analyze this expense for fraud:
-
-Expense Details:
-- Merchant: {expense['merchant']}
-- Amount: ${expense['amount']}
-- Date: {expense['date']}
-- Category: {expense['category']}
-
-Fraud Signals Detected:
-{json.dumps(result['signals'], indent=2)}
-
-Fraud Confidence: {result['confidence']:.2%}
-
-Provide a concise explanation of why this is or isn't fraud. Be specific about the signals."""
-
-            reasoning = self.think(reasoning_prompt)
+            reasoning = self.think(reasoning_prompt(expense, result))
             result['reasoning'] = reasoning
             
             # Store decision for learning
