@@ -19,7 +19,7 @@ watsonx, OpenAI, AWS Bedrock, Gemini or a local Ollama model.
 
 Every page also has a dark theme ([dashboard](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/dashboard-dark.png),
 [assistant](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/assistant-dark.png), [transactions](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/transactions-dark.png),
-[coach](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/coach-dark.png), [agents](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/agents-dark.png)).
+[coach](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/coach-dark.png), [agents](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/agents-dark.png), [platform](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/platform-dark.png)).
 
 ## What it can do
 
@@ -170,6 +170,10 @@ as Markdown, and model lists, pools, caches, the coach and the load
 simulator all have their own settings there.
 
 ## Load and chaos
+
+![Platform](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/platform-light.png)
+
+Ninety simulated customers at 30 operations a second, after us-west-2 went down and came back ([dark theme](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/platform-dark.png)).
 
 Open **Platform**, pick a profile (balanced, payments, browsing, search or
 your own weights), the number of customers and operations per second, and
