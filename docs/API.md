@@ -52,9 +52,6 @@ The same signals can arrive over Kafka instead of the webhook: set
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/generate-data` | POST | Generate sample expense data |
-| `/api/stop-generation` | POST | Stop an in-progress generation run |
-| `/api/reset-generation` | POST | Reset generation state |
 | `/cache-cleanup` | POST | Clear expired cache entries |
 | `/data-generator` | GET | Redirects to the demo data section of Settings |
 

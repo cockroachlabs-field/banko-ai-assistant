@@ -47,7 +47,7 @@ A fuller architecture diagram lives in the internal design docs (local-only, see
 | `banko_ai/agents/` | LangGraph specialist agents + workflows |
 | `banko_ai/ai_providers/` | Provider abstraction; ALL LLM calls go through here, no direct SDK use anywhere else |
 | `banko_ai/config/` | Env-driven settings (~15 knobs) |
-| `banko_ai/vector_search/` | Semantic search, embedding enrichment, sample data generator |
+| `banko_ai/vector_search/` | Legacy semantic search and embedding enrichment (the 1.x endpoints) |
 | `banko_ai/utils/` | DatabaseManager, cache manager, migration runner, retry/pooling, chat history |
 | `banko_ai/web/` | Flask app (~1800 LOC in `app.py`), agent dashboard, auth stub |
 | `banko_ai/coach/` | Spending Coach v1a: agent, signal handler, insights, tools, Kafka consumer |
@@ -117,11 +117,13 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 ### Documentation
 
 - ONE end-to-end doc for any new feature, not a sprawl of `FEATURE_X.md` + `FEATURE_X_NOTES.md` + `FEATURE_X_FIXES.md`. The user has explicitly deleted droid-era doc piles. Keep `docs/` lean.
-- README target: ~250 lines, with embedded architecture diagram. Currently 469 lines — slim in the Coach v1 (see spec §8.2).
+- README target: ~250 lines, with the architecture diagram and the page screenshots (docs/images/<page>-light.png and -dark.png, taken from a seeded database on watsonx). Image links are absolute raw.githubusercontent.com URLs so PyPI renders them.
 - Demo marketing tone: Cisco / CockroachDB customer-story register. **Reject validation-speak** like "we prove it at scale with an industry-standard benchmark." The user has pushed back on that phrasing.
 
 ### Foundation layers (v2)
 
+- CLI: `banko-ai doctor` checks what a demo needs, one line each and exit 1 on red; `seed`, `reset` and `migrate` run the same services as the app. There is no ownerless sample data any more (personas and signups are seeded); removed 1.x commands and flags stay as hidden pointers to their replacements (`_moved` in cli.py).
+- Docker: the image sets HOME=/app and HF_HOME=/opt/banko/cache/huggingface, both group 0 and group-writable, so it runs under any UID (OpenShift). Boot-test a release image with `--user 12345:0` and run scripts/smoke.py through it.
 - Settings: `banko_ai/config/settings.py` is the only reader of environment variables (a guardrail test enforces it). Add a knob as a field there; `banko-ai config --docs` renders it.
 - Database: use `banko_ai.db.engine.get_engine()`, `run_transaction()` or `user_session()`. Never call `create_engine()` or `.dispose()` elsewhere (guardrail test). Bulk writes are set-based; never `executemany` on an autocommit connection (psycopg 3 turns it into one implicit transaction).
 - psycopg 3 binds server-side, and CockroachDB rejects placeholders in `EXPLAIN`. Any EXPLAIN with parameters goes through `psycopg.ClientCursor` (see `explain_aggregation` and the vector search explain).
@@ -176,7 +178,7 @@ scripts/airgap/preload-models.sh                    # once, while online
 docker compose -f docker-compose.airgap.yml up -d   # offline demo (Ollama)
 ```
 
-Then visit http://localhost:5000. App generates 5000 sample expense records on first run.
+Then visit http://localhost:5000. The personas (maya, sam, riley) get their history seeded on first boot; `banko-ai doctor` says what is ready.
 
 ## Testing locally (the required path before any push)
 
