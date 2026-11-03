@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -379,7 +379,7 @@ requires-dist = [
     { name = "pdf2image", specifier = ">=1.16.3,<2.0.0" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "playwright", marker = "extra == 'ui'", specifier = ">=1.48" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0,<4.0.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6,<4.0.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0,<3.0.0" },
     { name = "pypdf", specifier = ">=6.20.0" },
     { name = "pytesseract", specifier = ">=0.3.10,<0.4.0" },
