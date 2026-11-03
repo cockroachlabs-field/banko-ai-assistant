@@ -111,7 +111,7 @@ jobs:
         run: |
           docker run -d --name cockroachdb \
             -p 26257:26257 -p 8080:8080 \
-            cockroachdb/cockroach:v25.4.19 \
+            cockroachdb/cockroach:latest \
             start-single-node --insecure
           for i in {1..30}; do
             if docker exec cockroachdb cockroach sql --insecure --execute "SELECT 1" 2>/dev/null; then
