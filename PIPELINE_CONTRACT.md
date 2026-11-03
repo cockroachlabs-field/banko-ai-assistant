@@ -10,7 +10,7 @@ both repos in the same change window.
 Consumer implementation: `banko_ai/coach/signals.py` (parsing),
 `banko_ai/web/app.py` `/api/cdc/signals` (webhook receiver),
 `banko_ai/coach/kafka_consumer.py` (Kafka transport),
-`banko_ai/utils/migration.py` `migrate_to_coach_v1` (DDL).
+`banko_ai/db/schema.py` (DDL).
 
 ## The spending_signals table
 
@@ -107,6 +107,7 @@ Responses:
 | 200 | idempotent no-op (all rows replayed, or envelope had no inserts) |
 | 400 | malformed JSON or invalid signal row |
 | 401 | missing or wrong signature |
+| 503 | `{"error": "warming_up"}`: the app is still creating its schema at boot; retry later |
 
 Processing is asynchronous; a 202 means queued, not nudged. Redelivery is
 safe: claimed signal_ids and idempotency keys are deduped.

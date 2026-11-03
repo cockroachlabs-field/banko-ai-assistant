@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Goals{% endblock %}
+{% block content %}
+<section x-data="goalsPage" x-init="load()">
+  <div class="b-page-h"><h1>Goals</h1></div>
+  <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong></div></template>
+  <div class="b-grid" style="margin-top:14px" x-show="goals" x-cloak>
+    <template x-for="g in (goals || [])" :key="g.goal_id">
+      <div class="b-card">
+        <div class="b-row"><div class="b-name" x-text="g.icon + ' ' + g.name"></div><template x-if="paceTag(g)"><span class="b-tag" :class="paceTag(g).ok ? 'ok' : 'warn'" x-text="paceTag(g).text"></span></template></div>
+        <div class="b-big" x-text="Banko.fmt.money0(g.saved)"></div>
+        <div class="b-muted" x-text="'of ' + Banko.fmt.money0(g.target_amount) + (g.target_date ? ' by ' + Banko.fmt.date(g.target_date, { month: 'short', year: 'numeric' }) : '')"></div>
+        <div class="b-bar"><span :style="'width:' + g.progress * 100 + '%'"></span></div>
+        <div class="b-muted" x-text="paceText(g)"></div>
+        <button class="b-btn sm" type="button" style="margin-top:10px" @click="startContribute(g)">{{ icon('plus') }}Contribute</button>
+      </div>
+    </template>
+    <div class="b-card b-empty" x-show="goals && !goals.length"><strong>No goals yet</strong><span>Ask {{ shell.brand.name }} to help plan one.</span></div>
+  </div>
+
+  <div class="b-scrim" x-show="target" x-cloak @click="target = null"></div>
+  <form class="b-dialog" x-show="target" x-cloak @submit.prevent="contribute()" @keydown.escape.window="target = null" aria-label="Contribute to a goal">
+    <h2 x-text="target ? 'Contribute to ' + target.name : ''"></h2>
+    <label class="b-field">From
+      <select class="b-select" x-model="from" required>
+        <template x-for="a in sources()" :key="a.account_id"><option :value="a.account_id" x-text="a.name + ' ··' + a.mask + ' · ' + Banko.fmt.money(a.balance)"></option></template>
+      </select></label>
+    <label class="b-field">Amount<input class="b-input" x-model="amount" inputmode="decimal" required></label>
+    <div class="b-tag bad" x-show="formError" x-text="formError"></div>
+    <div class="b-row" style="justify-content:flex-end"><button class="b-btn" type="button" @click="target = null">Cancel</button><button class="b-btn primary" type="submit" :disabled="busy">Contribute</button></div>
+  </form>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/goals.js') }}"></script>{% endblock %}

@@ -1,0 +1,240 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Platform{% endblock %}
+{% block content %}
+<section x-data="platformPage">
+  <div class="b-page-h">
+    <h1>Platform</h1>
+    <span class="sp"></span>
+    <span class="b-tag bad" x-show="offline" x-cloak>{{ icon('circle-alert') }}The app is not answering</span>
+  </div>
+
+  <div class="b-grid" style="margin-top:14px">
+    <!-- The load simulator -->
+    <div class="b-card b-s2">
+      <div class="b-row">
+        <div class="b-lbl">Load simulator</div>
+        <span class="b-tag" :class="stateTone()" x-text="stateText()"></span>
+      </div>
+      <p class="b-muted" style="margin:6px 0 10px">Simulated customers buy, transfer, pay cards, get paid, browse, search and run reports through the same services the app uses, at the rate you set, on a pool of their own (banko-load).</p>
+      <form class="b-loadform" @submit.prevent="start()" @input="formReady = true" @change="formReady = true">
+        <label class="b-field">Profile
+          <select class="b-select" x-model="form.profile" :disabled="!controls.load">
+            <template x-for="p in profiles" :key="p[0]"><option :value="p[0]" x-text="p[1]" :selected="p[0] === form.profile"></option></template>
+          </select></label>
+        <label class="b-field">Customers<input class="b-input" type="number" min="1" :max="controls.limits.users" x-model.number="form.users" :disabled="!controls.load"></label>
+        <label class="b-field">Operations per second<input class="b-input" type="number" min="0.1" step="0.1" :max="controls.limits.rate" x-model.number="form.rate" :disabled="!controls.load"></label>
+        <label class="b-field">Workers<input class="b-input" type="number" min="1" :max="controls.limits.workers" x-model.number="form.workers" :disabled="!controls.load"></label>
+        <label class="b-field">Run for
+          <select class="b-select" x-model.number="form.duration_s" :disabled="!controls.load">
+            <template x-for="d in durations" :key="d[0]"><option :value="d[0]" x-text="d[1]" :selected="d[0] === form.duration_s"></option></template>
+          </select></label>
+        <label class="b-field">Ramp-up (s)<input class="b-input" type="number" min="0" max="600" x-model.number="form.ramp_s" :disabled="!controls.load"></label>
+        <template x-if="form.profile === 'custom'">
+          <div class="b-weights">
+            <template x-for="op in ops" :key="op">
+              <label class="b-field"><span x-text="opLabel(op)"></span><input class="b-input" type="number" min="0" max="1000" x-model.number="form.weights[op]" :disabled="!controls.load"></label>
+            </template>
+          </div>
+        </template>
+        <div class="b-actions">
+          <button class="b-btn primary" type="submit" x-show="!running()" :disabled="!controls.load || busy">Start load</button>
+          <button class="b-btn" type="button" x-show="canApply()" x-cloak :disabled="!controls.load || busy" @click="apply()">Apply changes</button>
+          <button class="b-btn danger" type="button" x-show="running()" x-cloak :disabled="!controls.load || busy" @click="stop()">{{ icon('square') }}Stop</button>
+          <button class="b-btn ghost sm" type="button" x-show="!running()" :disabled="!controls.load || busy" @click="clearUsers()">{{ icon('trash-2') }}Clear load customers</button>
+        </div>
+      </form>
+      <div class="b-tag bad" style="margin-top:8px" x-show="message" x-cloak x-text="message"></div>
+      <div class="b-tag bad" style="margin-top:8px" x-show="live && live.load.error" x-cloak x-text="live && live.load.error"></div>
+      <div class="b-muted" style="margin-top:8px" x-show="!controls.load" x-cloak>Read-only here: PLATFORM_CONTROLS is off.</div>
+    </div>
+
+    <!-- Live numbers for the last 10 seconds -->
+    <div class="b-card">
+      <div class="b-lbl">Last 10 seconds</div>
+      <div class="b-tiles">
+        <div><div class="b-muted">Operations/s</div><div class="v" data-testid="ops-rate" x-text="rate(sum('ops_s'))"></div></div>
+        <div><div class="b-muted">p50</div><div class="v" data-testid="p50" x-text="ms(sum('p50'))"></div></div>
+        <div><div class="b-muted">p95</div><div class="v" data-testid="p95" x-text="ms(sum('p95'))"></div></div>
+        <div><div class="b-muted">p99</div><div class="v" data-testid="p99" x-text="ms(sum('p99'))"></div></div>
+        <div><div class="b-muted">Errors</div><div class="v" data-testid="errors" x-text="count(sum('errors'))"></div></div>
+        <div><div class="b-muted">Declined</div><div class="v" x-text="count(sum('declined'))"></div></div>
+        <div><div class="b-muted">Dropped</div><div class="v" data-testid="dropped" x-text="count(sum('dropped'))"></div></div>
+        <div><div class="b-muted" title="Operations the simulator retried after a lost connection or an ambiguous commit">Retries</div><div class="v" x-text="count(sum('retries'))"></div></div>
+      </div>
+      <div class="b-muted" style="margin-top:10px" x-show="errorClasses()" x-cloak x-text="errorClasses()"></div>
+    </div>
+
+    <!-- Throughput and latency over five minutes -->
+    <div class="b-card b-s2">
+      <div class="b-row"><div class="b-lbl">Throughput, last 5 minutes</div>
+        <div class="b-leg"><span><i></i>Completed</span><span><i style="background:var(--neg)"></i>Errors</span></div></div>
+      <div style="height:170px;margin-top:6px"><canvas x-ref="throughput" data-chart="throughput" aria-label="Completed operations and errors per second"></canvas></div>
+      <div class="b-row" style="margin-top:12px"><div class="b-lbl">Latency, last 5 minutes</div>
+        <div class="b-leg"><span><i></i>p95</span><span><i style="background:var(--chart-2)"></i>p50</span><span><i class="d"></i>p99</span></div></div>
+      <div style="height:170px;margin-top:6px"><canvas x-ref="latency" data-chart="latency" aria-label="p50, p95 and p99 latency in milliseconds"></canvas></div>
+      <div class="b-muted" style="margin-top:6px">Latency counts from when each operation was due, so time spent waiting for a slow cluster shows here instead of as less load. Lines mark events; hover a second to read them.</div>
+    </div>
+
+    <!-- Events -->
+    <div class="b-card">
+      <div class="b-lbl">Events</div>
+      <div class="b-events">
+        <template x-for="e in events" :key="e.id">
+          <div class="b-event"><span class="b-tag" :class="eventTone(e)" x-text="eventWord(e)"></span><span x-text="e.text"></span><span class="b-muted" x-text="when(e.at)"></span></div>
+        </template>
+        <div class="b-muted" x-show="!events.length">Nothing yet. Start the load, or break something.</div>
+      </div>
+    </div>
+
+    <!-- Traffic per home region -->
+    <div class="b-card b-s2" x-show="regionRows().length" x-cloak>
+      <div class="b-lbl">Traffic by home region</div>
+      <table class="b-table" style="margin-top:6px">
+        <thead><tr><th>Region</th><th class="num">Customers</th><th class="num">Ops/s</th><th class="num">p95</th><th class="num">Errors</th><th>Served by</th></tr></thead>
+        <tbody><template x-for="r in regionRows()" :key="r.region">
+          <tr data-region-row><td x-text="r.region"></td><td class="num" x-text="count(r.customers)"></td><td class="num" x-text="rate(r.ops_s)"></td>
+            <td class="num" x-text="ms(r.p95)"></td><td class="num" x-text="count(r.errors)"></td><td x-text="r.served_by || '–'"></td></tr>
+        </template></tbody>
+      </table>
+      <div class="b-muted" style="margin-top:6px">Served by comes from an EXPLAIN ANALYZE of one customer's read per region every few seconds: it moves to the survivors when a region goes down.</div>
+    </div>
+
+    <!-- Retries and errors -->
+    <div class="b-card">
+      <div class="b-lbl">Retries and errors</div>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <div class="b-row"><span>Transaction retries (40001)</span><b x-text="rate(live && live.db.retries_s) + '/s'"></b></div>
+        <div class="b-row"><span>Transactions that failed</span><b x-text="rate(live && live.db.failures_s) + '/s'"></b></div>
+        <div class="b-row"><span>Server errors on requests</span><b x-text="rate(live && live.http.errors_s) + '/s'"></b></div>
+        <div class="b-row"><span>Request p95</span><b x-text="ms(live && live.http.p95)"></b></div>
+      </div>
+    </div>
+
+    <!-- Per operation -->
+    <div class="b-card b-s2" x-show="opRows().length" x-cloak>
+      <div class="b-lbl">By operation</div>
+      <table class="b-table" style="margin-top:6px">
+        <thead><tr><th>Operation</th><th class="num">Ops/s</th><th class="num">p95</th><th class="num">Errors</th><th class="num">Declined</th><th class="num">Dropped</th></tr></thead>
+        <tbody><template x-for="o in opRows()" :key="o.op">
+          <tr><td x-text="opLabel(o.op)"></td><td class="num" x-text="rate(o.ops_s)"></td><td class="num" x-text="ms(o.p95)"></td>
+            <td class="num" x-text="count(o.errors)"></td><td class="num" x-text="count(o.declined)"></td><td class="num" x-text="count(o.dropped)"></td></tr>
+        </template></tbody>
+      </table>
+    </div>
+
+    <!-- Money integrity -->
+    <div class="b-card" x-show="data && data.integrity" x-cloak>
+      <div class="b-row"><div class="b-lbl">Money integrity</div>
+        <button class="b-btn ghost sm" type="button" :disabled="checking || !controls.load" @click="checkIntegrity()">{{ icon('refresh-cw') }}Check now</button></div>
+      <template x-if="data && data.integrity"><div style="margin-top:8px">
+        <span class="b-tag" :class="data.integrity.ok ? 'ok' : (data.integrity.skipped ? 'warn' : 'bad')"
+              x-text="data.integrity.ok ? 'Zero drift' : (data.integrity.skipped ? 'Skipped' : data.integrity.drift + ' accounts drifted')"></span>
+        <div class="b-muted" style="margin-top:6px" x-text="integrityText()"></div>
+      </div></template>
+      <div class="b-muted" style="margin-top:6px">Every balance equals its opening balance plus its ledger entries.</div>
+    </div>
+
+    <!-- Topology -->
+    <div class="b-card b-s2" data-testid="topology-card" :class="{ stale: cluster && cluster.stale }" x-show="cluster && cluster.topology" x-cloak>
+      <div class="b-row"><div class="b-lbl">Topology</div>
+        <span class="b-muted"><span x-text="sourceText()"></span><span class="b-tag warn" style="margin-left:6px" x-show="cluster && cluster.stale">stale</span></span></div>
+      <div class="b-regions">
+        <template x-for="g in regionGroups()" :key="g.region">
+          <div class="b-sec">
+            <div class="l"><span style="color:var(--tx)" x-text="g.region"></span><span x-text="g.summary"></span></div>
+            <div class="b-nodes"><template x-for="n in g.nodes" :key="n.node_id">
+              <span class="b-chip"><span x-text="n.name || ('n' + n.node_id)"></span>
+                <span class="b-tag" :class="n.live === true ? 'ok' : n.live === false ? 'bad' : ''" x-text="nodeState(n)"></span></span>
+            </template></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Leases -->
+    <div class="b-card" x-show="cluster && cluster.leases" x-cloak>
+      <div class="b-lbl">Leases by region</div>
+      <template x-for="l in leaseRows()" :key="l.region">
+        <div style="margin-top:8px"><div class="b-row"><span x-text="l.region"></span><b x-text="count(l.leases)"></b></div>
+          <div class="b-bar"><span :style="'width:' + l.pct + '%'"></span></div></div>
+      </template>
+      <div class="b-muted" x-text="cluster && cluster.leases && (cluster.leases.source === 'nodes' ? 'All ranges, from each node.' : 'Ranges of accounts, from SQL.')"></div>
+    </div>
+
+    <!-- Chaos -->
+    <div class="b-card b-s2" data-testid="chaos-card" x-show="controls.chaos && cluster && cluster.chaos" x-cloak>
+      <div class="b-row"><div class="b-lbl" x-text="'Chaos · ' + chaosName()"></div>
+        <span style="display:flex;gap:8px;align-items:center">
+          <label class="b-muted">Latency
+            <select class="b-select" style="width:auto" :disabled="!controls.load || busy" @change="latency($event.target.value)">
+              <option value="off" :selected="chaosLatency() === 'off'">Off</option>
+              <option value="realistic" :selected="chaosLatency() === 'realistic'">Realistic</option>
+            </select></label>
+          <button class="b-btn sm" type="button" :disabled="!controls.load || busy" @click="chaos('recover', 'all', '', 'Recover everything')">Recover everything</button>
+        </span></div>
+      <table class="b-table" style="margin-top:6px">
+        <thead><tr><th>Region</th><th>State</th><th class="num">Nodes up</th><th></th></tr></thead>
+        <tbody><template x-for="r in (cluster && cluster.chaos ? cluster.chaos.regions : [])" :key="r.name">
+          <tr><td><span x-text="r.name"></span> <span class="b-muted" x-text="r.label"></span> <span class="b-tag" x-show="r.primary">primary</span></td>
+            <td><span class="b-tag" :class="r.state === 'healthy' ? 'ok' : 'bad'" x-text="r.state"></span></td>
+            <td class="num" x-text="r.nodes_up + ' of ' + r.nodes_total"></td>
+            <td class="num">
+              <button class="b-btn danger sm" type="button" x-show="r.state === 'healthy'" :aria-label="'Take ' + r.name + ' down'"
+                      :disabled="!controls.load || busy" @click="chaos('outage', 'region', r.name, 'Take ' + r.name + ' down')">Take down</button>
+              <button class="b-btn sm" type="button" x-show="r.state !== 'healthy'" :aria-label="'Recover ' + r.name"
+                      :disabled="!controls.load || busy" @click="chaos('recover', 'region', r.name, 'Recover ' + r.name)">Recover</button></td></tr>
+        </template></tbody>
+      </table>
+      <details style="margin-top:8px"><summary class="b-muted">Nodes</summary>
+        <table class="b-table"><tbody><template x-for="n in (cluster && cluster.chaos ? cluster.chaos.nodes : [])" :key="n.name">
+          <tr><td x-text="n.name"></td><td class="b-muted" x-text="n.runtime + ', ' + n.liveness"></td><td class="num" x-text="plural(n.leases, 'lease')"></td>
+            <td class="num">
+              <button class="b-btn sm" type="button" x-show="n.runtime === 'running'" :aria-label="'Crash ' + n.name"
+                      :disabled="!controls.load || busy" @click="chaos('crash', 'node', n.name, 'Crash ' + n.name)">Crash</button>
+              <button class="b-btn sm" type="button" x-show="n.runtime !== 'running'" :aria-label="'Start ' + n.name"
+                      :disabled="!controls.load || busy" @click="chaos('start', 'node', n.name, 'Start ' + n.name)">Start</button></td></tr>
+        </template></tbody></table>
+      </details>
+    </div>
+
+    <!-- Vector search -->
+    <div class="b-card" x-show="data && data.vectors" x-cloak>
+      <div class="b-lbl">Vector search</div>
+      <template x-if="data && data.vectors"><div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <div class="b-row"><span>Vectors</span><b x-text="count(data.vectors.vectors)"></b></div>
+        <div class="b-row"><span>Customers with vectors</span><b x-text="count(data.vectors.users_with_vectors)"></b></div>
+        <div class="b-row"><span>Search p95 under load</span><b x-text="ms(opStat('search', 'p95'))"></b></div>
+        <div class="b-muted" x-text="data.vectors.index"></div>
+      </div></template>
+    </div>
+
+    <!-- Isolation and residency -->
+    <div class="b-card" x-show="data && data.residency" x-cloak>
+      <div class="b-lbl">Isolation and residency</div>
+      <template x-if="data && data.residency"><div style="margin-top:8px">
+        <div class="b-row"><span>Row-level security</span><span class="b-tag" :class="data.residency.rls.enabled ? 'ok' : 'warn'" x-text="data.residency.rls.enabled ? 'on' : 'off'"></span></div>
+        <div class="b-muted" x-text="data.residency.rls.reason"></div>
+        <div class="b-row" style="margin-top:6px"><span>users table</span><span class="b-tag" x-text="data.residency.users_global ? 'GLOBAL' : 'not GLOBAL'"></span></div>
+        <div class="b-scroll"><table class="b-table"><tbody><template x-for="t in data.residency.tables" :key="t.name">
+          <tr><td x-text="t.name"></td><td class="b-muted" x-text="t.locality || 'default'"></td><td><span class="b-tag ok" x-show="t.rls">RLS</span></td></tr>
+        </template></tbody></table></div>
+      </div></template>
+    </div>
+
+    <!-- CDC -->
+    <div class="b-card" x-show="data && data.cdc" x-cloak>
+      <div class="b-lbl">Change data capture</div>
+      <template x-if="data && data.cdc"><div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+        <div class="b-row"><span>Coach signals</span><b x-text="rate(data.cdc.signals_per_min) + '/min'"></b></div>
+        <div class="b-row"><span>Nudges written</span><b x-text="rate(data.cdc.nudges_per_min) + '/min'"></b></div>
+        <template x-for="f in data.cdc.changefeeds" :key="f.job_id">
+          <div class="b-row"><span x-text="(f.sink || 'changefeed') + ' · ' + f.status"></span><span class="b-muted" x-text="f.lag_s == null ? '' : 'lag ' + f.lag_s + ' s'"></span></div>
+        </template>
+        <div class="b-muted" x-show="!data.cdc.changefeeds.length">No changefeeds on this cluster.</div>
+      </div></template>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/platform.js') }}"></script>{% endblock %}

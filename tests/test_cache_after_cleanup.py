@@ -12,6 +12,7 @@ import time
 import pytest
 
 from banko_ai.utils.cache_manager import BankoCacheManager
+from banko_ai.utils.request_scope import user_scope
 
 
 @pytest.fixture(scope="module")
@@ -54,14 +55,15 @@ def test_query_cache_storage(cache_manager):
         {"expense_id": "1", "merchant": "Starbucks", "expense_amount": 45.20}
     ]
 
-    cache_manager.cache_response(
-        test_query, test_response, test_data, "watsonx",
-        prompt_tokens=100, response_tokens=50
-    )
+    with user_scope("test-user-1"):
+        cache_manager.cache_response(
+            test_query, test_response, test_data, "watsonx",
+            prompt_tokens=100, response_tokens=50
+        )
 
-    cached = cache_manager.get_cached_response(test_query, test_data, "watsonx")
-    assert cached is not None, "Cache retrieval returned None"
-    assert "Starbucks" in cached
+        cached = cache_manager.get_cached_response(test_query, test_data, "watsonx")
+        assert cached is not None, "Cache retrieval returned None"
+        assert "Starbucks" in cached
 
 
 def test_semantic_similarity(cache_manager):
@@ -70,13 +72,14 @@ def test_semantic_similarity(cache_manager):
     response = "Coffee shop total: $67.50"
     test_data = [{"merchant": "Starbucks", "expense_amount": 67.50}]
 
-    cache_manager.cache_response(original_query, response, test_data, "watsonx")
+    with user_scope("test-user-2"):
+        cache_manager.cache_response(original_query, response, test_data, "watsonx")
 
-    similar_query = "Show me my coffee shop spending for similarity test"
-    cached = cache_manager.get_cached_response(similar_query, test_data, "watsonx")
-    # Semantic match depends on threshold; just verify no crash
-    if cached:
-        assert "67.50" in cached
+        similar_query = "Show me my coffee shop spending for similarity test"
+        cached = cache_manager.get_cached_response(similar_query, test_data, "watsonx")
+        # Semantic match depends on threshold; just verify no crash
+        if cached:
+            assert "67.50" in cached
 
 def test_dead_methods_removed():
     """Test 5: Verify dead insights_cache methods have been removed"""

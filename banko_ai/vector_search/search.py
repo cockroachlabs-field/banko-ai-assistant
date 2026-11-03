@@ -6,36 +6,34 @@ filtering and advanced indexing support.
 """
 
 import json
-import os
 import time
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from banko_ai.utils.embeddings import load_embedding_model
 
 from ..ai_providers.base import SearchResult
-from ..utils.db_retry import create_resilient_engine, db_retry, get_database_url
+from ..utils.db_retry import db_retry, get_database_url
+from ..utils.request_trace import plan_indexes, serving_regions, trace_step
 
 
 class VectorSearchEngine:
     """Vector search engine for expense data with user-specific filtering."""
-    
+
     def __init__(self, database_url: str | None = None, cache_manager=None):
         """Initialize the vector search engine."""
         self.database_url = get_database_url(database_url)
         self.cache_manager = cache_manager
-        
-        # Use official sqlalchemy-cockroachdb dialect (no conversion needed!)
-        self.engine = create_resilient_engine(
-            self.database_url,
-            pool_size=10,
-            max_overflow=20
-        )
-        # Use configurable embedding model from environment or default
-        embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-        self.embedding_model = load_embedding_model(embedding_model_name)
-    
+
+        from ..db.engine import get_engine
+        self.engine = get_engine(self.database_url)
+
+    @property
+    def embedding_model(self):
+        """Loaded on first use, so constructing the engine at boot is free."""
+        return load_embedding_model()
+
     @db_retry(max_attempts=3, initial_delay=0.5)
     def simple_search_expenses(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """
@@ -101,17 +99,22 @@ class VectorSearchEngine:
         """
         print("\n🔍 VECTOR SEARCH (with caching):")
         print(f"1. Query: '{query}' | Limit: {limit}")
-        
+
+        scope_key = f"{user_id or ''}|{date_start}|{date_end}|{region}|{limit}"
+
         if self.cache_manager:
             start_time = time.time()
             raw_embedding = self.cache_manager._get_embedding_with_cache(query)
             embed_duration = (time.time() - start_time) * 1000
             print(f"   Embedding generated in {embed_duration:.1f}ms")
-            
-            cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit)
+
+            cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit, scope=scope_key)
             
             if cached_results:
                 print(f"2. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
+                trace_step("cache", "Vector search cache",
+                           f"Hit: {len(cached_results[:limit])} rows reused, no vector query ran",
+                           status="hit")
                 search_results = []
                 for result in cached_results[:limit]:
                     search_results.append(SearchResult(
@@ -133,6 +136,7 @@ class VectorSearchEngine:
                     return (search_results, "(cached results, no fresh EXPLAIN)")
                 return search_results
             print("2. ❌ Vector search cache MISS, querying database")
+            trace_step("cache", "Vector search cache", "Miss: querying CockroachDB", status="miss")
         else:
             start_time = time.time()
             query_embedding = self.embedding_model.encode([query])[0]
@@ -198,6 +202,11 @@ class VectorSearchEngine:
             ))
 
         print(f"3. Database query returned {len(results)} expense records in {query_duration:.1f}ms")
+        trace_step("vector", "Vector search",
+                   f"{len(results)} rows by cosine distance (<=>)"
+                   + (", filtered to this user" if user_id else "")
+                   + (f", scoped to {region}" if region else ""),
+                   ms=query_duration, status="success")
 
         # Cache the results for future use (convert back to dict format for caching)
         if self.cache_manager and results:
@@ -218,18 +227,37 @@ class VectorSearchEngine:
                     'tags': result.metadata.get('tags')
                 })
 
-            self.cache_manager.cache_vector_search_results(raw_embedding, search_results_dict)
+            self.cache_manager.cache_vector_search_results(raw_embedding, search_results_dict, scope=scope_key)
             print("4. ✅ Cached vector search results for future queries")
 
         if capture_explain:
+            explain_start = time.time()
             try:
+                # CockroachDB rejects placeholders in EXPLAIN under server-side
+                # binding, so bind client-side like explain_aggregation does.
+                import psycopg
+
+                from ..utils.aggregations import _to_pyformat
                 with self.engine.connect() as conn:
-                    explain_sql = f"EXPLAIN ANALYZE {sql}"
-                    explain_result = conn.execute(text(explain_sql), params)
-                    explain_rows = explain_result.fetchall()
+                    raw_conn = conn.connection.driver_connection
+                    with psycopg.ClientCursor(raw_conn) as cur:
+                        cur.execute(f"EXPLAIN ANALYZE {_to_pyformat(sql)}", params)
+                        explain_rows = cur.fetchall()
                 explain_text = "\n".join(str(row[0]) for row in explain_rows)
+                parts = []
+                indexes = plan_indexes(explain_text)
+                if indexes:
+                    parts.append("index " + ", ".join(indexes))
+                served = serving_regions(explain_text)
+                if served:
+                    parts.append(f"served by {served}")
+                trace_step("explain", "EXPLAIN ANALYZE",
+                           "Plan captured" + (": " + "; ".join(parts) if parts else ""),
+                           ms=(time.time() - explain_start) * 1000)
             except Exception as e:
                 explain_text = f"(explain unavailable: {str(e)})"
+                trace_step("explain", "EXPLAIN ANALYZE", "Plan unavailable for this query",
+                           ms=(time.time() - explain_start) * 1000, status="warning")
             return (results, explain_text)
 
         return results

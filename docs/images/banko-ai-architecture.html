@@ -1,0 +1,78 @@
+<!doctype html>
+<!-- Source of banko-ai-architecture.png: open in Chromium at 1600 px wide, device scale 2, and screenshot .wrap; then resize to 1600 px. -->
+<html><head><meta charset="utf-8">
+<style>
+@font-face { font-family: Inter; src: url("../../banko_ai/static/vendor/fonts/InterVariable.woff2"); }
+:root { --ink:#1b1730; --mu:#6b6780; --bd:#e4e1ee; --card:#ffffff; --bg:#f7f6f3; --ac:#6933FF; --ac2:#efe9ff; --db:#1b1730; }
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); font-family:Inter, sans-serif; color:var(--ink); }
+.wrap { width:1600px; padding:40px 48px 44px; }
+h1 { font-size:26px; margin:0 0 4px; letter-spacing:-0.01em; }
+.sub { color:var(--mu); font-size:15px; margin-bottom:26px; }
+.tier { display:grid; gap:16px; }
+.label { font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--mu); margin:0 0 8px 2px; }
+.box { background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:16px 18px; }
+.box h3 { margin:0 0 6px; font-size:16px; }
+.box p { margin:0; color:var(--mu); font-size:13.5px; line-height:1.45; }
+.box.ac { border-color:#d6c8ff; background:var(--ac2); }
+.box.ac h3 { color:#4b1fd1; }
+.arrow { text-align:center; color:var(--mu); font-size:13px; margin:10px 0; }
+.arrow b { color:var(--ac); font-size:18px; display:block; line-height:1; }
+.db { background:var(--db); color:#fff; border-radius:16px; padding:18px 22px; }
+.db h3 { margin:0 0 12px; font-size:18px; }
+.db .grid { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+.db .cell { background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:11px 13px; }
+.db .cell b { display:block; font-size:14px; margin-bottom:3px; }
+.db .cell span { font-size:12.5px; color:#cfc9e6; line-height:1.4; }
+.side { display:grid; grid-template-columns:1fr; gap:12px; }
+.row3 { grid-template-columns: 1.15fr 1fr 1fr; }
+.row4 { grid-template-columns: repeat(4,1fr); }
+.main { display:grid; grid-template-columns: 1fr 300px; gap:18px; }
+.ext .box { background:#fff; border-style:dashed; }
+.pill { display:inline-block; font-size:12px; border:1px solid var(--bd); border-radius:999px; padding:2px 9px; margin:4px 4px 0 0; color:var(--ink); background:#fff; }
+</style></head>
+<body><div class="wrap">
+  <h1>Banko AI Assistant</h1>
+  <div class="sub">One CockroachDB cluster behind a bank, its assistant, its coach and the load that tests it</div>
+
+  <div class="label">Browser</div>
+  <div class="box"><h3>Pages, no build step</h3>
+    <p>Jinja templates and Alpine.js over the JSON API: dashboard, accounts, transactions, cash flow, budget, recurring, goals, assistant, coach, agents, platform, settings. Answers stream over SSE; live activity over Socket.IO.</p></div>
+  <div class="arrow"><b>↕</b></div>
+
+  <div class="main">
+    <div>
+      <div class="label">The app (banko-ai run)</div>
+      <div class="tier row3">
+        <div class="box ac"><h3>Assistant</h3><p>A LangGraph graph: route, then SQL totals, visits, receipts, memory, a tool planner or the next page, then respond and learn. Each thread is checkpointed by CockroachDBSaver.</p></div>
+        <div class="box"><h3>Services</h3><p>The ledger moves money in one short transaction per movement; reads, receipts, memories and per-user caches keyed on the user's data version.</p></div>
+        <div class="box"><h3>Coach</h3><p>Spending signals by webhook or Kafka; an agent checks budgets and transactions with tools and writes a nudge.</p></div>
+      </div>
+      <div class="tier row3" style="margin-top:16px">
+        <div class="box"><h3>Receipt, fraud and budget agents</h3><p>OCR and field extraction, a duplicate check by vector, a posting through the ledger, then the checks on the Agents page.</p></div>
+        <div class="box"><h3>Load simulator</h3><p>Simulated customers through the same services, each served in their home region; throughput, latency and money integrity on the Platform page.</p></div>
+        <div class="box"><h3>AI providers</h3><p>One abstraction, no other code calls a model SDK.</p>
+          <span class="pill">watsonx</span><span class="pill">OpenAI</span><span class="pill">Bedrock</span><span class="pill">Gemini</span><span class="pill">Ollama</span></div>
+      </div>
+    </div>
+    <div class="ext">
+      <div class="label">Outside the app</div>
+      <div class="side">
+        <div class="box"><h3>Model endpoints</h3><p>Cloud providers, or Ollama on the same machine for airgap. Embeddings are always local (all-MiniLM-L6-v2, 384 dims).</p></div>
+        <div class="box"><h3>Debezium and Kafka</h3><p>Changes on spending_signals stream to the coach; the companion pipeline lands them in Iceberg on watsonx.data.</p></div>
+        <div class="box"><h3>Chaos control plane</h3><p>Takes a region down and brings it back from the Platform page.</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="arrow"><b>↕</b>SQL over psycopg 3</div>
+
+  <div class="db"><h3>CockroachDB</h3>
+    <div class="grid">
+      <div class="cell"><b>Money</b><span>Accounts, ledger, transfers, budgets, goals. REGIONAL BY ROW, homed per user; row-level security for the app role.</span></div>
+      <div class="cell"><b>Vector search</b><span>Per-user C-SPANN cosine indexes on expenses, receipts, memories and the answer cache.</span></div>
+      <div class="cell"><b>Agent state</b><span>LangGraph checkpoints, memories, receipts, nudges and proposals.</span></div>
+      <div class="cell"><b>Row-level TTL</b><span>Checkpoints, signals, nudges, caches and proposals expire on their own.</span></div>
+      <div class="cell"><b>Changefeeds</b><span>spending_signals out to Kafka through Debezium, for the coach and the lakehouse.</span></div>
+    </div>
+  </div>
+</div></body></html>

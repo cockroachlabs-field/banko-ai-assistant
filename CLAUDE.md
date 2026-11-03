@@ -26,11 +26,14 @@ Flask + SocketIO web app
   │     ├── AWS Bedrock (internally identified as "aws", not "bedrock")
   │     ├── Google Gemini
   │     └── Ollama (local models; airgap default granite3.3:8b)
-  ├── Vector RAG (langchain-cockroachdb 0.2.x, C-SPANN cosine indexes,
+  ├── Vector RAG (SQL on per-user C-SPANN cosine indexes,
   │     384-dim all-MiniLM-L6-v2 embeddings — local, no API key)
   ├── Cache layer (3 tiers: query, embedding, vector_search, all in CRDB)
-  ├── CDC config (banko_ai/pipeline/config.py — webhook + Kafka modes;
-  │     consumers planned in Coach spec)
+  ├── CDC intake (spending signals through the /api/cdc/signals webhook
+  │     or the Kafka consumer in banko_ai/coach/; settings in the coach group)
+  ├── Platform view and load simulator (workers/traffic.py on its own
+  │     banko-load pool, /api/v1/platform, banko-ai load; chaos control
+  │     plane and CockroachDB HTTP API clients in banko_ai/clients/)
   └── CockroachDB (v25.4.0+, vector indexes are GA, row-level TTL for
         checkpoints and signal/nudge tables)
 ```
@@ -44,13 +47,14 @@ A fuller architecture diagram lives in the internal design docs (local-only, see
 | `banko_ai/agents/` | LangGraph specialist agents + workflows |
 | `banko_ai/ai_providers/` | Provider abstraction; ALL LLM calls go through here, no direct SDK use anywhere else |
 | `banko_ai/config/` | Env-driven settings (~15 knobs) |
-| `banko_ai/vector_search/` | Semantic search, embedding enrichment, sample data generator |
+| `banko_ai/vector_search/` | Legacy semantic search and embedding enrichment (the 1.x endpoints) |
 | `banko_ai/utils/` | DatabaseManager, cache manager, migration runner, retry/pooling, chat history |
 | `banko_ai/web/` | Flask app (~1800 LOC in `app.py`), agent dashboard, auth stub |
-| `banko_ai/pipeline/` | CDC config (Kafka, webhook, COS) — consumer impls planned |
 | `banko_ai/coach/` | Spending Coach v1a: agent, signal handler, insights, tools, Kafka consumer |
 | `banko_ai/agents/supervisor.py` | **Planned** — LLM-routed multi-agent supervisor |
-| `banko_ai/observability/` | **Planned** — OTel instrumentation |
+| `banko_ai/observability/` | In-process metrics (per second, latency percentiles) and the event bus behind the Platform page; OTel is still planned |
+| `banko_ai/clients/` | The chaos control plane and CockroachDB's HTTP API (node liveness) |
+| `banko_ai/workers/` | Warm-up, the traffic simulator (`traffic.py`) and its workload (`workload.py`) |
 | `tests/` | 16+ test suites; integration tests need a populated DB (skipped in CI when DB is absent) |
 | `tests/eval/` | **Planned** — eval harness (LLM-as-judge on fixtures) |
 | `scripts/` | Dev/ops helpers (build-docker, demo_standalone_search, watch-queries) |
@@ -67,13 +71,13 @@ Schema for `expenses` table is **shared** between both repos — keep them in sy
 
 ## Tech stack quick reference
 
-- **Python**: 3.10+ (3.12 recommended)
+- **Python**: 3.11+ (3.12 recommended). 3.10 was dropped for 2.0: it reached end of life in October 2026, and pillow 13 and filelock 4.2, which close known vulnerabilities, require 3.11.
 - **CockroachDB**: 25.4.0+ (vector indexes are GA)
-- **Embeddings**: `all-MiniLM-L6-v2` via sentence-transformers 5.x (384-dim, local). The 3.x to 5.x jump landed July 2026 with embedding parity verified (identical vectors), so nothing stored in CRDB needed re-embedding.
+- **Embeddings**: `all-MiniLM-L6-v2` via sentence-transformers 6.x (384-dim, local). Each major jump (3 to 5 in July 2026, 5 to 6 in October 2026) landed only after `tests/test_embedding_parity.py` showed identical vectors, so nothing stored in CRDB needed re-embedding.
 - **Agent framework**: LangGraph 1.x
-- **Vector store / chat history / checkpointer**: `langchain-cockroachdb` 0.2.x
+- **Checkpointer**: `langchain-cockroachdb` 0.5.x, for `CockroachDBSaver` only (the legacy vector store and chat history routes were removed in October 2026 because they were unauthenticated and read across users; semantic search is plain SQL). Its calls retry transient errors themselves (40001, dropped connections including the TLS "unexpected eof", the i/o timeout after a canceled session), so never wrap them in banko's `@db_retry`, or the attempts multiply. Checkpoint reads and writes run concurrently on the assistant's pool, which connects as `banko-checkpointer` in `SHOW SESSIONS` and opens up to `CHECKPOINT_POOL_SIZE` connections (default 16). A full pool raises `PoolTimeout` after `DB_POOL_TIMEOUT` seconds, and nothing retries that. Keep `prepare_threshold=0` on the pool.
 - **Web**: Flask 3.1.3 + Flask-SocketIO + eventlet (prod) / threading (dev)
-- **Dep manager**: `uv` (lockfile is `uv.lock`, refreshed wholesale July 2026; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API)
+- **Dep manager**: `uv` (lockfile is `uv.lock`; the deprecated vertexai SDK is gone, google-genai 2.x covers both Vertex and the public API). `make audit` checks the lock and the vendored browser libraries for known vulnerabilities; CI runs it on every PR, on pushes to main and weekly. Dependabot uses the uv ecosystem, so its PRs re-lock; they still get a local rebase and smoke before merge.
 - **Testing**: pytest, ruff, mypy (mypy is advisory, see Open bugs)
 - **Docker**: multi-arch (amd64/arm64), images on Docker Hub at `virag/banko-ai-assistant`
 
@@ -83,7 +87,7 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 
 ### LLM and AI
 
-- **Default provider is watsonx**. Override via `AI_SERVICE=openai|aws|gemini|ollama` env var. Aggregation questions (how much, how many, average) never reach the LLM for math: the intent classifier routes them to SQL and the model only narrates the pre-computed figures. The UI provider switcher must key on `AI_SERVICE`, not model name — there was a real bug where the watsonx logo kept showing even when OpenAI was active because display logic keyed on model.
+- **Default provider is watsonx**. Override via `AI_SERVICE=openai|aws|gemini|ollama` env var. Aggregation questions (how much, how many, average) never reach the LLM for math: the intent classifier routes them to SQL and the model only narrates the pre-computed figures. Visit questions (did I go to X, when did I last go to X, how often do I go to X) take the `visits` route: SQL counts them and code writes the card, with no model call in English; a place that is none of the user's merchants goes on to the planner. The UI provider switcher must key on `AI_SERVICE`, not model name — there was a real bug where the watsonx logo kept showing even when OpenAI was active because display logic keyed on model.
 - AWS Bedrock is identified internally as `"aws"`, NOT `"bedrock"` — docstring is inconsistent in places but the env value is `aws`.
 - **All LLM calls go through `banko_ai/ai_providers/`** — never import `openai`, `anthropic`, `boto3.client('bedrock-runtime')`, etc. directly anywhere else. This is what makes airgap mode (Ollama) and provider switching work cleanly.
 - Dynamic model discovery is the pattern for every provider — never hardcode model lists.
@@ -113,8 +117,30 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 ### Documentation
 
 - ONE end-to-end doc for any new feature, not a sprawl of `FEATURE_X.md` + `FEATURE_X_NOTES.md` + `FEATURE_X_FIXES.md`. The user has explicitly deleted droid-era doc piles. Keep `docs/` lean.
-- README target: ~250 lines, with embedded architecture diagram. Currently 469 lines — slim in the Coach v1 (see spec §8.2).
+- README target: ~250 lines, with the architecture diagram and the page screenshots (docs/images/<page>-light.png and -dark.png, taken from a seeded database on watsonx). Image links are absolute raw.githubusercontent.com URLs so PyPI renders them.
 - Demo marketing tone: Cisco / CockroachDB customer-story register. **Reject validation-speak** like "we prove it at scale with an industry-standard benchmark." The user has pushed back on that phrasing.
+
+### Foundation layers (v2)
+
+- CLI: `banko-ai doctor` checks what a demo needs, one line each and exit 1 on red; `seed`, `reset` and `migrate` run the same services as the app. There is no ownerless sample data any more (personas and signups are seeded); removed 1.x commands and flags stay as hidden pointers to their replacements (`_moved` in cli.py).
+- Docker: the image sets HOME=/app and HF_HOME=/opt/banko/cache/huggingface, both group 0 and group-writable, so it runs under any UID (OpenShift). Boot-test a release image with `--user 12345:0` and run scripts/smoke.py through it.
+- Settings: `banko_ai/config/settings.py` is the only reader of environment variables (a guardrail test enforces it). Add a knob as a field there; `banko-ai config --docs` renders it.
+- Database: use `banko_ai.db.engine.get_engine()`, `run_transaction()` or `user_session()`. Never call `create_engine()` or `.dispose()` elsewhere (guardrail test). Bulk writes are set-based; never `executemany` on an autocommit connection (psycopg 3 turns it into one implicit transaction).
+- psycopg 3 binds server-side, and CockroachDB rejects placeholders in `EXPLAIN`. Any EXPLAIN with parameters goes through `psycopg.ClientCursor` (see `explain_aggregation` and the vector search explain).
+- Schema: every table, index and locality lives in `banko_ai/db/schema.py`. Boot runs one SELECT when the fingerprint matches. New columns on existing tables must be nullable or have defaults.
+- Boot: slow work goes in the warm-up steps in `create_app`, reported through the app's `Readiness`; nothing slow runs before the server listens. Pages wait for the `schema` and `personas` components.
+- Persona: anything that shows provider identity reads it from `banko_ai/ai_providers/display.py`. Errors a user can see use `neutral_error()` or `NEUTRAL_FAILED`, never the exception text.
+- Tests: the plain suite runs against a throwaway single-node CockroachDB on port 26258. Always pass `DATABASE_URL` explicitly; the shell profile points at the chaos cluster on 26257, which only tests gated on `BANKO_TEST_MR_URL` may touch.
+- Money: every write goes through `banko_ai/services/ledger.py` (one short transaction per movement, idempotent where a user can repeat it). All money SQL lives in `banko_ai/services/`; read services use `read_session(user_id, follower=...)`, follower reads for reports only. Money is `Decimal` until `jsonable()` at the API edge. Inserts into REGIONAL BY ROW money tables pin `crdb_region` with `money_region` and `region_columns` (`has_region_column` guards `user_budgets` while it converts).
+- Content: categories, personas and seed profiles are YAML in `banko_ai/config/defaults/`, overridable with `CATEGORIES_FILE`, `PERSONAS_FILE`, `SEED_PROFILES_FILE`. Persona ids a1, a2, a3 are fixed (coach default user).
+- Seeding: deterministic per user and day, resumable via `banko_meta` key `seed:<user_id>` holding the window; reset and seeding take a per-user lease on `seed_lock:<user_id>`. The integrity worker must report 0 drift.
+- Vector search: semantic transaction search pins the per-user vector index with a hint (`FROM expenses@idx_expenses_user_embedding`) because freshly seeded users are not yet in table statistics. Every page of one search is cut from the same 100 nearest neighbours (`SEARCH_WINDOW`), with the filters as a keep flag outside the vector CTE. The assistant writes its answer from the first `SEARCH_PAGE_SIZE` rows; Show more and a typed "show more" (the `more` route, no model call) page on from there.
+- RLS: policies on six tables only, accounts, ledger_entries, transfers, goals, user_budgets and chat_threads (`RLS_TABLES` in `db/rls.py`), for the `banko_app` role; request-path services resolve `url` with `rls.request_url()`. Never add RLS to a vector table.
+- Assistant: every chat turn runs the LangGraph graph in `banko_ai/assistant/graph.py` (ingest, route, aggregate | visits | receipt | memory | offtopic | plan | more, respond, learn), checkpointed per thread with `CockroachDBSaver` (`assistant/checkpoint.py` owns its psycopg pool). Routing is deterministic (`assistant/router.py`); only open questions reach the JSON planner. Models are reached through `ai_providers/streaming.py` (`ProviderChat`), and tests use `tests/_chat.py` (`ScriptedChat`), never a live model.
+- Platform: the load simulator (`workers/traffic.py`) runs `workers/workload.py` operations through the real services on its own `banko-load` pool (`get_engine(url, pool_size=)` with an `application_name` in the URL; never a second `create_engine`). Its customers are `load-` demo users built from the seed profiles (`services/load_users.py`), and every user deletion, load users, `clear-demo-users` and the demo user expiry alike, goes through `services/users.delete_users`, whose table list comes from the schema registry. Each customer runs through their home region's own pool (`with_gateway_region`: get_engine keeps connections whose `gateway_region()` matches, re-asking the load balancer; after a miss it takes connections as they land and tries home again after 15 s, or 5 minutes for a region its URL never reached), connected as the owner rather than `banko_app` (on v26.3 RLS plans every statement after a round trip to a system range, 60 to 116 ms from gateways away from it, and keeps `crdb_region` filters out of the scan). A customer has one operation in flight at a time, and the load pools end a statement after `LOAD_OPERATION_TIMEOUT_SECONDS`. Signed-in users are routed the same way: `read_session`, `user_session` and `run_transaction` use `engine.routed()` (`ROUTE_BY_HOME_REGION`); any other per-user connection is `get_engine(routed(url, user_id))`, and a `run_transaction` for a user passes `user_id=`. `tests/test_home_routing.py` covers the request path area by area (one unrouted totals query took 703 ms against 12 ms at home). Cache hit and miss counts go to `cache_stats` (primary region) from a background writer, never inline. The read services name the region (`region_pin`) only through `regions.read_region`: not on the RLS app URL, only when money tables are REGIONAL BY ROW, and only for users whose money rows all live at home (`rows_home`, primed for load users at start). On a database created multi-region, the expenses and transfers primary keys and the transfers idempotency key lead with `crdb_region` (an INSERT ... ON CONFLICT, or any insert into a table with vector indexes, otherwise checks a global key in every region even for `gen_random_uuid()`) (`Table.regional_primary_key` and `regional_constraints`); `scoped_key()` picks the ON CONFLICT target and such rows get a region that never depends on the gateway (`SCOPED_REGION_VALUE`). The transfers key is scoped in place on older multi-region databases; the expenses primary key is not (CockroachDB 26.3 fails to rebuild it in place). Transfers and card payments keep their idempotency keys; purchases and deposits let the database pick ids and report a commit lost in flight as `ambiguous` instead of retrying it. On a REGIONAL BY ROW table a client-chosen key costs a uniqueness check in every region, and on `expenses` even a `gen_random_uuid()` default keeps that check because of the vector indexes. `run_transaction` retries a connection lost before COMMIT even for non-idempotent work and marks a failed COMMIT with `at_commit`. Declines are business outcomes, not errors. `/api/v1/platform/live` never touches the database; `/cluster` and `/data` are background snapshots. Node liveness comes from the chaos plane or CockroachDB's HTTP API, never `crdb_internal` (restricted on v26), and a derived HTTP API address is trusted only when its nodes' regions match `SHOW REGIONS FROM CLUSTER`. `SHOW RANGES ... WITH DETAILS` costs about 7 s a table on the 3-region cluster, so it is background-only. Metric windows cover complete seconds. Charts follow the dataviz skill: one axis per chart, colors checked with its validator in both themes.
+- Assistant data: `receipts` (not the legacy `documents`), `chat_threads` (RLS), `memories`, `answer_cache`, `search_cache`, `assistant_actions`. Per-user vector lookups go through `services/_vector.nearest`, and semantic search through `transactions._neighbours`. Both pin the index and rank the user's rows exactly whenever the index returns fewer rows than the user has, not only none (cockroachlabs/cockroach#13756; on the 3-region cluster one user's index returned the same single row for every query). Cache keys include the user's data version.
+- Receipts: `services/receipts.process_receipt` posts through `ledger.post_purchase`; a receipt ends posted, duplicate or failed, never "processed" after a swallowed error. Duplicates are caught within `duplicate_window_days` (default 3 days, `DUPLICATE_WINDOW_DAYS`).
+- UI: no build step. `templates/layout.html` is the shell (brand, theme, identity, persona pill, nav built from registered `pages.*` endpoints in `web/shell.py`); each page is `templates/pages/<page>.html` plus an Alpine component in `static/js/pages/<page>.js` that reads `/api/v1`. Shared JS: `static/js/core.js` (API and SSE clients, formatting, the `X-Banko-User` session guard), `shell.js` (theme, palette, toasts, Socket.IO, drop-a-receipt), `assistant.js` (panel and full page; the "How this was answered" trace comes from the answer's `meta.trace`). Tokens live in `static/css/app.css` (Daylight on `:root`, Midnight on `[data-theme="dark"]`). Vendored assets are listed with hashes in `static/vendor/manifest.json` and audited by `make audit`; icons come from `static/vendor/lucide-sprite.svg`, built by `scripts/build_icon_sprite.py` from its `ICONS` list. Data is bound with `x-text`; model text goes through marked then DOMPurify. The browser pass is `BANKO_UI_TESTS=1 uv run pytest tests/ui` (needs `uv sync --all-extras` and `uv run playwright install chromium`).
 
 ### Git workflow
 
@@ -126,10 +152,7 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 
 - Coach on Gemini is code-complete but never smoke-tested: the GCP project (cockroach-harsh-432021) lost Vertex access mid-test on July 15 (billing). When the project recovers, run the coach smoke (mock_signals x3 plus /api/coach/chat) with AI_SERVICE=gemini before claiming four-provider coverage.
 - The watsonx model dropdown lists every chat-capable model IBM returns, including code-tuned ones (`ibm/granite-8b-code-instruct`) that echo prompt templates on JSON extraction tasks. The `ReceiptExtraction` Pydantic gate now catches the bad payloads (422 instead of 500), but the dropdown still presents the foot-gun. Consider annotating models with a "suitable for structured extraction" hint, or filtering code-tuned models out of the JSON-extraction code paths.
-- `agent_memory.access_count` never incremented on read (defer to memory-system v2).
-- `SentenceTransformer` re-instantiated per call in `base_agent.py` (perf bug; fixing risks regression — defer).
-- `documents` table schema drift between `database.py` and `agent_schema.py` (both create it; reconcile when next touching either).
-- mypy carries about 200 findings that predate the July 2026 dep landing (verified identical against the May lockfile, so not upgrade fallout). The `make types` target is advisory, same as CI. Someone needs to budget a real typing pass; until then do not treat mypy output as a regression signal.
+- mypy carries findings that predate the July 2026 dep landing; the measured baseline is 222 findings (verified identical against the May lockfile, so not upgrade fallout). The `make types` target is advisory, same as CI. Someone needs to budget a real typing pass; until then do not treat mypy output as a regression signal.
 - The ibm-watsonx-ai SDK prints a third-party-license WatsonxAPIWarning on every agent LLM call while the default model is non-IBM (openai/gpt-oss-120b). Informational, not an error; switching WATSONX_MODEL to an ibm/granite model silences it.
 
 ## Deployment modes (all three must keep working)
@@ -155,7 +178,7 @@ scripts/airgap/preload-models.sh                    # once, while online
 docker compose -f docker-compose.airgap.yml up -d   # offline demo (Ollama)
 ```
 
-Then visit http://localhost:5000. App generates 5000 sample expense records on first run.
+Then visit http://localhost:5000. The personas (maya, sam, riley) get their history seeded on first boot; `banko-ai doctor` says what is ready.
 
 ## Testing locally (the required path before any push)
 
@@ -165,7 +188,7 @@ make test-local        # ruff + advisory mypy + pytest (same ignore list as CI)
 #   watsonx, openai, aws, gemini, ollama
 ```
 
-The pytest target skips the same script style test files CI skips; they need a running app or live creds. The coach end to end smoke is automated: boot the app, then `uv run python scripts/coach/assert_nudges.py` (webhook transport) or `--via sql` (exercises the real CDC path when the cdc-demo stack is up). The rest of the manual pass list: grounded chat answer, correct provider logo, receipt upload extracts fields, real dashboard activity, cache stats climb on a repeat query, relevant vector search, clean server log.
+The pytest target skips the same script style test files CI skips; they need a running app or live creds. The per-provider smoke is automated: boot the app, run `uv run python scripts/smoke.py --url http://localhost:5000 --expect <provider>` (provider shown and answering, a receipt with follow-ups whose new purchase retires earlier runs' cached answers, totals and visits from SQL, cache on a repeat, search and show more, Spanish, a coach nudge the model wrote when `CDC_WEBHOOK_HMAC_SECRET` and `DATABASE_URL` are in the shell), then restart the app and run it again with `--resume <thread id it printed>`. The coach smoke alone is `uv run python scripts/coach/assert_nudges.py` (webhook transport) or `--via sql` (exercises the real CDC path when the cdc-demo stack is up). The rest of the manual pass list: the right provider logo in the header, real dashboard activity, relevant vector search, clean server log.
 
 CI is **not enough**. CI gates on lint/unit/integration, but the multi-provider smoke is a human-driven, locally-run check.
 

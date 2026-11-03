@@ -1,0 +1,65 @@
+{% from "components/icons.html" import icon %}
+<div x-data="txDrawer" @banko:open-transaction.window="open($event.detail.id)" @keydown.escape.window="close()">
+  <div class="b-scrim" x-show="shown" x-cloak @click="close()"></div>
+  <aside class="b-drawer" x-show="shown" x-cloak aria-label="Transaction details">
+    <template x-if="t">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="b-row" style="align-items:center">
+          <span class="b-m" style="width:38px;height:38px" :style="'background:' + Banko.monogram(t.merchant || t.description).color" x-text="Banko.monogram(t.merchant || t.description).letters"></span>
+          <div style="flex:1;min-width:0"><div class="b-name" x-text="t.merchant || t.description"></div>
+            <div class="b-muted" x-text="Banko.fmt.dayLabel(t.posted_at) + (t.payment_method ? ' · ' + t.payment_method : '')"></div></div>
+          <div class="b-big" style="font-size:20px" x-text="Banko.fmt.money(t.amount, { sign: true })"></div>
+          <button class="b-iconbtn" type="button" @click="close()" aria-label="Close">{{ icon('x') }}</button>
+        </div>
+
+        <div class="b-sec" x-show="t.receipt">
+          <div class="l">Receipt <span x-text="t.receipt && t.receipt.status"></span></div>
+          <div style="display:flex;gap:10px">
+            <img class="b-thumb" x-show="t.receipt && t.receipt.has_thumbnail" :src="t.receipt ? '/api/v1/receipts/' + t.receipt.document_id + '/thumbnail' : ''" alt="Receipt">
+            <div style="flex:1">
+              <template x-for="(item, i) in (t.receipt ? t.receipt.items : [])" :key="i"><div class="b-row b-muted"><span x-text="item"></span></div></template>
+              <div class="b-muted" x-show="t.receipt && !t.receipt.items.length">No line items were read.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="b-sec" x-show="t.similar && t.similar.length">
+          <div class="l">Similar transactions <span>your vector index</span></div>
+          <template x-for="s in t.similar" :key="s.expense_id">
+            <button type="button" class="b-row" style="width:100%;background:none;border:0;padding:3px 0;cursor:pointer" @click="open(s.expense_id)">
+              <span x-text="s.merchant + ' · ' + Banko.fmt.date(s.date)"></span>
+              <span class="b-muted" x-text="Banko.fmt.money(s.amount)"></span>
+              <span style="color:var(--ac);font-weight:700;font-size:11px" x-text="Math.round((1 - s.distance) * 100) + '%'"></span>
+            </button>
+          </template>
+        </div>
+
+        <div class="b-sec" x-show="t.kind === 'purchase'">
+          <div class="l">Agent checks</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <span class="b-tag" :class="t.checks.duplicates.length ? 'warn' : 'ok'" x-text="t.checks.duplicates.length ? 'Possible duplicate of ' + t.checks.duplicates[0].merchant + ' on ' + Banko.fmt.date(t.checks.duplicates[0].date) : '✓ Not a duplicate'"></span>
+            <template x-for="d in t.checks.decisions.slice(0, 2)" :key="d.decision_id">
+              <span class="b-tag" :class="d.action && d.action.fraud_detected ? 'bad' : 'ok'" x-text="decisionText(d)"></span>
+            </template>
+            <span class="b-muted" x-show="!t.checks.decisions.length">No fraud check has run on this purchase yet.</span>
+          </div>
+        </div>
+
+        <div class="b-sec" x-show="t.expense_id && categories.length">
+          <div class="l">Category</div>
+          <div class="b-row">
+            <select class="b-select" x-model="category" aria-label="Category">
+              <template x-for="c in categories" :key="c.key"><option :value="c.label" x-text="c.icon + ' ' + c.label"></option></template>
+            </select>
+            <button class="b-btn sm" type="button" :disabled="saving || category === t.category_label" @click="save()">{{ icon('check') }}Save</button>
+          </div>
+          <div class="b-tag bad" x-show="saveError" x-text="saveError"></div>
+        </div>
+
+        <button class="b-btn primary" type="button" @click="Banko.emit('banko:ask', { context: { kind: 'transaction', id: t.expense_id || t.id } })">✦ Ask {{ shell.brand.name }} about this</button>
+        <div class="b-muted" x-show="t.residency" x-text="t.residency ? 'Row lives in ' + t.residency.stored_in + ' (REGIONAL BY ROW), your home region is ' + t.residency.home_region + ' · loaded in ' + readMs + ' ms' : ''"></div>
+      </div>
+    </template>
+    <div class="b-skel" x-show="!t" style="height:200px"></div>
+  </aside>
+</div>

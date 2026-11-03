@@ -211,12 +211,18 @@ All configuration is done via environment variables. See the main [README.md](ht
 
 ### Volume Mounts (Optional)
 
-Mount volumes for persistent cache or custom configurations:
+The embedding model is baked into the image, so no volume is needed for
+it. To keep a model cache across image upgrades, use a named volume: Docker
+fills it from the image on first use. A bind mount of an empty host
+directory would hide the baked model and need the network on the first
+boot. The image runs as uid 1000, or any uid in group 0, so a mounted
+directory must be writable by group 0. Your own categories, personas or
+seed profiles can come from a mounted directory:
 
 ```bash
 docker run -d \
-  -v ./cache:/home/bankoai/.cache \
-  -v ./config:/app/config \
+  -v banko-hf-cache:/opt/banko/cache/huggingface \
+  -v ./config:/app/config -e CATEGORIES_FILE=/app/config/categories.yaml \
   virag/banko-ai-assistant:latest
 ```
 
@@ -265,15 +271,24 @@ docker run -d --name banko-ai-3 -p 5003:5000 ... virag/banko-ai-assistant:latest
 
 ### Health Checks
 
-The container includes health checks via `/api/health` endpoint:
+The container health check hits `/api/health/live`, which answers as soon
+as the server is listening, even while warm-up is still running.
+`/api/health/ready` returns 200 once the schema and the demo personas are in
+place, and `/api/health` shows every warm-up step:
 
 ```bash
 # Check container health
 docker inspect --format='{{.State.Health.Status}}' banko-ai
 
-# Manual health check
+# Manual checks
+curl http://localhost:5000/api/health/live
+curl http://localhost:5000/api/health/ready
 curl http://localhost:5000/api/health
 ```
+
+### Reverse Proxy Configuration
+
+Socket.IO defaults to same-origin connections. Standard reverse proxies (nginx, haproxy, Caddy) work without extra config because the underlying engine.io honors `X-Forwarded-Host` and `X-Forwarded-Proto`. If your proxy rewrites the `Host` header without forwarding the original, set `SOCKETIO_CORS_ORIGINS` to the external origin clients will use (for example, `https://banko.example.com`).
 
 ## Troubleshooting
 

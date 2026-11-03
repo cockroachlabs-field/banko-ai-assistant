@@ -1,7 +1,7 @@
 """
 IBM Watsonx AI Provider for Banko Assistant
 
-This module provides integration with IBM Watsonx AI services to power the 
+This module provides integration with IBM Watsonx AI services to power the
 Banko Assistant's conversational capabilities. It includes functions for:
 - Expense data search and retrieval
 - RAG (Retrieval Augmented Generation) responses
@@ -18,17 +18,13 @@ Author: Banko AI Team
 Date: 2025
 """
 
-import json
-import os
 from typing import Any
 
-import numpy as np
-import psycopg2
 import requests
-from sqlalchemy.exc import DBAPIError, OperationalError
 
 from ..ai_providers.base import AIConnectionError, AIProvider, RAGResponse, SearchResult
 from ..ai_providers.rag_prompts import build_banko_rag_prompt
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
 
 
@@ -39,26 +35,21 @@ class WatsonxProvider(AIProvider):
         """Initialize Watsonx provider with configuration."""
         if config is None:
             config = {}
-        
+
         # Store config for base class compatibility
         self.config = config
         self.cache_manager = cache_manager
-        
-        self.api_key = config.get('api_key') or os.getenv('WATSONX_API_KEY')
-        self.project_id = config.get('project_id') or os.getenv('WATSONX_PROJECT_ID')
-        self.current_model = config.get('model', config.get('model_id')) or os.getenv('WATSONX_MODEL_ID', 'openai/gpt-oss-120b')
-        
+
+        cfg = get_config()
+        self.api_key = config.get('api_key') or cfg.watsonx_api_key
+        self.project_id = config.get('project_id') or cfg.watsonx_project_id
+        self.current_model = config.get('model', config.get('model_id')) or cfg.watsonx_model
+
         # API configuration with environment variable support
-        self.api_url = config.get('api_url') or os.getenv(
-            'WATSONX_API_URL', 
-            'https://us-south.ml.cloud.ibm.com/ml/v1/text/chat?version=2023-05-29'
-        )
-        self.token_url = config.get('token_url') or os.getenv(
-            'WATSONX_TOKEN_URL',
-            'https://iam.cloud.ibm.com/identity/token'
-        )
-        self.timeout = int(config.get('timeout', os.getenv('WATSONX_TIMEOUT', '30')))
-        self.embedding_model_name = config.get('embedding_model') or os.getenv('EMBEDDING_MODEL', 'all-MiniLM-L6-v2')
+        self.api_url = config.get('api_url') or cfg.watsonx_api_url
+        self.token_url = config.get('token_url') or cfg.watsonx_token_url
+        self.timeout = int(config.get('timeout', cfg.watsonx_timeout))
+        self.embedding_model_name = config.get('embedding_model') or cfg.embedding_model
         
         # Discovery cache: get_available_models() can call IBM on every UI page
         # load; cache for the life of the process. App restart picks up changes.
@@ -106,7 +97,6 @@ class WatsonxProvider(AIProvider):
             # Use the same simple search logic as the original watsonx.py
             import json
 
-            import numpy as np
             from sqlalchemy import text
 
             from banko_ai.utils.embeddings import load_embedding_model
@@ -121,7 +111,7 @@ class WatsonxProvider(AIProvider):
                 print("2. Embedding generated (with cache support)")
                 
                 # Check vector_search_cache for cached results
-                cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit)
+                cached_results = self.cache_manager.get_cached_vector_search(raw_embedding, limit, scope=str(user_id or ''))
                 if cached_results:
                     print(f"3. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
                     # Convert cached dict results to SearchResult objects
@@ -234,7 +224,7 @@ class WatsonxProvider(AIProvider):
                             'recurring': False,
                             'tags': []
                         })
-                    self.cache_manager.cache_vector_search_results(raw_embedding, cache_results)
+                    self.cache_manager.cache_vector_search_results(raw_embedding, cache_results, scope=str(user_id or ''))
                     print(f"5. ✅ Cached {len(cache_results)} results in vector_search_cache")
                 
                 return results_list
@@ -257,7 +247,8 @@ class WatsonxProvider(AIProvider):
         4. A static fallback stub of known-good chat models, so the dropdown
            still has multiple recoverable options when discovery fails.
         """
-        extra = os.getenv("WATSONX_MODELS", "")
+        cfg = get_config()
+        extra = cfg.watsonx_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
 
@@ -266,7 +257,7 @@ class WatsonxProvider(AIProvider):
 
         try:
             access_token = self._get_access_token()
-            api_url = os.getenv("WATSONX_API_URL", "https://us-south.ml.cloud.ibm.com")
+            api_url = cfg.watsonx_base_url
             if '/ml/v1' in api_url or '?' in api_url:
                 from urllib.parse import urlparse
                 parsed = urlparse(api_url)
@@ -316,14 +307,15 @@ class WatsonxProvider(AIProvider):
         try:
             # Just test if we can get an access token - this is faster and more reliable
             # than making a full API call for status checks
-            access_token = self._get_access_token()
+            access_token = self._get_access_token(timeout=5)
             return access_token is not None
         except Exception:
             # If token request fails, the connection is not available
             return False
     
-    def _get_access_token(self):
-        """Get IBM Cloud access token from API key (copied from original)."""
+    def _get_access_token(self, timeout: float | None = None):
+        """Get IBM Cloud access token from API key. The health check passes a
+        short timeout; chat calls use WATSONX_TIMEOUT."""
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json"
@@ -334,7 +326,8 @@ class WatsonxProvider(AIProvider):
         }
         
         try:
-            response = requests.post(self.token_url, headers=headers, data=data, timeout=self.timeout)
+            response = requests.post(self.token_url, headers=headers, data=data,
+                                     timeout=timeout if timeout is not None else self.timeout)
             if response.status_code != 200:
                 raise Exception(f"Failed to get access token (status {response.status_code}): {response.text}")
             token_data = response.json()
@@ -536,24 +529,15 @@ class WatsonxProvider(AIProvider):
         except Exception as e:
             error_msg = f"❌ Error generating Watsonx response: {str(e)}"
             print(error_msg)
-            
+
             # Check if it's a network connectivity issue
+            from .display import NEUTRAL_UNAVAILABLE
             if "Failed to resolve" in str(e) or "nodename nor servname provided" in str(e) or "Network connectivity issue" in str(e):
-                return f"""I apologize, but I'm experiencing network connectivity issues with IBM Watsonx AI. 
-
-**🔧 Troubleshooting suggestions:**
-- Check your internet connection
-- Try switching to AWS Bedrock by setting `AI_SERVICE=aws` in your environment
-- Verify your network allows access to `iam.cloud.ibm.com`
-
-**💡 Quick fix:** You can switch AI providers by running:
-```bash
-export AI_SERVICE=aws
-```
-
-(Network Error: {str(e)})"""
+                print(f"Network connectivity issues with IBM Watsonx AI: {e}")
+                return NEUTRAL_UNAVAILABLE
             else:
-                return f"I apologize, but I'm experiencing technical difficulties with IBM Watsonx AI. Please try again later or consider switching to AWS Bedrock. (Error: {str(e)})"
+                print(f"Technical difficulties with IBM Watsonx AI: {e}")
+                return NEUTRAL_UNAVAILABLE
     
     def _get_financial_insights_from_dicts(self, search_results: list[dict[str, Any]]) -> dict:
         """Generate financial insights from dictionary format (matching original)."""
@@ -706,9 +690,11 @@ I couldn't find any relevant expense records for your query. Please try:
                     response_text += "**Note**: API call failed, showing structured analysis above."
             
             return response_text
-            
+
         except Exception as e:
-            return f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}"
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}")
+            return NEUTRAL_UNAVAILABLE
     
     def generate_rag_response(
         self,
@@ -793,9 +779,7 @@ I couldn't find any relevant expense records for your query. Please try:
 • Average Transaction: ${insights.get('avg_transaction', 0):.2f}
 
 ### 🤖 Recommendations
-{budget_recommendations if budget_recommendations else '• Consider reviewing your spending patterns regularly'}
-
-**Note**: Set WATSONX_API_KEY and WATSONX_PROJECT_ID for AI-powered insights."""
+{budget_recommendations if budget_recommendations else '• Consider reviewing your spending patterns regularly'}"""
             else:
                 try:
                     search_results_text = ""
@@ -873,10 +857,12 @@ I couldn't find any relevant expense records for your query. Please try:
                     'language': language
                 }
             )
-            
+
         except Exception as e:
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}")
             return RAGResponse(
-                response=f"Sorry, I'm experiencing technical difficulties. Error: {str(e)}",
+                response=NEUTRAL_UNAVAILABLE,
                 sources=context,
                 metadata={
                     'provider': 'watsonx',

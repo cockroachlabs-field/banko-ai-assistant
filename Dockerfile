@@ -46,10 +46,14 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # Stage 3: Runtime stage - minimal production image
 FROM base AS runtime
 
-# Create non-root user for security
-RUN useradd -m -u 1000 bankoai && \
-    mkdir -p /app && \
-    chown -R bankoai:bankoai /app
+# One home and one model cache, owned by group 0 and group-writable, so the
+# image runs as uid 1000 or as any arbitrary uid in group 0 (OpenShift)
+# without depending on what HOME the runtime picks.
+ENV HOME=/app \
+    HF_HOME=/opt/banko/cache/huggingface
+
+RUN useradd -u 1000 -g 0 -d /app -M bankoai && \
+    mkdir -p /app /opt/banko/cache
 
 WORKDIR /app
 
@@ -57,12 +61,11 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy cache directories (sentence transformers models)
-RUN mkdir -p /home/bankoai/.cache
-COPY --from=builder /root/.cache /home/bankoai/.cache
+# The embedding model the builder downloaded (about 90 MB)
+COPY --from=builder /root/.cache/huggingface /opt/banko/cache/huggingface
 
 # Copy application code
-COPY --chown=bankoai:bankoai . .
+COPY . .
 
 # Copy entrypoint script
 COPY --chown=root:root docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -71,23 +74,22 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Install the package in the runtime stage
 RUN pip install --no-deps -e .
 
-# Bake the embedding model into the image so airgap deployments never
-# reach for Hugging Face. Roughly 90MB, cached under /root/.cache.
-RUN python -c "from sentence_transformers import SentenceTransformer; \
+# Load the baked model with the network forbidden: proof that airgap
+# deployments never reach for Hugging Face.
+RUN HF_HUB_OFFLINE=1 python -c "from sentence_transformers import SentenceTransformer; \
     SentenceTransformer('all-MiniLM-L6-v2')"
 
-# Fix permissions for cache directories
-RUN chown -R bankoai:bankoai /home/bankoai/.cache
+RUN chgrp -R 0 /app /opt/banko && chmod -R g=u /app /opt/banko
 
 # Switch to non-root user
-USER bankoai
+USER 1000
 
 # Expose the application port
 EXPOSE 5000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/api/health || exit 1
+    CMD curl -f http://localhost:${PORT:-5000}/api/health/live || exit 1
 
 # Set entrypoint
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
@@ -96,5 +98,5 @@ ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 # Flask-SocketIO in threading mode (long-polling transport), and gunicorn
 # 26 removed the eventlet worker class the old command asked for.
 # One worker: SocketIO sessions and the in-process coach queue don't
-# share state across processes.
-CMD ["gunicorn", "--worker-class", "gthread", "-w", "1", "--threads", "16", "--bind", "0.0.0.0:5000", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "banko_ai.web.app:create_app()"]
+# share state across processes. sh -c so the bind honors PORT.
+CMD ["sh", "-c", "exec gunicorn --worker-class gthread -w 1 --threads 16 --bind 0.0.0.0:${PORT:-5000} --timeout 120 --access-logfile - --error-logfile - 'banko_ai.web.app:create_app()'"]

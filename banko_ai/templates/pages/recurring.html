@@ -1,0 +1,21 @@
+{% extends "layout.html" %}
+{% block title %}Recurring{% endblock %}
+{% block content %}
+<section x-data="recurringPage" x-init="load()">
+  <div class="b-page-h"><h1>Recurring</h1><span class="b-muted">Bills and subscriptions found in your history</span></div>
+  <template x-if="error"><div class="b-card b-empty"><strong x-text="error"></strong></div></template>
+  <div class="b-card" x-show="items" x-cloak style="margin-top:14px">
+    <template x-for="r in (items || [])" :key="r.merchant">
+      <div class="b-bill" style="padding:10px 0">
+        <span class="b-date" x-html="badge(r.next_due)"></span>
+        <span style="flex:1;min-width:0"><div class="b-name" x-text="r.icon + ' ' + r.merchant"></div>
+          <div class="b-muted" x-text="cadence(r) + ' · seen ' + r.occurrences + ' times · last ' + Banko.fmt.date(r.last_date)"></div></span>
+        <span class="b-tag warn" x-show="r.price_change_pct" x-text="'↑ ' + Banko.fmt.money(r.amount - r.previous_amount) + ' vs before'"></span>
+        <span class="b-amt" x-text="Banko.fmt.money(r.amount)"></span>
+      </div>
+    </template>
+    <div class="b-empty" x-show="items && !items.length"><strong>No recurring charges found yet</strong><span>Recurring charges show up after a merchant bills you on a steady schedule a few times.</span></div>
+  </div>
+</section>
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/recurring.js') }}"></script>{% endblock %}

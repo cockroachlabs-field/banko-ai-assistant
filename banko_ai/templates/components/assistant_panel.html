@@ -1,0 +1,17 @@
+{% from "components/icons.html" import icon %}
+<div x-data="assistant('panel')">
+  <div class="b-scrim" x-show="open" x-cloak @click="hide()"></div>
+  <aside class="b-panel" x-show="open" x-cloak aria-label="{{ shell.brand.name }} assistant" @keydown.escape="hide()">
+    <div class="b-panel-h">
+      <div><div class="t">{{ shell.brand.name }} assistant</div><div class="b-muted" x-text="threadTitle || 'Saved in CockroachDB'"></div></div>
+      <span class="sp"></span>
+      <span class="b-pill"><img src="{{ shell.provider.icon_url }}" alt="">{{ shell.provider.name }} · {{ shell.provider.model }}</span>
+      <button class="b-iconbtn" type="button" @click="ask({ fresh: true })" title="New conversation" aria-label="New conversation">{{ icon('plus') }}</button>
+      {% for group in shell.nav %}{% for item in group['items'] %}{% if item.key == 'assistant' %}
+      <a class="b-iconbtn" :href="'{{ item.href }}' + (threadId ? '/' + threadId : '')" title="Open full page" aria-label="Open full page">{{ icon('maximize-2') }}</a>
+      {% endif %}{% endfor %}{% endfor %}
+      <button class="b-iconbtn" type="button" @click="hide()" aria-label="Close">{{ icon('x') }}</button>
+    </div>
+    {% include "components/assistant_chat.html" %}
+  </aside>
+</div>

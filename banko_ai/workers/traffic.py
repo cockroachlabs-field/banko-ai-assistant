@@ -1,0 +1,592 @@
+"""The load simulator: an open-loop traffic generator of banking customers.
+
+A scheduler thread draws Poisson arrivals at the target rate (ramping up
+over ramp_s) and hands each operation, stamped with when it should start,
+to a bounded queue; worker threads run it through the workload. Latency
+counts from that intended start, so a slow cluster shows up as latency
+and, once the queue is full, as dropped arrivals, never as quietly less
+load. Every operation lands in the metrics registry three times: all of
+it, its operation, and its customer's home region.
+
+While a run is going the simulator checks money integrity and samples,
+per home region, which regions serve its customers' reads. Each process
+has one simulator (get_simulator) on a pool of its own, banko-load.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import queue
+import random
+import threading
+import time
+from collections import Counter, deque
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from typing import Any
+
+from sqlalchemy.exc import DBAPIError, OperationalError
+
+from ..config.settings import get_config
+from ..observability.events import EventBus
+from ..observability.events import events as default_events
+from ..observability.metrics import Metrics
+from ..observability.metrics import metrics as default_metrics
+from ..services.load_users import LoadUser
+from .workload import OPS, PROFILES, OpContext, UserPicker, VectorCache, run_op
+
+log = logging.getLogger("banko.load")
+
+_MAX_DURATION_S = 24 * 3600
+_MAX_RAMP_S = 600
+_DEFAULT: Any = object()
+_ERROR_WORDS = {"40001": "transaction conflicts", "40003": "ambiguous commits", "connection": "lost connections",
+                "timeout": "timeouts", "ambiguous": "commits lost in flight", "not_found": "missing accounts",
+                "key_conflict": "reused transfer keys"}
+_FREE_PICKS = 16  # draws from the skew for a customer who is free before scanning for any
+
+
+class LoadConfigError(ValueError):
+    """A setting out of range or of the wrong kind; the message says which, in plain words."""
+
+
+class SimulatorBusy(Exception):
+    """A run is already preparing, running or stopping."""
+
+
+def _number(raw: Any, kind: type, label: str, low: float, high: float) -> Any:
+    if isinstance(raw, bool):
+        raise LoadConfigError(f"{label} must be a number")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise LoadConfigError(f"{label} must be a number") from None
+    if not math.isfinite(value):
+        raise LoadConfigError(f"{label} must be a number")
+    if kind is int:
+        if not value.is_integer():
+            raise LoadConfigError(f"{label} must be a whole number")
+        value = int(value)
+    if not low <= value <= high:
+        raise LoadConfigError(f"{label} must be between {low:g} and {high:g}")
+    return value
+
+
+def _weights(raw: Any) -> dict[str, int]:
+    if not isinstance(raw, dict) or not raw:
+        raise LoadConfigError('A custom profile needs weights, for example {"purchase": 50, "search": 50}')
+    out = {}
+    for op, weight in raw.items():
+        if op not in OPS:
+            raise LoadConfigError(f"Unknown operation {op!r}; pick from {', '.join(OPS)}")
+        out[op] = _number(weight, int, f"The weight of {op}", 0, 1000)
+    if sum(out.values()) <= 0:
+        raise LoadConfigError("Custom weights must add up to more than 0")
+    return {op: w for op, w in out.items() if w > 0}
+
+
+@dataclass(frozen=True)
+class LoadConfig:
+    users: int
+    rate: float
+    workers: int
+    profile: str = "balanced"
+    duration_s: int | None = None
+    ramp_s: int = 10
+    weights: dict[str, int] | None = None
+
+    @classmethod
+    def from_dict(cls, data: Any, *, base: LoadConfig | None = None) -> LoadConfig:
+        """A validated config: data's fields over base's (or the settings'
+        defaults), every number checked against the LOAD_MAX_* caps."""
+        if not isinstance(data, dict):
+            raise LoadConfigError("Send the load settings as a JSON object")
+        cfg = get_config()
+        start = base or cls(users=cfg.load_default_users, rate=cfg.load_default_rate,
+                            workers=cfg.load_default_workers)
+
+        def get(key: str) -> Any:
+            return data[key] if key in data else getattr(start, key)
+
+        profile = get("profile")
+        if profile not in (*PROFILES, "custom"):
+            raise LoadConfigError(f"The profile must be one of {', '.join([*PROFILES, 'custom'])}")
+        duration = get("duration_s")
+        return cls(
+            users=_number(get("users"), int, "Users", 1, cfg.load_max_users),
+            rate=_number(get("rate"), float, "The rate", 0.1, cfg.load_max_rate),
+            workers=_number(get("workers"), int, "Workers", 1, cfg.load_max_workers),
+            profile=profile,
+            duration_s=None if duration in (None, 0, "", "0") else _number(duration, int, "The duration", 1,
+                                                                           _MAX_DURATION_S),
+            ramp_s=_number(get("ramp_s"), int, "The ramp", 0, _MAX_RAMP_S),
+            weights=_weights(get("weights")) if profile == "custom" else None,
+        )
+
+    def mix(self) -> dict[str, int]:
+        return dict(self.weights) if self.profile == "custom" and self.weights else dict(PROFILES[self.profile])
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+    def describe(self) -> str:
+        until = f" for {self.duration_s} s" if self.duration_s else ""
+        return f"{self.profile}, {self.users} customers, {self.rate:g} ops/s, {self.workers} workers{until}"
+
+
+def error_class_of(exc: BaseException) -> str:
+    """A short name for what went wrong: the SQLSTATE, or connection,
+    timeout, ambiguous (a commit lost in flight: it may have landed), or
+    the exception's class."""
+    named = getattr(exc, "error_class", None)  # a refusal that names itself (TransferRefused)
+    if isinstance(named, str) and named:
+        return named
+    if isinstance(exc, DBAPIError):
+        state = str(getattr(getattr(exc, "orig", None), "sqlstate", None) or "")
+        if getattr(exc, "at_commit", False) and state not in ("40001", "40003"):
+            return "ambiguous"
+        if state == "57014":
+            return "timeout"
+        if exc.connection_invalidated or state.startswith(("08", "57P")) or (isinstance(exc, OperationalError)
+                                                                             and not state):
+            return "connection"
+        if state:
+            return state
+    return exc.__class__.__name__
+
+
+class _Settled:
+    """A yes or no reading that changes only once two samples in a row agree,
+    so a failover's sampled reads landing on different survivors don't flap."""
+
+    def __init__(self) -> None:
+        self.value: bool | None = None
+        self._candidate: bool | None = None
+        self._seen = 0
+
+    def observe(self, value: bool) -> bool:
+        """Take one sample; True when the settled value just changed (the
+        first settled value is a baseline, not a change)."""
+        if value == self._candidate:
+            self._seen += 1
+        else:
+            self._candidate, self._seen = value, 1
+        if self._seen < 2 or value == self.value:
+            return False
+        first = self.value is None
+        self.value = value
+        return not first
+
+
+class _Run:
+    def __init__(self, config: LoadConfig):
+        self.config = config
+        self.rng = random.Random()
+        self.stop = threading.Event()
+        self.queue: queue.Queue = queue.Queue(maxsize=max(4, config.workers * 4))
+        self.started: float | None = None
+        self.started_wall: float | None = None
+        self.users: list[LoadUser] = []
+        self.picker: UserPicker | None = None
+        self.runner: Callable[[str, LoadUser, random.Random], tuple[str, int]] | None = None
+        self.mix: tuple[list[str], list[int]] = ([], [])
+        self.threads: list[threading.Thread] = []
+        self.workers: dict[int, threading.Thread] = {}
+        self.errors: deque[tuple[float, str]] = deque()
+        self.last_burst = -1e9
+        self.busy: Counter[str] = Counter()  # customers with an operation in flight
+        self.busy_lock = threading.Lock()
+        self.totals: Counter[str] = Counter()  # outcomes over the whole run (metrics keep 15 minutes)
+        self.set_mix(config.mix())
+
+    def set_mix(self, mix: dict[str, int]) -> None:
+        self.mix = (list(mix), list(mix.values()))
+
+
+class TrafficSimulator:
+    def __init__(self, *, metrics: Metrics | None = None, events: EventBus | None = None, url: str | None = None,
+                 runner: Callable[[str, LoadUser, random.Random], tuple[str, int]] | None = None,
+                 prepare: Callable[[int], list[LoadUser]] | None = None,
+                 sampler: Callable[[LoadUser], str | None] | None = _DEFAULT,
+                 integrity: Callable[[], Any] | None = _DEFAULT, pool_size: int | None = None,
+                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time):
+        self.metrics = metrics or default_metrics
+        self._pool_size = pool_size
+        self.events = events or default_events
+        self.url = url
+        self._runner = runner
+        self._prepare = prepare or self._prepare_users
+        self._sampler = self._sample_serving if sampler is _DEFAULT else sampler
+        self._integrity = self._check_integrity if integrity is _DEFAULT else integrity
+        self._clock, self._wall = clock, wall
+        self._lock = threading.Lock()
+        self._run: _Run | None = None
+        self._state = "idle"
+        self._error: str | None = None
+        self._last_config: LoadConfig | None = None
+        self._serving: dict[str, dict] = {}
+        self._at_home: dict[str, _Settled] = {}
+        self._last_totals: dict[str, int] = {}
+        self._vectors: VectorCache | None = None
+        self._ctx: OpContext | None = None
+
+    # -- defaults ------------------------------------------------------------------------------
+
+    @staticmethod
+    def _prepare_users(count: int) -> list[LoadUser]:
+        from ..services.load_users import prepare
+        return prepare(count)
+
+    def _sample_serving(self, user: LoadUser) -> str | None:
+        """One page-load read for this customer, through their region's pool
+        and naming their region, as the simulated page loads run."""
+        from ..db.regions import read_region
+        from ..services.platform import sample_serving
+        url = self._ctx.url_for(user) if self._ctx else self.url
+        return sample_serving(user.user_id, url=url, region=read_region(user.user_id, url))
+
+    def _context(self, users: list[LoadUser]) -> OpContext:
+        """A pool of the simulator's own per home region, entering the cluster
+        through a node in that region, as a regional deployment of the app
+        serves its customers. Which customers' rows all live at home is
+        checked for everyone at once, so their reads may name their region."""
+        from ..db.engine import get_engine, with_gateway_region
+        from ..db.regions import detect_database_regions, money_tables_regional, prime_rows_home
+        vectors = self._vectors or VectorCache({})
+        if not self.url:
+            return OpContext(url=None, vectors=vectors)
+        regions = sorted(set(detect_database_regions(self.url)) | {u.region for u in users if u.region})
+        urls = {region: with_gateway_region(self.url, region) for region in regions}
+        for url in urls.values():
+            get_engine(url, pool_size=self._pool_size)
+        if urls and money_tables_regional(self.url):
+            prime_rows_home([u.user_id for u in users if u.region], self.url)
+        return OpContext(url=self.url, vectors=vectors, region_urls=urls)
+
+    @staticmethod
+    def _check_integrity() -> Any:
+        from ..services.integrity import run_check
+        return run_check()
+
+    # -- control -------------------------------------------------------------------------------
+
+    @property
+    def config(self) -> LoadConfig | None:
+        with self._lock:
+            return self._run.config if self._run else self._last_config
+
+    def start(self, config: LoadConfig) -> dict:
+        with self._lock:
+            if self._run is not None:
+                raise SimulatorBusy("A load run is already going; stop it first")
+            run = self._run = _Run(config)
+            self._state, self._error, self._last_config = "preparing", None, config
+        threading.Thread(target=self._boot, args=(run,), name="banko-load-boot", daemon=True).start()
+        return self.status()
+
+    def apply(self, config: LoadConfig) -> dict:
+        with self._lock:
+            run = self._run
+            if run is None or self._state != "running":
+                raise LoadConfigError("Start the load first; there is nothing running to change")
+            old, run.config, self._last_config = run.config, config, config
+            run.set_mix(config.mix())
+        run.queue.maxsize = max(4, config.workers * 4)
+        if config.workers > old.workers:
+            self._spawn_workers(run)
+        if config.users != len(run.users):
+            threading.Thread(target=self._resize_users, args=(run, config.users), name="banko-load-users",
+                             daemon=True).start()
+        self.events.publish(f"Load changed: {config.describe()}", source="load")
+        return self.status()
+
+    def stop(self, timeout: float = 5.0, *, run: _Run | None = None) -> dict:
+        with self._lock:
+            current = self._run
+            if current is None or (run is not None and run is not current) or self._state == "stopping":
+                return self._status_locked()
+            self._state = "stopping"
+        current.stop.set()
+        deadline = self._clock() + timeout
+        me = threading.current_thread()
+        for t in list(current.threads):
+            if t is not me:
+                t.join(max(0.0, deadline - self._clock()))
+        with current.busy_lock:
+            totals = dict(current.totals)
+        with self._lock:
+            self._last_totals = totals
+            if self._run is current:
+                self._run, self._state = None, "idle"
+        if current.started is not None:
+            elapsed = self._clock() - current.started
+            done = totals.get("ok", 0) + totals.get("declined", 0)
+            self.events.publish(f"Load stopped after {elapsed:.0f} s: {done:,} operations, "
+                                f"{totals.get('error', 0):,} errors, {totals.get('dropped', 0):,} dropped",
+                                source="load")
+        return self.status()
+
+    def totals(self) -> dict[str, int]:
+        """Outcomes (ok, declined, error, dropped) over the whole of the run
+        in progress, or of the last one."""
+        with self._lock:
+            run = self._run
+            last = self._last_totals
+        if run is None:
+            return dict(last)
+        with run.busy_lock:
+            return dict(run.totals)
+
+    def status(self) -> dict:
+        with self._lock:
+            return self._status_locked()
+
+    def _status_locked(self) -> dict:
+        run = self._run
+        config = run.config if run else self._last_config
+        return {"state": self._state, "error": self._error, "config": config.as_dict() if config else None,
+                "started_at": run.started_wall if run else None,
+                "elapsed_s": round(self._clock() - run.started, 1) if run and run.started else 0.0,
+                "users_ready": len(run.users) if run else 0, "serving": dict(self._serving)}
+
+    # -- the run -------------------------------------------------------------------------------
+
+    def _boot(self, run: _Run) -> None:
+        step = "users"
+        try:
+            if self.url and self._pool_size:  # the simulator's own pool, created on its first run
+                from ..db.engine import get_engine
+                get_engine(self.url, pool_size=self._pool_size)
+            users = list(self._prepare(run.config.users))[:run.config.users]
+            if not users:
+                raise RuntimeError("no load users")
+            run.rng.shuffle(users)
+            if self._runner is None:
+                step = "model"
+                self._vectors = self._vectors or VectorCache.build()
+                step = "users"
+                ctx = self._ctx = self._context(users)
+                run.runner = lambda op, user, rng: run_op(op, user, ctx, rng)
+            else:
+                run.runner = self._runner
+            run.users, run.picker = users, UserPicker(users)
+        except Exception:
+            log.warning("load could not start (%s)", step, exc_info=True)
+            error, event = ((("The embedding model could not be loaded, so load cannot start: the server log "
+                              "has the reason."), "Load could not start: the embedding model could not be loaded.")
+                            if step == "model" else
+                            ("Load users could not be prepared: check that the database is reachable.",
+                             "Load could not start: the load users could not be prepared."))
+            with self._lock:
+                if self._run is run:
+                    self._run, self._state = None, "idle"
+                    self._error = error
+            self.events.publish(event, level="bad", source="load")
+            return
+        with self._lock:
+            if self._run is not run or run.stop.is_set():
+                return
+            run.started, run.started_wall = self._clock(), self._wall()
+            self._state = "running"
+        self.events.publish(f"Load started: {run.config.describe()}", source="load")
+        for name, target in (("banko-load-scheduler", self._schedule), ("banko-load-integrity", self._watch_integrity),
+                             ("banko-load-serving", self._watch_serving)):
+            t = threading.Thread(target=target, args=(run,), name=name, daemon=True)
+            run.threads.append(t)
+            t.start()
+        self._spawn_workers(run)
+
+    def _spawn_workers(self, run: _Run) -> None:
+        for index in range(run.config.workers):
+            t = run.workers.get(index)
+            if t is None or not t.is_alive():
+                t = threading.Thread(target=self._work, args=(run, index), name=f"banko-load-worker-{index}",
+                                     daemon=True)
+                run.workers[index] = t
+                run.threads.append(t)
+                t.start()
+
+    def _resize_users(self, run: _Run, count: int) -> None:
+        try:
+            users = list(self._prepare(count))[:count] if count > len(run.users) else run.users[:count]
+            run.rng.shuffle(users)
+            run.users, run.picker = users, UserPicker(users)
+        except Exception:
+            log.warning("could not resize the load users", exc_info=True)
+
+    def _schedule(self, run: _Run) -> None:
+        rng = random.Random(run.rng.random())
+        next_at = self._clock()
+        while not run.stop.is_set():
+            cfg = run.config
+            elapsed = self._clock() - (run.started or self._clock())
+            if cfg.duration_s is not None and elapsed >= cfg.duration_s:
+                self.stop(run=run)
+                return
+            ramp = min(1.0, 0.1 + 0.9 * elapsed / cfg.ramp_s) if cfg.ramp_s else 1.0
+            next_at += rng.expovariate(cfg.rate * ramp)
+            delay = next_at - self._clock()
+            if delay > 0:
+                if run.stop.wait(delay):
+                    return
+            elif delay < -1.0:  # fell a second behind (a pause): catch up from now, no burst
+                next_at = self._clock()
+            ops, weights = run.mix
+            picker = run.picker
+            if picker is None:  # never once running: boot sets it before the scheduler starts
+                return
+            op, user = rng.choices(ops, weights)[0], picker.pick(rng)
+            try:
+                run.queue.put_nowait((op, user, next_at))
+            except queue.Full:
+                self._record(op, user, outcome="dropped", run=run)
+
+    def _work(self, run: _Run, index: int) -> None:
+        rng = random.Random(run.rng.random() + index)
+        runner = run.runner
+        if runner is None:  # never once running: boot sets it before any worker starts
+            return
+        while not run.stop.is_set() and index < run.config.workers:
+            try:
+                op, user, intended = run.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            user = self._claim(run, user, rng)
+            error_class = None
+            try:
+                outcome, retries = runner(op, user, rng)
+            except Exception as exc:  # recorded by class; the run goes on
+                outcome, retries, error_class = "error", getattr(exc, "client_retries", 0), error_class_of(exc)
+                log.debug("load operation %s failed: %s", op, error_class)
+            finally:
+                with run.busy_lock:
+                    run.busy[user.user_id] -= 1
+            self._record(op, user, outcome=outcome, ms=(self._clock() - intended) * 1000,
+                         error_class=error_class, retries=retries, run=run)
+            if error_class:
+                self._note_error(run, error_class)
+
+    @staticmethod
+    def _claim(run: _Run, user: LoadUser, rng: random.Random) -> LoadUser:
+        """The customer an arrival drew, or, while they are busy, another
+        free one from the same skew: a customer is one person doing one
+        thing at a time, so nobody queues on their own account locks. With
+        more operations in flight than customers, someone busy goes again."""
+        picker = run.picker
+        with run.busy_lock:
+            for _ in range(_FREE_PICKS):
+                if not run.busy[user.user_id] or picker is None:
+                    break
+                user = picker.pick(rng)
+            else:
+                user = next((u for u in run.users if not run.busy[u.user_id]), user)
+            run.busy[user.user_id] += 1
+        return user
+
+    def _record(self, op: str, user: LoadUser, *, outcome: str, ms: float | None = None,
+                error_class: str | None = None, retries: int = 0, run: _Run | None = None) -> None:
+        if run is not None:
+            with run.busy_lock:
+                run.totals[outcome] += 1
+        for series in ("load", f"load.op.{op}", f"load.region.{user.region or 'all'}"):
+            self.metrics.record(series, ms=ms, outcome=outcome, error_class=error_class, retries=retries)
+
+    def _note_error(self, run: _Run, error_class: str) -> None:
+        now = self._clock()
+        with self._lock:
+            run.errors.append((now, error_class))
+            while run.errors and run.errors[0][0] < now - 10:
+                run.errors.popleft()
+            if len(run.errors) < 5 or now - run.last_burst < 10:
+                return
+            run.last_burst = now
+            count = len(run.errors)
+            top = Counter(c for _, c in run.errors).most_common(1)[0][0]
+        self.events.publish(f"{count} operations failed in the last 10 s, mostly {_ERROR_WORDS.get(top, top)}",
+                            level="warn", source="load")
+
+    def _watch_integrity(self, run: _Run) -> None:
+        if self._integrity is None:
+            return
+        drifted_before = skipped_said = False
+        while not run.stop.wait(get_config().load_integrity_interval_seconds):
+            try:
+                report = self._integrity()
+            except Exception:
+                log.warning("integrity check during load failed", exc_info=True)
+                continue
+            skipped = getattr(report, "skipped", None)
+            if skipped and not skipped_said:
+                skipped_said = True
+                self.events.publish(f"Money integrity check skipped: {skipped}", level="warn", source="integrity")
+            drifted = bool(report is not None and getattr(report, "drifted", ()))
+            if drifted:
+                self.events.publish(f"Money integrity: {len(report.drifted)} accounts drifted", level="bad",
+                                    source="integrity")
+            elif drifted_before:
+                self.events.publish("Money integrity: zero drift again", level="good", source="integrity")
+            drifted_before = drifted
+
+    def _watch_serving(self, run: _Run) -> None:
+        if self._sampler is None:
+            return
+        rng = random.Random(run.rng.random())
+        while not run.stop.wait(get_config().load_serving_sample_seconds):
+            by_region: dict[str, list[LoadUser]] = {}
+            for u in run.users:
+                if u.region:
+                    by_region.setdefault(u.region, []).append(u)
+            for region, users in sorted(by_region.items()):
+                try:
+                    served = self._sampler(rng.choice(users))
+                except Exception:
+                    log.debug("serving region sample failed", exc_info=True)
+                    continue
+                if served:
+                    self._observe_serving(region, served)
+
+    def _observe_serving(self, region: str, served: str) -> None:
+        """Record which regions served a sampled read of this region's
+        customers. The feed says when their reads leave home and when they
+        are back, not every survivor in between."""
+        with self._lock:
+            self._serving[region] = {"served_by": served, "at": self._wall()}
+            at_home = self._at_home.setdefault(region, _Settled())
+            changed = at_home.observe(served == region)
+        if changed and at_home.value:
+            self.events.publish(f"Reads for {region} customers are served in {region} again", level="good",
+                                source="load")
+        elif changed:
+            self.events.publish(f"Reads for {region} customers now served by {served}", level="warn", source="load")
+
+
+_simulator: TrafficSimulator | None = None
+_simulator_lock = threading.Lock()
+
+
+def get_simulator() -> TrafficSimulator:
+    """The process's simulator, on banko-load pools of its own (one per home
+    region on a multi-region cluster), sized for LOAD_MAX_WORKERS and created
+    on the first run, so asking for its status never connects. It connects
+    as the database owner, as the seeder does: on CockroachDB 26.3 row-level
+    security puts a policy lookup in every statement's plan and keeps region
+    filters out of the scan."""
+    global _simulator
+    with _simulator_lock:
+        if _simulator is None:
+            from ..db.engine import with_application_name, with_operation_timeout
+            cfg = get_config()
+            url = with_operation_timeout(with_application_name(cfg.database_url, "banko-load"),
+                                         cfg.load_operation_timeout_seconds)
+            _simulator = TrafficSimulator(url=url, pool_size=cfg.load_max_workers + 2)
+        return _simulator
+
+
+def stop_simulator() -> None:
+    """Stop the process's simulator if one ran (app shutdown)."""
+    with _simulator_lock:
+        sim = _simulator
+    if sim is not None:
+        sim.stop(timeout=2.0)
+

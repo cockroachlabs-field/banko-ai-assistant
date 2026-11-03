@@ -1,0 +1,182 @@
+"""Per-user caches: never across users, never across data versions, and the
+vector index really serves the answer cache lookup."""
+
+import os
+import uuid
+
+import pytest
+from sqlalchemy import text
+
+from banko_ai.db.engine import get_engine
+from banko_ai.services import caches as C
+from banko_ai.services import ledger
+from banko_ai.services._vector import embed, nearest
+from tests._money import drop_user, make_user
+
+pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
+
+
+@pytest.fixture
+def two():
+    a, b = make_user(), make_user()
+    yield a, b
+    with get_engine().begin() as c:
+        for t in ("answer_cache", "search_cache"):
+            c.execute(text(f"DELETE FROM {t} WHERE user_id = ANY(CAST(:u AS UUID[]))"), {"u": [a, b]})
+    drop_user(a)
+    drop_user(b)
+
+
+def test_search_cache_key_changes_with_version_and_user():
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    payload = {"q": "coffee", "limit": 10}
+    assert C.search_key(a, 1, payload) != C.search_key(a, 2, payload)
+    assert C.search_key(a, 1, payload) != C.search_key(b, 1, payload)
+    assert C.search_key(a, 1, payload) == C.search_key(a, 1, dict(reversed(list(payload.items()))))
+
+
+def test_search_cache_round_trip_is_per_user(two):
+    a, b = two
+    key = C.search_key(a, 0, {"q": "coffee"})
+    C.put_search(a, key, [{"merchant": "Blue Bottle"}])
+    assert C.get_search(a, key) == [{"merchant": "Blue Bottle"}]
+    assert C.get_search(b, key) is None
+
+
+def test_answer_cache_is_per_user_and_version(two):
+    a, b = two
+    q = "where do I spend the most on coffee"
+    qv = embed(q)
+    v = ledger.data_version(a)
+    C.put_answer(a, version=v, language="English", query=q, qvec=qv, answer="Mostly Blue Bottle.", tokens=40)
+    same = "Where do I spend the most  on coffee?"
+    hit = C.get_answer(a, version=v, language="English", query=same, qvec=embed(same))
+    assert hit and hit["answer"] == "Mostly Blue Bottle." and hit["tokens"] == 40
+    assert C.get_answer(b, version=v, language="English", query=q, qvec=qv) is None
+    assert C.get_answer(a, version=v + 1, language="English", query=q, qvec=qv) is None
+    assert C.get_answer(a, version=v, language="French", query=q, qvec=qv) is None
+
+
+def test_answer_cache_ignores_unrelated_questions(two):
+    a, _ = two
+    v = ledger.data_version(a)
+    C.put_answer(a, version=v, language="English", query="coffee spend", qvec=embed("coffee spend"),
+                 answer="x", tokens=1)
+    assert C.get_answer(a, version=v, language="English", query="what is my rent",
+                        qvec=embed("what is my rent")) is None
+
+
+@pytest.mark.parametrize("cached_q, asked_q", [
+    ("what bills are due next week?", "what bills are due this week?"),
+    ("what are my biggest subscriptions?", "what are my cheapest subscriptions?"),
+    ("where do I spend the most on coffee", "where do I spend most on coffee"),
+])
+def test_a_near_question_is_not_the_same_question(two, cached_q, asked_q):
+    """Vectors find the candidates; only the same question, give or take
+    case, spacing and punctuation, replays its answer."""
+    a, _ = two
+    v = ledger.data_version(a)
+    C.put_answer(a, version=v, language="English", query=cached_q, qvec=embed(cached_q), answer="cached", tokens=5)
+    assert C.get_answer(a, version=v, language="English", query=asked_q, qvec=embed(asked_q)) is None
+    again = cached_q.upper().rstrip("?") + " ?"
+    assert C.get_answer(a, version=v, language="English", query=again, qvec=embed(again))["answer"] == "cached"
+
+
+def test_normalized_question():
+    assert C.normalize_question("  What's  my BIGGEST bill?! ") == "whats my biggest bill"
+    assert C.normalize_question("due next week") != C.normalize_question("due this week")
+
+
+def test_nearest_uses_the_per_user_vector_index(two):
+    a, _ = two
+    with get_engine().connect() as c:
+        plan = "\n".join(r[0] for r in c.execute(text(
+            "EXPLAIN SELECT cache_id FROM answer_cache@answer_cache_user_embedding "
+            f"WHERE user_id = '{a}' ORDER BY query_embedding <=> '{embed('x')}' LIMIT 5")))
+    assert "vector search" in plan
+
+
+def test_nearest_returns_nothing_for_a_user_without_rows(two):
+    a, _ = two
+    with get_engine().connect() as c:
+        assert nearest(c, table="answer_cache", index="answer_cache_user_embedding",
+                       exact_index="answer_cache_user_idx", id_col="cache_id", emb_col="query_embedding",
+                       user_id=a, qvec=embed("x"), k=5) == []
+
+
+class _OneRowIndex:
+    """A connection on which the per-user vector index answers with one row,
+    the way v26.3 did for one user on a REGIONAL BY ROW table."""
+
+    def __init__(self, conn, index):
+        self.conn, self.index = conn, index
+
+    def execute(self, clause, params=None):
+        sql = str(clause)
+        if f"@{self.index}" in sql and "LIMIT :k" in sql:
+            clause = text(sql.replace("LIMIT :k", "LIMIT 1"))
+        return self.conn.execute(clause, params)
+
+
+def test_nearest_ranks_exactly_when_the_index_comes_back_short(two):
+    a, _ = two
+    for q in ("coffee spend", "grocery total", "rent due"):
+        C.put_answer(a, version=1, language="English", query=q, qvec=embed(q), answer=q, tokens=1)
+    with get_engine().connect() as c:
+        found = nearest(_OneRowIndex(c, "answer_cache_user_embedding"), table="answer_cache",
+                        index="answer_cache_user_embedding", exact_index="answer_cache_user_idx",
+                        id_col="cache_id", emb_col="query_embedding", user_id=a, qvec=embed("coffee"), k=3)
+    assert len(found) == 3
+    assert [d for _, d in found] == sorted(d for _, d in found)
+
+
+def test_record_stat_feeds_cache_stats_behind_the_request(monkeypatch):
+    """cache_stats lives in the primary region; the lookup that counts a hit
+    never waits on that write."""
+    import threading
+    caller, opened, real = threading.current_thread(), [], C.get_engine
+    monkeypatch.setattr(C, "get_engine", lambda url=None, **kw: opened.append(threading.current_thread()) or real(url, **kw))
+    with real().connect() as c:
+        before = c.execute(text("SELECT count(*) FROM cache_stats WHERE cache_type = 'answer'")).scalar()
+    C.record_stat("answer", "hit", 12)
+    assert caller not in opened
+    C.flush_stats()
+    with real().connect() as c:
+        after = c.execute(text("SELECT count(*) FROM cache_stats WHERE cache_type = 'answer'")).scalar()
+    assert after == before + 1 and opened and caller not in opened
+
+
+def test_estimate_tokens():
+    assert C.estimate_tokens("") == 0
+    assert C.estimate_tokens("a" * 400) == 100
+
+
+def test_answer_cache_write_retires_older_versions(two):
+    a, _ = two
+    q = "coffee spend"
+    qv = embed(q)
+    C.put_answer(a, version=1, language="English", query=q, qvec=qv, answer="old answer", tokens=10)
+    C.put_answer(a, version=2, language="English", query=q, qvec=qv, answer="new answer", tokens=20)
+    with get_engine().connect() as c:
+        old_count = c.execute(text(
+            "SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID) AND data_version = 1"
+        ), {"u": a}).scalar()
+    assert old_count == 0
+    hit = C.get_answer(a, version=2, language="English", query=q, qvec=qv)
+    assert hit and hit["answer"] == "new answer"
+
+
+def test_a_narrative_keeps_the_answer_caches_lifetime(two):
+    """The search cache's 10 minutes suit a search window someone pages
+    through; a narrative is keyed by the data version and its exact figures,
+    so it keeps as long as a cached answer (CACHE_TTL_HOURS)."""
+    from banko_ai.config.settings import get_config
+
+    a, _ = two
+    key = C.search_key(a, 1, {"agg": ["sum", "Coffee", 21], "lang": "English"})
+    C.put_search(a, key, [{"answer": "You spent $162.27"}], stat="narrative",
+                 minutes=get_config().cache_ttl_hours * 60)
+    with get_engine().connect() as c:
+        lifetime = c.execute(text("SELECT expires_at - created_at FROM search_cache WHERE cache_key = :k"),
+                             {"k": key}).scalar()
+    assert lifetime.total_seconds() == get_config().cache_ttl_hours * 3600

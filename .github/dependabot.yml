@@ -1,16 +1,23 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # The uv ecosystem updates uv.lock with the bump. The pip ecosystem only
+  # edited pyproject.toml (PR #70), which `make lockcheck` rejects as drift.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
     groups:
       dependencies:
+        applies-to: version-updates
         patterns:
           - "*"
         update-types:
           - "minor"
           - "patch"
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "github-actions"

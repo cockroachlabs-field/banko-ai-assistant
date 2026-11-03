@@ -7,7 +7,8 @@ import os
 import pytest
 from sqlalchemy import create_engine, text
 
-from banko_ai.utils.migration import DatabaseMigration, detect_regions
+from banko_ai.db.regions import detect_regions
+from banko_ai.utils.migration import DatabaseMigration
 
 DB = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")

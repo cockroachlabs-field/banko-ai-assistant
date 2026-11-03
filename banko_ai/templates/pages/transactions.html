@@ -1,0 +1,44 @@
+{% extends "layout.html" %}
+{% from "components/icons.html" import icon %}
+{% block title %}Transactions{% endblock %}
+{% block content %}
+<section x-data="transactionsPage" x-init="load()">
+  <div class="b-page-h"><h1>Transactions</h1><div class="sp"></div>
+    <button class="b-btn primary" type="button" @click="Banko.emit('banko:pick-receipt', {})">🧾 Add receipt</button></div>
+  <form class="b-search" style="margin-top:12px" @submit.prevent="search()">
+    {{ icon('search') }}<input x-model="q" placeholder="Search by meaning, like coffee near the office" aria-label="Search transactions">
+    <span class="b-tag" x-show="semantic" x-text="'✦ Semantic · your vector index · ' + searchMs + ' ms'"></span>
+    <button class="b-btn sm ghost" type="button" x-show="semantic" @click="q = ''; load()">{{ icon('x') }}Clear</button>
+  </form>
+  <div class="b-filters" style="margin-top:10px" x-show="!semantic">
+    <template x-for="r in ranges" :key="r.key"><button type="button" class="b-f" :class="{ on: range === r.key }" @click="range = r.key; load()" x-text="r.label"></button></template>
+    <select class="b-select" style="width:auto" x-model="kind" @change="load()" aria-label="Kind">
+      <option value="">Everything</option><option value="purchase">Purchases</option><option value="income">Income</option><option value="transfer_out">Transfers out</option><option value="transfer_in">Transfers in</option>
+    </select>
+    <select class="b-select" style="width:auto" x-model="category" @change="load()" aria-label="Category">
+      <option value="">All categories</option>
+      <template x-for="c in categories" :key="c.key"><option :value="c.label" x-text="c.label"></option></template>
+    </select>
+  </div>
+  <template x-if="error"><div class="b-card b-empty" style="margin-top:12px"><strong x-text="error"></strong></div></template>
+  <div class="b-card" style="margin-top:12px">
+    <template x-for="group in grouped()" :key="group.label">
+      <div>
+        <div class="b-day" x-text="group.label"></div>
+        <template x-for="t in group.items" :key="t.id">
+          <button type="button" class="b-tx" :class="{ sel: selected === (t.expense_id || t.id) }" @click="Banko.emit('banko:open-transaction', { id: t.expense_id || t.id })">
+            <span class="b-m" :style="'background:' + Banko.monogram(t.merchant || t.description).color" x-text="Banko.monogram(t.merchant || t.description).letters"></span>
+            <span><div class="b-name" x-text="t.merchant || t.description"></div><div class="b-muted" x-text="t.description"></div></span>
+            <span class="b-chip" x-text="(t.category_icon || '') + ' ' + (t.category_label || '')"></span>
+            <span class="b-amt" :class="{ pos: t.amount > 0 }" x-text="Banko.fmt.money(t.amount, { sign: true })"></span>
+          </button>
+        </template>
+      </div>
+    </template>
+    <div class="b-empty" x-show="loaded && !items.length"><strong>Nothing here</strong><span x-text="semantic ? 'No purchases match that meaning.' : 'No transactions in this range yet.'"></span></div>
+    <div style="text-align:center;margin-top:10px" x-show="next"><button class="b-btn" type="button" @click="more()" :disabled="busy">Load more</button></div>
+  </div>
+</section>
+{% include "components/transaction_drawer.html" %}
+{% endblock %}
+{% block page_scripts %}<script src="{{ url_for('static', filename='js/pages/transactions.js') }}"></script>{% endblock %}

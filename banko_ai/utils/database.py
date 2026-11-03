@@ -4,8 +4,6 @@ Database management utilities.
 This module provides database schema creation and management functionality.
 """
 
-import os
-from typing import Optional
 
 from .db_retry import create_resilient_engine, get_database_url
 
@@ -32,157 +30,13 @@ class DatabaseManager:
         return self._engine
     
     def create_tables(self) -> bool:
-        """Create all required tables including agent tables."""
+        """Apply the schema registry (a single SELECT when it is current)."""
+        from ..db.schema import ensure_schema
         try:
-            from sqlalchemy import text
-            
-            print("🔧 Creating database tables...")
-            
-            with self.engine.connect() as conn:
-                # Create expenses table with vector support
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS expenses (
-                        expense_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        user_id UUID NOT NULL,
-                        expense_date DATE NOT NULL,
-                        expense_amount DECIMAL(10,2) NOT NULL,
-                        shopping_type STRING NOT NULL,
-                        description STRING,
-                        merchant STRING,
-                        payment_method STRING NOT NULL,
-                        recurring BOOL DEFAULT false,
-                        tags STRING[],
-                        embedding VECTOR(384),
-                        created_at TIMESTAMPTZ DEFAULT now()
-                    )
-                """))
-                
-                # Create vector index for general search
-                conn.execute(text("""
-                    CREATE VECTOR INDEX IF NOT EXISTS idx_expenses_embedding 
-                    ON expenses (embedding vector_cosine_ops)
-                """))
-                
-                # Create user-specific vector index
-                conn.execute(text("""
-                    CREATE VECTOR INDEX IF NOT EXISTS idx_expenses_user_embedding 
-                    ON expenses (user_id, embedding vector_cosine_ops)
-                """))
-                
-                # Create additional indexes for common queries
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_expenses_user_date 
-                    ON expenses (user_id, expense_date DESC)
-                """))
-                
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_expenses_merchant 
-                    ON expenses (merchant)
-                """))
-                
-                conn.execute(text("""
-                    CREATE INDEX IF NOT EXISTS idx_expenses_shopping_type 
-                    ON expenses (shopping_type)
-                """))
-                
-                # Create agent tables
-                print("  📊 Creating agent tables...")
-                
-                # Agent state
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS agent_state (
-                        agent_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        agent_type STRING NOT NULL,
-                        region STRING NOT NULL,
-                        status STRING NOT NULL DEFAULT 'idle',
-                        current_task JSONB,
-                        last_heartbeat TIMESTAMPTZ DEFAULT now(),
-                        metadata JSONB,
-                        created_at TIMESTAMPTZ DEFAULT now()
-                    )
-                """))
-                
-                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_state_region_status ON agent_state (region, status)"))
-                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_state_type ON agent_state (agent_type, status)"))
-                
-                # Agent memory
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS agent_memory (
-                        memory_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        agent_id UUID REFERENCES agent_state(agent_id) ON DELETE CASCADE,
-                        user_id STRING,
-                        memory_type STRING NOT NULL,
-                        content TEXT NOT NULL,
-                        embedding VECTOR(384),
-                        metadata JSONB,
-                        created_at TIMESTAMPTZ DEFAULT now(),
-                        accessed_at TIMESTAMPTZ DEFAULT now(),
-                        access_count INT DEFAULT 0
-                    )
-                """))
-                
-                # Agent decisions
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS agent_decisions (
-                        decision_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        agent_id UUID REFERENCES agent_state(agent_id),
-                        decision_type STRING NOT NULL,
-                        context JSONB NOT NULL,
-                        reasoning TEXT,
-                        action JSONB,
-                        confidence FLOAT,
-                        user_feedback STRING,
-                        created_at TIMESTAMPTZ DEFAULT now(),
-                        feedback_at TIMESTAMPTZ
-                    )
-                """))
-                
-                # Agent tasks
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS agent_tasks (
-                        task_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        source_agent_id UUID REFERENCES agent_state(agent_id),
-                        target_agent_id UUID REFERENCES agent_state(agent_id),
-                        task_type STRING NOT NULL,
-                        priority INT DEFAULT 5,
-                        payload JSONB,
-                        status STRING DEFAULT 'pending',
-                        region STRING,
-                        created_at TIMESTAMPTZ DEFAULT now(),
-                        started_at TIMESTAMPTZ,
-                        completed_at TIMESTAMPTZ,
-                        result JSONB,
-                        error TEXT
-                    )
-                """))
-                
-                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks (status, priority DESC, created_at)"))
-                
-                # Documents
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS documents (
-                        document_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                        user_id STRING NOT NULL,
-                        document_type STRING NOT NULL,
-                        s3_key STRING,
-                        original_filename STRING,
-                        extracted_text TEXT,
-                        extracted_data JSONB,
-                        embedding VECTOR(384),
-                        processing_status STRING DEFAULT 'pending',
-                        created_at TIMESTAMPTZ DEFAULT now(),
-                        processed_at TIMESTAMPTZ
-                    )
-                """))
-                
-                conn.execute(text("CREATE INDEX IF NOT EXISTS idx_documents_user_type ON documents (user_id, document_type, created_at DESC)"))
-                
-                print("  ✅ Agent tables created")
-                
-                conn.commit()
-                print("✅ All database tables created successfully")
-                return True
-                
+            result = ensure_schema(self.database_url)
+            print("✅ Database schema current" if not result.changed
+                  else f"✅ Database schema applied ({result.statements} statements, {result.seconds:.1f}s)")
+            return True
         except Exception as e:
             print(f"❌ Error creating tables: {e}")
             return False

@@ -5,7 +5,13 @@ A modern Python package for AI-powered expense analysis using CockroachDB vector
 and multi-provider AI support (OpenAI, AWS Bedrock, IBM Watsonx, Google Gemini).
 """
 
-__version__ = "1.0.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("banko-ai-assistant")
+except PackageNotFoundError:  # running from a source tree that was never installed
+    __version__ = "0.0.0"
+
 __author__ = "Virag Tripathi"
 __email__ = "virag.tripathi@gmail.com"
 

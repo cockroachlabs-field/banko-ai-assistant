@@ -8,9 +8,7 @@ import json
 import os
 from typing import Any
 
-import psycopg2
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy import text
 
 from banko_ai.utils.embeddings import load_embedding_model
 
@@ -22,6 +20,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
+from ..config.settings import get_config
 from ..utils.db_retry import TRANSIENT_ERRORS, create_resilient_engine, db_retry, get_database_url
 from .base import AIAuthenticationError, AIConnectionError, AIProvider, RAGResponse, SearchResult
 from .rag_prompts import build_banko_rag_prompt
@@ -39,9 +38,10 @@ class GeminiProvider(AIProvider):
 
         self.cache_manager = cache_manager
 
-        self.project_id = config.get("project_id") or os.getenv("GOOGLE_PROJECT_ID")
-        self.location = config.get("location") or os.getenv("GOOGLE_LOCATION", "us-central1")
-        self.model_name = config.get("model") or os.getenv("GOOGLE_MODEL", "gemini-2.0-flash-001")
+        cfg = get_config()
+        self.project_id = config.get("project_id") or cfg.google_project_id
+        self.location = config.get("location") or cfg.google_location
+        self.model_name = config.get("model") or cfg.google_model
         self.embedding_model = None
         self.db_engine = None
         self.genai_client = None
@@ -62,8 +62,9 @@ class GeminiProvider(AIProvider):
         if not self.project_id:
             raise AIAuthenticationError("Google project ID is required")
 
-        credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        api_key = os.getenv("GOOGLE_API_KEY")
+        cfg = get_config()
+        credentials_path = cfg.google_application_credentials
+        api_key = cfg.google_api_key
 
         try:
             if credentials_path and os.path.exists(credentials_path):
@@ -111,16 +112,17 @@ class GeminiProvider(AIProvider):
 
     def get_available_models(self) -> list[str]:
         """Get available Gemini models. Override with GEMINI_MODELS env var or auto-discover from API."""
-        extra = os.getenv("GEMINI_MODELS", "")
+        cfg = get_config()
+        extra = cfg.gemini_models
         if extra:
             return [m.strip() for m in extra.split(",") if m.strip()]
-        
+
         if GEMINI_AVAILABLE:
             try:
                 # Use existing client, or create one matching the auth method
                 client = self.genai_client
                 if not client:
-                    api_key = os.getenv("GOOGLE_API_KEY")
+                    api_key = cfg.google_api_key
                     if api_key:
                         client = genai.Client(api_key=api_key)
                     elif self.project_id:
@@ -150,7 +152,7 @@ class GeminiProvider(AIProvider):
         if self.embedding_model is None:
             try:
                 # Use configurable embedding model from environment or default
-                embedding_model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+                embedding_model_name = get_config().embedding_model
                 self.embedding_model = load_embedding_model(embedding_model_name)
             except Exception as e:
                 raise AIConnectionError(f"Failed to load embedding model: {str(e)}")
@@ -185,7 +187,7 @@ class GeminiProvider(AIProvider):
                 print("2. Embedding generated (with cache support)")
                 
                 # Check vector_search_cache for cached results
-                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit)
+                cached_results = self.cache_manager.get_cached_vector_search(query_embedding, limit, scope=str(user_id or ''))
                 if cached_results:
                     print(f"3. ✅ Vector search cache HIT! Found {len(cached_results)} cached results")
                     # Convert cached dict results to SearchResult objects
@@ -279,7 +281,7 @@ class GeminiProvider(AIProvider):
                         'shopping_type': r.metadata.get('shopping_type') if r.metadata else 'Unknown',
                         'payment_method': r.metadata.get('payment_method') if r.metadata else 'Unknown'
                     })
-                self.cache_manager.cache_vector_search_results(query_embedding, cache_results)
+                self.cache_manager.cache_vector_search_results(query_embedding, cache_results, scope=str(user_id or ''))
                 print(f"5. ✅ Cached {len(cache_results)} results in vector_search_cache")
 
             return results
@@ -631,8 +633,10 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
 
         except Exception as e:
             # Return a structured error response like WatsonX does
+            from .display import NEUTRAL_UNAVAILABLE
+            print(f"Sorry, I'm experiencing technical difficulties with Google Gemini. Error: {str(e)}")
             return RAGResponse(
-                response=f"Sorry, I'm experiencing technical difficulties with Google Gemini. Error: {str(e)}",
+                response=NEUTRAL_UNAVAILABLE,
                 sources=context,
                 metadata={
                     'provider': 'gemini',
@@ -656,8 +660,10 @@ Based on your expense data, I found {len(context)} relevant records. Here's a co
         """Test Gemini connection by listing models (no tokens consumed)."""
         try:
             if GEMINI_AVAILABLE and self.genai_client:
-                models = list(self.genai_client.models.list())
-                return len(models) > 0
+                # One page of one model with a 5 s timeout (milliseconds here).
+                pager = self.genai_client.models.list(
+                    config={"page_size": 1, "http_options": {"timeout": 5000}})
+                return next(iter(pager), None) is not None
             return False
         except Exception:
             return False

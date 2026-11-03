@@ -1,0 +1,51 @@
+[
+  {
+    "name": "alpinejs",
+    "version": "3.17.4",
+    "file": "vendor/alpine.min.js",
+    "license": "MIT",
+    "sha256": "232519394c6c8fdba6f362b1d9da16106db513cdbf899011f00daab4051df31c"
+  },
+  {
+    "name": "chart.js",
+    "version": "4.5.1",
+    "file": "vendor/chart.umd.min.js",
+    "license": "MIT",
+    "sha256": "48444a82d4edcb5bec0f1965faacdde18d9c17db3063d042abada2f705c9f54a"
+  },
+  {
+    "name": "socket.io-client",
+    "version": "4.8.4",
+    "file": "vendor/socket.io.min.js",
+    "license": "MIT",
+    "sha256": "b9eb7c1fd5436b1ec324493e0b6d1eddf8313eeaf44e5ef6c1040dd82a6b77ea"
+  },
+  {
+    "name": "marked",
+    "version": "18.1.1",
+    "file": "vendor/marked.min.js",
+    "license": "MIT",
+    "sha256": "5ff979053ea15ead591265dc851bdba53e8ed44cb067fe804bca520c455bc5ed"
+  },
+  {
+    "name": "dompurify",
+    "version": "3.4.17",
+    "file": "vendor/purify.min.js",
+    "license": "MPL-2.0 OR Apache-2.0",
+    "sha256": "1bb973289c6a99e511f9209b4159384a6020ead799eca059f065cf213b28e1f3"
+  },
+  {
+    "name": "inter",
+    "version": "4.1",
+    "file": "vendor/fonts/InterVariable.woff2",
+    "license": "OFL-1.1",
+    "sha256": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3"
+  },
+  {
+    "name": "lucide-static",
+    "version": "1.56.0",
+    "file": "vendor/lucide-sprite.svg",
+    "license": "ISC",
+    "sha256": "d404e3bfd35aebee4fa4a954699804e648aaa2148b8e237c956081ab89936c59"
+  }
+]

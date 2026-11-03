@@ -9,7 +9,7 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import create_engine, text
 
-from banko_ai.utils.aggregations import resolve_category, run_aggregation
+from banko_ai.utils.aggregations import _to_pyformat, explain_aggregation, resolve_category, run_aggregation
 from banko_ai.utils.intent_classifier import AggregationIntent
 
 DB = os.getenv("DATABASE_URL")
@@ -46,6 +46,17 @@ def test_resolve_category_fuzzy():
     assert resolve_category("zzzunknownzzz", DB) is None
 
 
+def test_resolve_category_goes_through_the_catalog_first():
+    """The README asks "what did I spend on dining last month?"; every alias
+    in the catalog names its category, and an unknown word names none."""
+    for phrase, label in (("dining", "Restaurant"), ("food", "Restaurant"), ("dining out", "Restaurant"),
+                          ("eating out", "Restaurant"), ("takeout", "Restaurant"), ("gas", "Fuel"),
+                          ("cafe", "Coffee"), ("rideshare", "Transport"), ("streaming", "Subscription"),
+                          ("my groceries", "Groceries"), ("Restaurant", "Restaurant")):
+        assert resolve_category(phrase, DB) == label, phrase
+    assert resolve_category("zorbing", DB) is None
+
+
 def test_sum_respects_window_and_user():
     end = date.today() + timedelta(days=1)
     intent = AggregationIntent("sum", "restaurants",
@@ -62,3 +73,51 @@ def test_count_all_categories():
     intent = AggregationIntent("count", None, end - timedelta(days=61), end)
     r = run_aggregation(intent, USER, DB)
     assert r.count == 4
+
+
+def test_to_pyformat_converts_placeholders():
+    """Test that :name placeholders are converted to %(name)s format."""
+    # Simple case
+    assert _to_pyformat("WHERE a = :u") == "WHERE a = %(u)s"
+    # Multiple placeholders
+    assert _to_pyformat("WHERE a = :u AND b = :s") == "WHERE a = %(u)s AND b = %(s)s"
+    # Word boundary: :start and :start_date should not interfere
+    assert _to_pyformat("WHERE a = :start AND b = :start_date") == "WHERE a = %(start)s AND b = %(start_date)s"
+    # No placeholders
+    assert _to_pyformat("WHERE a = 1") == "WHERE a = 1"
+    # Repeated placeholder
+    assert _to_pyformat("WHERE a = :x OR b = :x") == "WHERE a = %(x)s OR b = %(x)s"
+    # PostgreSQL :: casts should not be treated as placeholders
+    assert _to_pyformat("WHERE d::DATE >= :start AND n = :name") == "WHERE d::DATE >= %(start)s AND n = %(name)s"
+
+
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
+def test_merchant_filter_matches_sql():
+    from datetime import date, timedelta
+
+    from sqlalchemy import text as sql_text
+
+    from banko_ai.config.settings import get_config
+    from banko_ai.db.engine import get_engine
+    from banko_ai.services.seeding import seed_user
+    from banko_ai.utils.aggregations import resolve_merchant
+    from banko_ai.utils.intent_classifier import AggregationIntent
+    from tests._money import drop_user, make_user
+
+    uid = make_user("diner")
+    try:
+        seed_user(uid, months=2, today=date.today())
+        url = get_config().database_url
+        with get_engine().connect() as c:
+            merchant, n = c.execute(sql_text(
+                "SELECT merchant, count(*) FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                "GROUP BY merchant ORDER BY count(*) DESC LIMIT 1"), {"u": uid}).fetchone()
+        assert resolve_merchant(merchant.lower(), uid, url) == merchant
+        assert resolve_merchant("zzzz nothing", uid, url) is None
+        intent = AggregationIntent("count", merchant.lower(), date.today() - timedelta(days=90),
+                                   date.today() + timedelta(days=1))
+        agg = run_aggregation(intent, uid, url, merchant=merchant)
+        assert agg.merchant == merchant and agg.category is None and agg.count == n
+        assert "scan" in explain_aggregation(intent, uid, url, merchant=merchant)
+    finally:
+        drop_user(uid)

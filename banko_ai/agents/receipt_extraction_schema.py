@@ -28,7 +28,14 @@ _PLACEHOLDER_CATEGORY_FRAGMENTS = (
     "or entertainment or",
     "category1",
     "categoryname",
+    "one of:",  # the prompt's "category": "one of: <the catalog's labels>"
 )
+
+
+def _category_echo(category: str) -> bool:
+    """The category is the prompt's template, not a choice: a known
+    fragment, or the list of labels itself (two commas or more)."""
+    return any(f in category for f in _PLACEHOLDER_CATEGORY_FRAGMENTS) or category.count(",") >= 2
 _PLACEHOLDER_PAYMENT_FRAGMENTS = (
     "or debit card or cash or",
     "or cash or other",
@@ -42,15 +49,18 @@ class ReceiptExtraction(BaseModel):
 
     Designed to reject prompt-template echoes (`"date": "YYYY-MM-DD"`,
     `"amount": 0.0`, `"merchant": "store name"`) BEFORE they reach the DB
-    layer, where they would surface as opaque psycopg2 errors.
+    layer, where they would surface as opaque driver errors.
     """
 
     merchant: str = Field(min_length=1)
     amount: float = Field(gt=0)
-    date: datetime.date
+    # Many receipts print no payment method, and some no date a model can
+    # read; the prompt asks for null then. A missing date is today, a
+    # missing payment method None (the ledger uses the account's own).
+    date: datetime.date = Field(default_factory=datetime.date.today)
     category: str = Field(min_length=1)
     items: list[str] = Field(default_factory=list)
-    payment_method: str = Field(min_length=1)
+    payment_method: str | None = None
 
     @field_validator("items", mode="before")
     @classmethod
@@ -65,8 +75,17 @@ class ReceiptExtraction(BaseModel):
     @field_validator("date", mode="before")
     @classmethod
     def reject_placeholder_date(cls, v: Any) -> Any:
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return datetime.date.today()
         if isinstance(v, str) and v.strip() in _PLACEHOLDER_DATE_STRINGS:
             raise ValueError(f"date {v!r} is a prompt-template placeholder")
+        return v
+
+    @field_validator("payment_method", mode="before")
+    @classmethod
+    def blank_payment_method_is_none(cls, v: Any) -> Any:
+        if isinstance(v, str) and not v.strip():
+            return None
         return v
 
     @field_validator("merchant")
@@ -87,8 +106,7 @@ def is_placeholder_payload(payload: dict[str, Any]) -> bool:
         hits += 1
     if str(payload.get("merchant", "")).strip().lower() in _PLACEHOLDER_MERCHANTS:
         hits += 1
-    cat = str(payload.get("category", "")).lower()
-    if any(f in cat for f in _PLACEHOLDER_CATEGORY_FRAGMENTS):
+    if _category_echo(str(payload.get("category", "")).lower()):
         hits += 1
     pm = str(payload.get("payment_method", "")).lower()
     if any(f in pm for f in _PLACEHOLDER_PAYMENT_FRAGMENTS):

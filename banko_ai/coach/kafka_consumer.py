@@ -26,7 +26,7 @@ import logging
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from .handler import SignalHandler
 from .signals import Signal, SignalParseError

@@ -4,148 +4,107 @@ Command-line interface for Banko AI Assistant.
 This module provides CLI commands for running the application and managing data.
 """
 
-import os
 
 import click
 
-from .config.settings import get_config
-from .vector_search.generator import EnhancedExpenseGenerator
-from .web.app import create_app
+from .config.settings import get_config, set_config
+from .db.engine import mask_url
+from .load_cli import load as load_group
 
 
 @click.group()
 @click.pass_context
 def cli(ctx):
-    """Banko AI Assistant - AI-powered expense analysis and RAG system.
-    
-    For detailed configuration and environment variables, run:
-      banko-ai help
-    
+    """Banko AI Assistant: the CockroachDB banking demo.
+
+    \b
     Quick start:
-      export AI_SERVICE=watsonx
-      export DATABASE_URL=cockroachdb://root@localhost:26257/banko_ai
-      banko-ai run
+      banko-ai doctor    is this machine ready?
+      banko-ai run       start the app on http://localhost:5000
+
+    The README covers setup per provider; banko-ai config --docs lists every setting.
     """
     pass
 
 
 @cli.command()
-@click.option('--host', default='0.0.0.0', help='Host to bind to')
-@click.option('--port', default=5000, help='Port to bind to')
+@click.option('--host', default=None, help='Host to bind to')
+@click.option('--port', default=None, type=int, help='Port to bind to')
 @click.option('--debug', is_flag=True, help='Enable debug mode')
-@click.option('--generate-data', type=int, default=5000, help='Generate sample data before starting (default: 5000 records)')
-@click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
-@click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
+@click.option('--no-data', is_flag=True, help='Start without seeding the personas')
 @click.option('--background', is_flag=True, help='Run in background mode (suppress Flask output)')
-def run(host, port, debug, generate_data, no_data, clear_data, background):
+@click.option('--generate-data', hidden=True, default=None)
+@click.option('--clear-data', hidden=True, is_flag=True)
+def run(host, port, debug, no_data, background, generate_data, clear_data):
     """Run the Banko AI Assistant web application."""
-    # Show beautiful startup banner
+    if generate_data is not None:
+        raise click.UsageError("there is no sample data any more: each user's history is seeded. See banko-ai seed.")
+    if clear_data:
+        raise click.UsageError("to start a user over, use banko-ai reset.")
+    config = get_config()
+    host = host or config.host
+    port = port or config.port
     click.echo("🏦 === Banko AI Assistant Starting === 🏦")
-    
-    # Load configuration and show AI service info
-    config = get_config()
-    ai_service = config.ai_service.upper()
-    click.echo(f"🤖 AI Service: {config.ai_service}")
-    
-    # Check AI provider availability
-    try:
-        from .ai_providers.factory import AIProviderFactory
-        ai_config = config.get_ai_config()
-        ai_provider = AIProviderFactory.create_provider(
-            config.ai_service, 
-            ai_config[config.ai_service]
-        )
-        
-        # Test connection and show status
-        if ai_provider.test_connection():
-            click.echo(f"🔧 {ai_service} Available: True")
-            click.echo(f"✅ Active AI Service: {ai_service}")
-        else:
-            click.echo(f"🔧 {ai_service} Available: False")
-            click.echo(f"⚠️  {ai_service} running in demo mode")
-    except Exception:
-        click.echo(f"🔧 {ai_service} Available: False")
-        click.echo(f"⚠️  {ai_service} running in demo mode")
-    
-    click.echo("=" * 44)
-    
-    # Generate data if not explicitly disabled
-    if not no_data:
-        click.echo("🔍 Checking database setup...")
-        click.echo(f"Using database: {config.database_url}")
-        click.echo(f"Generating {generate_data} sample expense records...")
-        generator = EnhancedExpenseGenerator(config.database_url)
-        
-        # Check if data already exists
-        try:
-            existing_count = generator.get_expense_count()
-            if existing_count > 0 and not clear_data:
-                click.echo(f"✅ Database already contains {existing_count} expense records")
-            else:
-                if clear_data:
-                    click.echo("Clearing existing data...")
-                    generator.clear_expenses()
-                
-                actual_count = generator.generate_and_save(generate_data)
-                click.echo(f"✅ Successfully generated {actual_count} expense records")
-        except Exception as e:
-            click.echo(f"❌ Error generating data: {e}")
-            return
+    if config.ai_display_provider:
+        click.echo(f"🤖 AI: shown as {config.ai_display_provider} · {config.ai_display_model or 'default'}, "
+                   f"served by {config.ai_service}")
     else:
-        click.echo("Skipping data generation (--no-data flag used)")
-    
-    # Show startup completion message
-    click.echo(f"🚀 Starting server on http://localhost:{port}")
-    click.echo("🎉 Banko AI is ready to help with your finances!")
+        click.echo(f"🤖 AI Service: {config.ai_service}")
     click.echo("=" * 44)
-    
-    # Create and run the app
+
+    if no_data:
+        # The warm-up's seeding steps read this setting.
+        set_config(config.model_copy(update={"banko_skip_autosetup": True}))
+
+    from .web.app import create_app
+    from .web.server import serve
+
     app = create_app()
-    
+    app.debug = bool(debug or config.debug)  # no reloader: serve() runs in this process
+    readiness = app.extensions["banko_readiness"]
+
+    def announce_when_warm():
+        # The ready line means ready: it waits for every warm-up step.
+        import time
+        while not readiness.finished():
+            time.sleep(0.5)
+        click.echo("🎉 Banko AI is ready to help with your finances!")
+        snap = readiness.snapshot()
+        failed = [name for name, c in snap.items() if c["state"] == "failed"]
+        if failed:
+            click.echo(f"⚠️  Not ready: {', '.join(failed)} (details at /api/health)")
+        for name, c in snap.items():
+            if c["state"] == "degraded":
+                click.echo(f"⚠️  {name}: {c['detail']}")
+
+    def announce(urls):
+        import threading
+        click.echo(f"🚀 Starting server on http://localhost:{port}")
+        click.echo("=" * 44)
+        for url in urls:
+            click.echo(f" * Running on {url}")
+        if background:
+            click.echo("💡 Use 'banko-ai doctor' to check it")
+            click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
+        threading.Thread(target=announce_when_warm, name="banko-ready-line", daemon=True).start()
+
     if background:
-        # Background mode - suppress Flask output
         import logging
-        log = logging.getLogger('werkzeug')
-        log.setLevel(logging.ERROR)
-        
-        # Show final message for background mode
-        click.echo(f"🚀 Banko AI running in background on http://localhost:{port}")
-        click.echo("💡 Use 'banko-ai status' to check if it's running")
-        click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
-    
-    app.run(host=host, port=port, debug=debug)
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+    serve(app, host, port, on_ready=announce)
 
 
-@cli.command()
-@click.option('--count', default=1000, help='Number of records to generate')
-@click.option('--user-id', help='User ID for generated records')
-@click.option('--clear', is_flag=True, help='Clear existing data before generating')
-def generate_data(count, user_id, clear):
-    """Generate sample expense data."""
-    config = get_config()
-    generator = EnhancedExpenseGenerator(config.database_url)
-    
-    click.echo(f"Generating {count} expense records...")
-    
-    generated_count = generator.generate_and_save(
-        count=count,
-        user_id=user_id,
-        clear_existing=clear
-    )
-    
-    click.echo(f"Successfully generated {generated_count} expense records")
+def _moved(name: str, replacement: str, why: str):
+    """A 1.x command kept as a hidden pointer to what replaced it."""
+    @cli.command(name, hidden=True, context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+    def moved():
+        raise click.UsageError(f"{why} Use {replacement}.")
+    moved.__doc__ = f"Moved: use {replacement}."
+    return moved
 
 
-@cli.command()
-def clear_data():
-    """Clear all expense data."""
-    config = get_config()
-    generator = EnhancedExpenseGenerator(config.database_url)
-    
-    if generator.clear_expenses():
-        click.echo("Successfully cleared all expense data")
-    else:
-        click.echo("Failed to clear expense data")
+_moved("generate-data", "banko-ai seed", "there is no sample data any more: each user's history is seeded.")
+_moved("clear-data", "banko-ai reset", "expenses belong to users now.")
 
 
 @cli.command()
@@ -166,11 +125,12 @@ def clear_agents(agents, cache, clear_all):
       banko-ai clear-agents --cache         # Clear only cache
       banko-ai clear-agents --all           # Clear everything
     """
-    from sqlalchemy import create_engine, text
-    from sqlalchemy.pool import NullPool
-    
+    from sqlalchemy import text
+
+    from .db.engine import get_engine
+
     config = get_config()
-    engine = create_engine(config.database_url, poolclass=NullPool)
+    engine = get_engine(config.database_url)
     
     tables_cleared = []
     
@@ -216,367 +176,182 @@ def clear_agents(agents, cache, clear_all):
                         click.echo(f"  ✅ Cleared {table}: {rows_deleted} rows")
                     except Exception as e:
                         click.echo(f"  ⚠️  Could not clear {table}: {e}")
-        
-        engine.dispose()
-        
+
         if tables_cleared:
             click.echo(f"\n✅ Successfully cleared: {', '.join(tables_cleared)}")
             click.echo("\n💡 Tip: Agent tables will be repopulated when you upload a new receipt")
         else:
             click.echo("\n⚠️  No tables were cleared. Use --agents, --cache, or --all")
-            
+
     except Exception as e:
         click.echo(f"\n❌ Error clearing data: {e}")
-        engine.dispose()
+
+
+_moved("status", "banko-ai doctor", "status folded into doctor.")
 
 
 @cli.command()
-def status():
-    """Show application status."""
-    config = get_config()
-    generator = EnhancedExpenseGenerator(config.database_url)
-    
-    # Show current configuration
-    click.echo("🔧 Current Configuration:")
-    click.echo(f"   AI Service: {config.ai_service}")
-    click.echo(f"   Database: {config.database_url}")
-    
-    if config.ai_service == 'gemini':
-        click.echo(f"   Google Project: {config.google_project_id}")
-        click.echo(f"   Google Model: {config.google_model}")
-        click.echo(f"   Google Location: {config.google_location}")
-        creds_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
-        api_key = os.getenv("GOOGLE_API_KEY")
-        click.echo(f"   Service Account: {'✅' if creds_path else '❌'} {creds_path or 'Not set'}")
-        click.echo(f"   API Key Fallback: {'✅' if api_key else '❌'} {'Set' if api_key else 'Not set'}")
-    
-    click.echo()
-    
-    # Check database connection
-    try:
-        count = generator.get_expense_count()
-        click.echo(f"✅ Database connected - {count} expense records")
-    except Exception as e:
-        click.echo(f"❌ Database error: {e}")
-        return
-    
-    # Check AI provider
-    try:
-        from .ai_providers.factory import AIProviderFactory
-        ai_config = config.get_ai_config()
-        ai_provider = AIProviderFactory.create_provider(
-            config.ai_service, 
-            ai_config[config.ai_service]
-        )
-        
-        if ai_provider.test_connection():
-            click.echo(f"✅ AI provider ({config.ai_service}) connected")
-        else:
-            click.echo(f"❌ AI provider ({config.ai_service}) disconnected")
-    except Exception as e:
-        click.echo(f"❌ AI provider error: {e}")
-
-
-@cli.command()
-@click.option('--host', default='0.0.0.0', help='Host to bind to')
-@click.option('--port', default=5000, help='Port to bind to')
-@click.option('--generate-data', type=int, default=5000, help='Generate sample data before starting (default: 5000 records)')
-@click.option('--no-data', is_flag=True, help='Skip data generation and start with empty database')
-@click.option('--clear-data', is_flag=True, help='Clear existing data before generating new data')
-def start(host, port, generate_data, no_data, clear_data):
+@click.option('--host', default=None, help='Host to bind to')
+@click.option('--port', default=None, type=int, help='Port to bind to')
+@click.option('--no-data', is_flag=True, help='Start without seeding the personas')
+@click.pass_context
+def start(ctx, host, port, no_data):
     """Start Banko AI in background mode (equivalent to 'run --background')."""
-    # Show beautiful startup banner
-    click.echo("🏦 === Banko AI Assistant Starting === 🏦")
-    
-    # Load configuration and show AI service info
-    config = get_config()
-    ai_service = config.ai_service.upper()
-    click.echo(f"🤖 AI Service: {config.ai_service}")
-    
-    # Check AI provider availability
-    try:
-        from .ai_providers.factory import AIProviderFactory
-        ai_config = config.get_ai_config()
-        ai_provider = AIProviderFactory.create_provider(
-            config.ai_service, 
-            ai_config[config.ai_service]
-        )
-        
-        # Test connection and show status
-        if ai_provider.test_connection():
-            click.echo(f"🔧 {ai_service} Available: True")
-            click.echo(f"✅ Active AI Service: {ai_service}")
-        else:
-            click.echo(f"🔧 {ai_service} Available: False")
-            click.echo(f"⚠️  {ai_service} running in demo mode")
-    except Exception:
-        click.echo(f"🔧 {ai_service} Available: False")
-        click.echo(f"⚠️  {ai_service} running in demo mode")
-    
-    click.echo("=" * 44)
-    
-    # Generate data if not explicitly disabled
-    if not no_data:
-        click.echo("🔍 Checking database setup...")
-        click.echo(f"Using database: {config.database_url}")
-        click.echo(f"Generating {generate_data} sample expense records...")
-        generator = EnhancedExpenseGenerator(config.database_url)
-        
-        # Check if data already exists
-        try:
-            existing_count = generator.get_expense_count()
-            if existing_count > 0 and not clear_data:
-                click.echo(f"✅ Database already contains {existing_count} expense records")
-            else:
-                if clear_data:
-                    click.echo("Clearing existing data...")
-                    generator.clear_expenses()
-                
-                actual_count = generator.generate_and_save(generate_data)
-                click.echo(f"✅ Successfully generated {actual_count} expense records")
-        except Exception as e:
-            click.echo(f"❌ Error generating data: {e}")
-            return
-    else:
-        click.echo("Skipping data generation (--no-data flag used)")
-    
-    # Show startup completion message
-    click.echo(f"🚀 Starting server on http://localhost:{port}")
-    click.echo("🎉 Banko AI is ready to help with your finances!")
-    click.echo("=" * 44)
-    
-    # Create and run the app in background mode
-    app = create_app()
-    
-    # Background mode - suppress Flask output
-    import logging
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)
-    
-    # Show final message for background mode
-    click.echo(f"🚀 Banko AI running in background on http://localhost:{port}")
-    click.echo("💡 Use 'banko-ai status' to check if it's running")
-    click.echo("🛑 Use 'pkill -f banko-ai' to stop the background process")
-    
-    app.run(host=host, port=port, debug=False)
+    ctx.invoke(run, host=host, port=port, debug=False, no_data=no_data, background=True,
+               generate_data=None, clear_data=False)
 
 
 @cli.command()
 def help():
-    """Show detailed help and setup instructions."""
-    click.echo("""
-🤖 Banko AI Assistant - Setup Guide
-====================================
+    """Where to find setup, settings and the demo guide."""
+    click.echo("""Banko AI Assistant
 
-This is a modern AI-powered expense analysis application with RAG capabilities.
+  banko-ai doctor          check the database, provider, models and ports
+  banko-ai run             start the app (PORT and HOST honored)
+  banko-ai config          every setting in effect and where it came from
+  banko-ai config --docs   the full settings reference as Markdown
+  banko-ai seed / reset    give users their history, or start them over
+  banko-ai load run        generate banking traffic
 
-PREREQUISITES:
---------------
-- CockroachDB v25.2.4+ (recommended: v25.4.0 as Vector index is GA and enabled by default)
-- Vector index feature enabled: SET CLUSTER SETTING feature.vector_index.enabled = true;
-- Start single node: cockroach start-single-node --insecure --store=./cockroach-data --listen-addr=localhost:26257 --http-addr=localhost:8080 --background
-
-ENVIRONMENT VARIABLES:
----------------------
-Required:
-  DATABASE_URL              Database connection string
-                            - Single node: cockroachdb://root@localhost:26257/banko_ai
-                            - With load balancer: cockroachdb://root@haproxy:26257/banko_ai
-  AI_SERVICE                AI provider: watsonx, openai, aws, gemini
-
-IBM Watsonx:
-  WATSONX_API_KEY          IBM Cloud API key
-  WATSONX_PROJECT_ID       Watsonx project ID
-  WATSONX_MODEL_ID         Model to use (default: openai/gpt-oss-120b)
-  WATSONX_API_URL          API endpoint (default: us-south region)
-  WATSONX_TOKEN_URL        IAM token endpoint
-  WATSONX_TIMEOUT          Request timeout in seconds (default: 30)
-
-OpenAI:
-  OPENAI_API_KEY           OpenAI API key
-  OPENAI_MODEL             Model to use (default: gpt-4o-mini)
-
-AWS Bedrock:
-  AWS_ACCESS_KEY_ID        AWS access key
-  AWS_SECRET_ACCESS_KEY    AWS secret key
-  AWS_REGION               AWS region (default: us-east-1)
-  AWS_MODEL_ID             Model to use (default: claude-3-5-sonnet)
-
-Google Gemini:
-  GOOGLE_APPLICATION_CREDENTIALS  Path to service account JSON
-  GOOGLE_PROJECT_ID        Google Cloud project ID
-  GOOGLE_MODEL             Model to use (default: gemini-2.0-flash-001)
-  GOOGLE_LOCATION          Region (default: us-central1)
-  GOOGLE_API_KEY           API key (fallback if Vertex AI unavailable)
-
-Optional - Global:
-  EMBEDDING_MODEL          Embedding model for all providers (default: all-MiniLM-L6-v2)
-  FLASK_ENV                Flask environment: development, production
-  SECRET_KEY               Flask secret key for sessions
-
-Database Connection Pool (all optional):
-  DB_POOL_SIZE             Base connection pool size (default: 100)
-  DB_MAX_OVERFLOW          Max overflow connections (default: 100)
-  DB_POOL_TIMEOUT          Timeout for connection in seconds (default: 30)
-  DB_POOL_RECYCLE          Recycle connections after N seconds (default: 3600)
-  DB_POOL_PRE_PING         Test connections before use (default: true)
-  DB_CONNECT_TIMEOUT       Database connection timeout (default: 10)
-  
-  Pool size recommendations:
-  - Low traffic (<10 QPS): 10-50 connections
-  - Medium (10-100 QPS): 100-500 connections
-  - High (100+ QPS): 500-1000+ connections
-  - For 1000 connections: DB_POOL_SIZE=500 DB_MAX_OVERFLOW=500
-
-Response Caching (all optional):
-  CACHE_SIMILARITY_THRESHOLD  Similarity threshold for cache matching (default: 0.75)
-                              Range: 0.0-1.0. Lower = more cache hits, higher = more accuracy
-  CACHE_TTL_HOURS             Cache time-to-live in hours (default: 24)
-  CACHE_STRICT_MODE           Require exact expense data match (default: true)
-                              true = accurate (requires matching data)
-                              false = aggressive caching (similarity only)
-  
-  Caching presets:
-  - Demo mode (high cache hits): CACHE_THRESHOLD=0.75 CACHE_STRICT_MODE=false
-  - Balanced (recommended): CACHE_THRESHOLD=0.75 CACHE_STRICT_MODE=true
-  - Conservative (accuracy): CACHE_THRESHOLD=0.85 CACHE_STRICT_MODE=true
-
-LangGraph Checkpointer:
-  CHECKPOINT_TTL_DAYS         Auto-expire checkpoints after N days (default: 7, 0 = disabled)
-                              Uses CockroachDB row-level TTL for automatic background cleanup.
-
-QUICK START:
------------
-1. Set up required variables:
-   export AI_SERVICE="watsonx"
-   export DATABASE_URL="cockroachdb://root@localhost:26257/defaultdb?sslmode=disable"
-
-2. Configure your AI provider:
-
-   For Watsonx (IBM):
-   export WATSONX_API_KEY="your_api_key_here"
-   export WATSONX_PROJECT_ID="your_project_id_here"
-   export WATSONX_MODEL_ID="meta-llama/llama-2-70b-chat"
-   
-   # Optional - Regional/Advanced:
-   export WATSONX_API_URL="https://eu-de.ml.cloud.ibm.com/ml/v1/text/chat?version=2023-05-29"
-   export WATSONX_TIMEOUT="60"
-
-   For OpenAI:
-   export OPENAI_API_KEY="your_api_key_here"
-   export OPENAI_MODEL="gpt-4o-mini"
-
-   For AWS Bedrock:
-   export AWS_ACCESS_KEY_ID="your_access_key"
-   export AWS_SECRET_ACCESS_KEY="your_secret_key"
-   export AWS_REGION="us-east-1"
-   export AWS_MODEL_ID="us.anthropic.claude-3-5-sonnet-20241022-v2:0"
-
-   For Google Gemini:
-   export GOOGLE_APPLICATION_CREDENTIALS="path/to/service-account.json"
-   export GOOGLE_PROJECT_ID="your-google-cloud-project-id"
-   export GOOGLE_MODEL="gemini-1.5-pro"
-   export GOOGLE_LOCATION="us-central1"
-   # Optional fallback:
-   export GOOGLE_API_KEY="your-gemini-api-key"
-
-   Optional - Global Configuration:
-   export EMBEDDING_MODEL="all-MiniLM-L6-v2"  # Use custom embedding model
-
-3. Start the application:
-   banko-ai run                    # Normal mode with full output
-   banko-ai start                  # Background mode (quiet) - same as run --background
-   banko-ai run --background       # Background mode (quiet)
-   banko-ai run --no-data          # Skip data generation
-   banko-ai run --debug            # Enable debug mode
-
-COMMANDS:
----------
-  run              Run the web application (normal mode)
-  start            Start the web application (background mode)
-  generate-data    Generate sample expense data
-  clear-data       Clear all expense data
-  status           Show application status
-  search           Search expenses using vector similarity
-  help             Show this help message
-
-FEATURES:
----------
-✅ Multi-AI Provider Support (OpenAI, AWS Bedrock, IBM Watsonx, Google Gemini)
-✅ Dynamic Model Switching (switch models without restart)
-✅ User Authentication & User-Specific Vector Indexing
-✅ Enhanced Vector Search with Data Enrichment
-✅ Modern PyPI-Ready Package Structure
-✅ Real-time Chat Interface
-✅ Expense Analysis & Categorization
-✅ Multi-language Support
-
-ENDPOINTS:
-----------
-Web Interface: http://localhost:5000
-API Health: http://localhost:5000/api/health
-AI Providers: http://localhost:5000/api/ai-providers
-Models: http://localhost:5000/api/models
-Search: POST http://localhost:5000/api/search (JSON: {"query": "your search", "limit": 10})
-RAG: POST http://localhost:5000/api/rag (JSON: {"query": "your question", "limit": 5})
-
-TROUBLESHOOTING:
----------------
-- Database connection issues: Check DATABASE_URL
-- AI provider errors: Verify API keys and configuration
-- Model switching: Use the Settings tab in the web interface
-- Vector search: Ensure database has expense data
-
-Gemini-Specific Issues:
-- "404 Publisher Model not found": Enable Vertex AI API in Google Cloud Console
-- "Permission denied to enable service": Use your main Google account, not service account
-- Vertex AI unavailable: Provider will auto-fallback to Generative AI API if GOOGLE_API_KEY is set
-- Service account issues: Ensure the JSON file path is correct and accessible
-
-For more information, visit: https://github.com/cockroachlabs-field/banko-ai-assistant
-""")
+Setup per provider, the demo guide and upgrading from 1.x are in the README:
+https://github.com/cockroachlabs-field/banko-ai-assistant""")
 
 
 @cli.command()
 @click.argument('query')
-@click.option('--user-id', help='User ID to filter results')
-@click.option('--limit', default=10, help='Maximum number of results')
-def search(query, user_id, limit):
-    """Search expenses using vector similarity."""
-    config = get_config()
-    from .vector_search.search import VectorSearchEngine
+@click.option('--user', 'username', default='maya', show_default=True, help='Whose transactions to search')
+@click.option('--limit', default=10, show_default=True, help='Maximum number of results')
+def search(query, username, limit):
+    """Search a user's purchases by meaning (their own vector index)."""
+    from .services import transactions
+    from .services.users import user_ids_by_name
 
-    search_engine = VectorSearchEngine(config.database_url)
-    results = search_engine.search_expenses(
-        query=query,
-        user_id=user_id,
-        limit=limit
-    )
-
-    if not results:
+    user_id = user_ids_by_name([username]).get(username)
+    if user_id is None:
+        raise click.ClickException(f"no user called {username}")
+    found = transactions.semantic_search(user_id, query, limit=limit)["items"]
+    if not found:
         click.echo("No results found")
         return
+    click.echo(f"{len(found)} of {username}'s purchases nearest to '{query}':")
+    for item in found:
+        amount = f"${abs(item['amount']):,.2f}"
+        click.echo(f"  {item['posted_at']}  {item['merchant'] or '-':<28} {amount:>11}  {item.get('category') or ''}")
 
-    click.echo(f"Found {len(results)} results for '{query}':")
-    click.echo()
 
-    for i, result in enumerate(results, 1):
-        click.echo(f"{i}. {result.description}")
-        click.echo(f"   Merchant: {result.merchant}")
-        click.echo(f"   Amount: ${result.amount:.2f}")
-        click.echo(f"   Date: {result.date}")
-        click.echo(f"   Similarity: {result.similarity_score:.3f}")
-        click.echo()
+_MARKS = {"ok": "✅", "fail": "❌", "skip": "➖"}
+
+
+@cli.command()
+def doctor():
+    """Is this machine ready to demo? One line per check; exits 1 if any fail."""
+    from . import doctor as checks
+
+    results = checks.run_checks()
+    width = max(len(c.name) for c in results)
+    for c in results:
+        click.echo(f"{_MARKS.get(c.state, '?')} {c.name:<{width}}  {c.detail}")
+    if any(c.state == "fail" for c in results):
+        raise SystemExit(1)
+
+
+def _progress():
+    """Seeding progress, one line per user when they finish."""
+    def report(user_id: str, done: int, total: int, state: str) -> None:
+        if state != "running":
+            click.echo(f"  {user_id[:8]}  {done:,} of {total:,} entries, {state}")
+    return report
+
+
+@cli.command()
+@click.argument('usernames', nargs=-1)
+@click.option('--yes', is_flag=True, help='Do not ask')
+def reset(usernames, yes):
+    """Start users over: delete their money rows and reseed their history.
+
+    With no names, resets the personas. Coach signals and nudges stay.
+    """
+    from .config.catalog import get_catalog
+    from .services import seeding
+    from .services.users import user_ids_by_name
+
+    if usernames:
+        names = list(usernames)
+        found = user_ids_by_name(names)
+    else:
+        # The personas by id: someone who signed up as "maya" first is not the persona.
+        personas = get_catalog().personas
+        names, found = [p.username for p in personas], {p.username: p.user_id for p in personas}
+    missing = [n for n in names if n not in found]
+    if missing:
+        click.echo(f"No user called {', '.join(missing)}; nothing was reset.")
+        raise SystemExit(1)
+    if not yes and not click.confirm(f"Reset {', '.join(names)}? Their history is deleted and reseeded."):
+        click.echo("Aborted.")
+        return
+    busy = []
+    for name in names:
+        written = seeding.reset_user(found[name], on_progress=_progress())
+        click.echo(f"{name}: {written:,} entries seeded" if written else f"{name}: busy seeding, try again shortly")
+        if not written:
+            busy.append(name)
+    if busy:
+        raise SystemExit(1)
+
+
+@cli.command()
+@click.option('--users', type=click.IntRange(1, None), default=None, help='Create this many new demo users')
+@click.option('--months', type=click.IntRange(1, 36), default=None, help='Months of history for new users')
+def seed(users, months):
+    """Seed the personas' history, or create new demo users with theirs."""
+    from .services import seeding
+
+    if months and not users:
+        raise click.UsageError("--months sets the history of new users; use it with --users.")
+    if users:
+        made = seeding.seed_generated_users(users, months=months, on_progress=_progress())
+        click.echo(f"{len(made)} demo users created and seeded")
+        return
+    written = seeding.seed_personas(on_progress=_progress())
+    click.echo(", ".join(f"{name} +{n:,}" for name, n in written.items()) or "personas already seeded")
+
+
+@cli.command()
+def migrate():
+    """Apply the schema registry now instead of on the next boot."""
+    from .db import schema
+
+    result = schema.ensure_schema(force=True, on_progress=click.echo)
+    click.echo(f"Schema current: {result.statements} statements in {result.seconds:.1f} s")
+    done = schema.run_pending_conversions()
+    click.echo(f"{len(done)} locality conversion{'' if len(done) == 1 else 's'}")
+
+
+@cli.command("config")
+@click.option("--docs", is_flag=True, help="Print the README configuration reference instead.")
+def config_cmd(docs):
+    """Show the effective configuration and where each value came from."""
+    from .config.settings import GROUPS, render_config_docs
+
+    if docs:
+        click.echo(render_config_docs(), nl=False)
+        return
+    current = None
+    for info in get_config().describe():
+        if info.group != current:
+            current = info.group
+            click.echo(f"\n[{GROUPS[info.group]}]")
+        click.echo(f"  {info.env:<32} {info.value:<56} ({info.source})")
 
 
 @cli.command()
 @click.option('--yes', is_flag=True, help='Skip confirmation prompt')
 def clear_demo_users(yes):
-    """Clear all demo users and their data (preserves legacy personas).
+    """Clear all demo users and every row they own (keeps the personas).
 
-    This removes demo users created via signup along with their expenses,
-    signals, nudges, and budgets. The three legacy persona users (maya,
-    sam, riley) are preserved.
+    Signed-up, generated and load users go, with their accounts, ledger,
+    transfers, goals, budgets, expenses, receipts, conversations, memories,
+    caches, signals and nudges. The personas maya, sam and riley stay.
     """
     if not yes:
         if not click.confirm('Delete all demo users and their data?'):
@@ -589,12 +364,10 @@ def clear_demo_users(yes):
     click.echo('Clearing demo users...')
     counts = clear_fn(config.database_url)
 
-    click.echo('Deleted:')
-    click.echo(f'  Users: {counts["users"]}')
-    click.echo(f'  Expenses: {counts["expenses"]}')
-    click.echo(f'  User budgets: {counts["user_budgets"]}')
-    click.echo(f'  Spending signals: {counts["spending_signals"]}')
-    click.echo(f'  Coach nudges: {counts["coach_nudges"]}')
+    click.echo(f'Deleted {counts["users"]} demo users and every row they owned.')
+
+
+cli.add_command(load_group)
 
 
 def main():

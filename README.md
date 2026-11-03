@@ -5,322 +5,264 @@
 
 # Banko AI Assistant
 
-A demo banking assistant that combines vector RAG, a LangGraph multi-agent
-pipeline, and runtime-switchable LLM providers — all backed by a single
-CockroachDB cluster.
+A demo bank with an AI assistant, built on one CockroachDB cluster: accounts
+and a ledger, per-user vector search, a LangGraph assistant checkpointed in
+the database, a spending coach fed by change data capture, and a load
+simulator for taking regions down while customers keep banking. It runs on
+watsonx, OpenAI, AWS Bedrock, Gemini or a local Ollama model.
 
-![Banko AI Assistant](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/banko_ai/static/banko-ai-assistant-watsonx.gif)
+![Dashboard](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/dashboard-light.png)
+
+| Assistant | Transactions | Coach | Agents |
+|---|---|---|---|
+| ![Assistant](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/assistant-light.png) | ![Transactions](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/transactions-light.png) | ![Coach](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/coach-light.png) | ![Agents](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/agents-light.png) |
+
+Every page also has a dark theme ([dashboard](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/dashboard-dark.png),
+[assistant](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/assistant-dark.png), [transactions](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/transactions-dark.png),
+[coach](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/coach-dark.png), [agents](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/agents-dark.png), [platform](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/platform-dark.png)).
 
 ## What it can do
 
-- **Ask in natural language** — "what did I spend on dining last month?",
-  "show me anything unusual" — answers come from vector search over your
-  expenses plus an LLM-generated summary.
-- **Upload a receipt** — image or PDF goes through an OCR + agent pipeline
-  (`Receipt → Fraud → Budget`) that extracts items, flags duplicates, and
-  reports budget impact, with each agent step durably checkpointed.
-- **Multi-provider LLM** — watsonx (default), OpenAI, AWS Bedrock, or
-  Google Gemini. The provider is chosen at startup via `AI_SERVICE`;
-  within a running app you can swap models inside the active provider from
-  Settings (model lists come from each provider's API, not a hardcoded
-  enum). Switching providers requires a restart with the new env value.
-- **See agents work in real time** — the dashboard streams actual agent
-  state from the backend (no canned activity).
-- **Persistent chat** — conversations survive restarts via
-  `CockroachDBChatMessageHistory`.
-- **Three-layer semantic cache** — query / embedding / vector-search caches
-  with tunable similarity thresholds.
+- **Answer questions about your money.** Totals, averages and counts come
+  from SQL and the model only narrates them, so the figures are the same on
+  every provider. Visit questions ("when did I last go to Costco?") come
+  straight from SQL, with no model call in English. Open questions go to a
+  planner that calls tools. Answers stream, and each one shows how it was
+  built: the steps, the database time and the EXPLAIN ANALYZE plan.
+- **Read receipts.** Drop an image or PDF anywhere: OCR and field
+  extraction, a duplicate check, a posting through the ledger, then the
+  fraud and budget agents, each step shown as it finishes. Ask about the
+  receipt afterwards, even after a restart.
+- **Remember.** Conversations are checkpointed in CockroachDB, and the
+  memories you create are searchable and deletable. Proposed changes, like
+  a new budget, wait for you to confirm.
+- **Coach.** Spending signals arrive by webhook or Kafka, an agent looks
+  into them with real budget and transaction tools, and a nudge lands on
+  the Coach page.
+- **Survive a region going down.** On a multi-region cluster each user's
+  rows live in their home region (REGIONAL BY ROW) and are served from
+  there. The Platform page runs simulated customers through the same
+  services, shows throughput, latency and money integrity live, and with
+  the chaos control plane connected takes a region down from the same page.
 
 ## How it works
 
-![Banko AI Architecture](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/banko_ai/static/banko-ai-architecture.png)
-
-Five layers, one database:
+![Banko AI Architecture](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/banko-ai-architecture.png)
 
 | Layer | What it does | Where |
 |-------|--------------|-------|
-| **Web** | Flask + SocketIO UI, REST API, real-time agent status | `banko_ai/web/` |
-| **Agents** | LangGraph pipeline (`Receipt → Fraud → Budget`), checkpointed by `CockroachDBSaver` for crash recovery and replay | `banko_ai/agents/` |
-| **AI providers** | One abstraction over watsonx, OpenAI, Bedrock, Gemini — all LLM calls go through it | `banko_ai/ai_providers/` |
-| **Vector search** | `CockroachDBVectorStore` with C-SPANN cosine indexes, 384-dim `all-MiniLM-L6-v2` embeddings (local, no API key) | `banko_ai/vector_search/` |
-| **Persistence** | CockroachDB stores SQL rows, vectors, and agent state in one cluster | `banko_ai/utils/` |
+| **Web** | Flask, Socket.IO and a JSON API; pages are templates plus Alpine.js, no build step | `banko_ai/web/` |
+| **Assistant** | A LangGraph graph (route, SQL aggregation, visits, receipts, memory, planner), checkpointed per thread by `CockroachDBSaver` | `banko_ai/assistant/` |
+| **Services** | The ledger and every read and write of money, one short transaction each | `banko_ai/services/` |
+| **AI providers** | One abstraction over watsonx, OpenAI, Bedrock, Gemini and Ollama; no other code calls a model SDK | `banko_ai/ai_providers/` |
+| **Vector search** | SQL on per-user C-SPANN cosine indexes with 384-dim `all-MiniLM-L6-v2` embeddings computed locally | `banko_ai/services/` |
 
-All CockroachDB-specific pieces come from
-[`langchain-cockroachdb`](https://github.com/cockroachdb/langchain-cockroachdb):
-`CockroachDBEngine` (psycopg3 pool), `CockroachDBVectorStore`,
-`CockroachDBChatMessageHistory`, and `CockroachDBSaver`.
+Answers and searches are cached per user and per data version, so a new
+purchase retires every cached answer it could change.
 
 ## Run it
 
-### Prerequisites
-
-- Python 3.10+ (3.12 recommended)
-- CockroachDB v25.4.0+ (vector indexes are GA)
-- An API key for at least one provider (watsonx, OpenAI, AWS, or Gemini),
-  or a local model through Ollama (no key, no internet)
-
-### Install
+You need Python 3.11+ (3.12 recommended), CockroachDB v25.4 or later, and
+credentials for one provider or a local Ollama.
 
 ```bash
-pip install banko-ai-assistant            # PyPI
-# or
-docker-compose up -d                      # Docker
-# or
-git clone https://github.com/cockroachlabs-field/banko-ai-assistant
-cd banko-ai-assistant
-uv pip install -e ".[dev]"                # local development
+pip install banko-ai-assistant
+brew install cockroachdb/tap/cockroach        # or any CockroachDB v25.4+
+cockroach start-single-node --insecure --store=./cockroach-data \
+  --listen-addr=localhost:26257 --http-addr=localhost:8080 --background
+banko-ai doctor                                # what is ready, what is not
 ```
 
-### Start CockroachDB
+Then start it with one provider. `DATABASE_URL` defaults to the local
+cluster above.
 
 ```bash
-brew install cockroachdb/tap/cockroach    # macOS
-cockroach start-single-node --insecure \
-  --store=./cockroach-data \
-  --listen-addr=localhost:26257 \
-  --http-addr=localhost:8080 --background
-```
-
-### Start the app: the bare minimum, per provider
-
-Everything below assumes CockroachDB on `localhost:26257` (that is the
-built-in default, so `DATABASE_URL` can be omitted; set it to point
-anywhere else). Two optional extras for any of them:
-`CDC_WEBHOOK_HMAC_SECRET=<any shared secret>` turns on the Coach webhook
-and the signup welcome nudge, and `TOKENIZERS_PARALLELISM=false` only
-silences a harmless HuggingFace warning.
-
-**Installed CLI** (`pip install banko-ai-assistant`):
-
-```bash
-# Ollama — local model, no keys; needs `ollama serve` running
-AI_SERVICE=ollama banko-ai run
-
-# watsonx (the default provider, AI_SERVICE not needed)
-WATSONX_API_KEY=... WATSONX_PROJECT_ID=... banko-ai run
-
-# OpenAI — or any compatible endpoint via OPENAI_BASE_URL
-AI_SERVICE=openai OPENAI_API_KEY=sk-... banko-ai run
-
-# AWS Bedrock — note aws, not bedrock; a profile OR a key pair
-AI_SERVICE=aws AWS_PROFILE=your-profile banko-ai run
-AI_SERVICE=aws AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... banko-ai run
-
-# Gemini — Vertex service account OR the Generative AI API key
-AI_SERVICE=gemini GOOGLE_PROJECT_ID=... GOOGLE_APPLICATION_CREDENTIALS=sa.json banko-ai run
+WATSONX_API_KEY=... WATSONX_PROJECT_ID=... banko-ai run         # watsonx, the default
+AI_SERVICE=openai OPENAI_API_KEY=sk-... banko-ai run            # or any compatible endpoint via OPENAI_BASE_URL
+AI_SERVICE=aws AWS_PROFILE=your-profile banko-ai run            # Bedrock: aws, not bedrock
 AI_SERVICE=gemini GOOGLE_PROJECT_ID=... GOOGLE_API_KEY=... banko-ai run
+AI_SERVICE=ollama banko-ai run                                  # local model, no keys
 ```
 
-**From source** — identical variables, `uv run` in front:
+Open <http://localhost:5000>. The server listens in about two seconds and
+does the slow work afterwards; pages show a getting-ready card until the
+schema and the personas are in place. Sign in as `maya`, `sam` or `riley`,
+or sign up with a new name to get your own seeded history in the spending
+style you pick. `CDC_WEBHOOK_HMAC_SECRET=<any secret>` turns on the Coach
+webhook and the welcome nudge for new users. macOS AirPlay holds port
+5000, so `banko-ai run --port 5001` (or `PORT`) is often handy.
+
+From a clone, put `uv run` in front of the same commands after `uv sync`.
+With Docker, `docker compose up -d` starts CockroachDB and Banko together;
+[`docs/DOCKER.md`](docs/DOCKER.md) covers the images and compose files.
+
+### Offline
+
+Embeddings are always local, so with Ollama nothing needs the internet:
 
 ```bash
-git clone https://github.com/cockroachlabs-field/banko-ai-assistant
-cd banko-ai-assistant && uv sync
-AI_SERVICE=ollama uv run banko-ai run
+docker compose -f docker-compose.airgap.yml up -d   # first run online to pull the model, then offline
 ```
 
-**Docker** — identical variables via `-e`, plus two container facts:
-host services are reached at `host.docker.internal`, and `SECRET_KEY`
-keeps sessions across container restarts (newer images generate a
-temporary one when it is omitted):
+`scripts/airgap/preload-models.sh` pulls the models ahead of time instead.
+The default model is granite3.3:8b (`OLLAMA_MODEL`). On a Mac, native
+`ollama serve` with `AI_SERVICE=ollama banko-ai run` is faster than Ollama
+in Docker, which cannot use the Apple GPU.
 
-```bash
-docker run --rm -p 5000:5000 \
-  -e DATABASE_URL="cockroachdb://root@host.docker.internal:26257/defaultdb?sslmode=disable" \
-  -e AI_SERVICE=ollama -e OLLAMA_HOST=http://host.docker.internal:11434 \
-  -e SECRET_KEY=pick-something-stable \
-  virag/banko-ai-assistant:latest
-```
+The audience came to see watsonx and the venue has no network?
+`AI_DISPLAY_PROVIDER=watsonx AI_DISPLAY_MODEL=ibm/granite-3-8b-instruct`
+with `AI_SERVICE=ollama` serves from the local model while the badges say
+watsonx. The terminal prints both at startup, and `/api/health` reports
+the real provider under `actual`.
 
-Swap the `AI_SERVICE` line and credentials for any provider above; only
-Ollama needs the `OLLAMA_HOST` override.
+## Running the demo
 
-Useful flags for every mode: `banko-ai run --port 5001` (macOS AirPlay
-holds 5000), `banko-ai run --no-data` (skip the sample-data generator;
-the first normal start generates 5000 sample records).
+- **Receipt follow-ups.** Drop a receipt, then ask "what was the total on
+  this receipt?", "is this receipt a duplicate?" and "which merchant was
+  this receipt from?". Restart the app and keep asking: the thread picks up
+  where it was.
+- **Exact numbers.** "How much did I spend on dining in the last 60 days?"
+  shows the SQL time and the plan; switch providers and the figure stays.
+- **Any language, by voice.** Pick a language in the assistant and ask out
+  loud; the mic appears where the browser offers speech recognition (not
+  Firefox).
+- **Search by meaning.** Search transactions for "coffee" or "weekend
+  treats": each user's own vector index answers.
+- **Kill a region under load.** On a multi-region cluster, start load on
+  the Platform page, take a region down, and watch its customers move to a
+  surviving region with balances still matching their ledgers, then come
+  home after the region recovers.
+- **Remember something.** "Remember that I'm saving for a trip to Japan."
+  Later answers draw on it, across restarts, and Settings lists it.
 
-Open <http://localhost:5000>.
+## Commands
 
-### Sign up and it's yours
-
-The first visit asks for a username. New names pick a spending style
-(diner, subscriber, saver, balanced) and get a seeded history in that
-style, embeddings included; returning names land straight back in their
-own data, and the Coach greets new users with a real nudge within
-seconds. Everything on screen is scoped to that identity: SQL
-aggregations filter by your user id, vector search runs through the
-per-user vector index, and the header shows who is signed in. Questions
-that ask for totals or counts ("how much did I spend on restaurants in
-the past 60 days?") are answered by SQL directly, so the figures are
-exact and identical no matter which AI provider is active; the model
-adds the narrative and suggestions around them. Every answer wears a
-badge with the real database time, and an expandable panel shows the
-actual EXPLAIN ANALYZE that produced it.
-
-On a multi-region cluster the same app goes region aware with no extra
-configuration: signup offers a home region (detected live from the
-cluster), rows are pinned to it via REGIONAL BY ROW, reads prune to the
-user's partition, and the answer badge names the regions that actually
-served each query. Kill a region and the badge visibly moves to the
-survivors while answers keep flowing. Single-region deployments see
-none of this; nothing fake is ever rendered. The legacy personas
-(maya, sam, riley) still exist for existing databases, and
-`banko-ai clear-demo-users` resets a demo machine while keeping them.
-
-`banko-ai --help` lists the rest (`generate-data`, `clear-data`, `status`,
-`search`, etc.). The first run creates the schema (expense, agent, cache,
-checkpoint tables), generates sample data with embeddings, and initializes
-the selected provider.
-
-### Run it offline (airgap)
-
-The whole stack runs without internet: embeddings are computed locally,
-and the LLM is a local model served by Ollama. Bring the stack up once
-while online and it preloads itself (an init container pulls the Ollama
-model into a named volume, skipping the pull when it is already cached);
-every start after that works with the network off:
-
-```bash
-docker compose -f docker-compose.airgap.yml up -d   # first run online, then works offline
-```
-
-To cache ahead of time instead (say, the night before a talk),
-`scripts/airgap/preload-models.sh` pulls the same models explicitly.
-
-Default model is granite3.3:8b (override with `OLLAMA_MODEL`). For a
-non-Docker setup, `ollama serve` plus `AI_SERVICE=ollama banko-ai run`
-does the same thing. Any OpenAI-compatible endpoint also works via
-`OPENAI_BASE_URL` with `AI_SERVICE=openai`.
+| Command | What it does |
+|---|---|
+| `banko-ai doctor` | Database, schema, embedding model, provider, Ollama model, tesseract, port, status API and chaos plane, one line each |
+| `banko-ai run` | Start the app (`--port`, `--host`, `--no-data` to skip seeding) |
+| `banko-ai seed` | Seed the personas, or `--users N` new demo users |
+| `banko-ai reset [names]` | Start users over (the personas by default) |
+| `banko-ai migrate` | Apply the schema now instead of on the next boot |
+| `banko-ai search QUERY --user NAME` | Vector search over one user's purchases |
+| `banko-ai load run` | Generate banking traffic in the terminal (see below) |
+| `banko-ai clear-demo-users` | Remove signed-up and generated users, keep the personas |
+| `banko-ai config` | Every setting in effect and where it came from |
 
 ## Configuration
 
-The important knobs:
-
-| Variable | Description | Default |
-|----------|-------------|---------|
+| Variable | What it does | Default |
+|---|---|---|
 | `DATABASE_URL` | CockroachDB connection string | `cockroachdb://root@localhost:26257/defaultdb?sslmode=disable` |
-| `AI_SERVICE` | `watsonx`, `openai`, `aws`, `gemini`, or `ollama` | `watsonx` |
-| `SECRET_KEY` | Flask session key. Auto-generated per boot in dev, which signs everyone out on restart; set it for stable demo sessions | random |
-| `CDC_WEBHOOK_HMAC_SECRET` | Signs Coach webhook posts; unset disables `/api/cdc/signals` and the welcome nudge | unset |
+| `AI_SERVICE` | `watsonx`, `openai`, `aws`, `gemini` or `ollama` | `watsonx` |
+| `RLS_MODE` | `auto` serves requests as the `banko_app` role under row-level security when it can; `off` does not | `auto` |
+| `SECRET_KEY` | Session key; set it so restarts keep people signed in | random per boot |
+| `CDC_WEBHOOK_HMAC_SECRET` | Signs Coach webhook posts; unset turns the webhook off | unset |
+| `BRAND_NAME`, `BRAND_ACCENT` | The assistant's name and the UI accent color | `Banko`, `#6933FF` |
+| `UI_THEME`, `UI_LANGUAGES` | Default theme and the assistant's languages | `system`, ten languages |
+| `CATEGORIES_FILE`, `PERSONAS_FILE`, `SEED_PROFILES_FILE` | Your own YAML for categories, personas and seed profiles | packaged files |
+| `SEED_HISTORY_MONTHS` | Months of history for each persona or new user | `6` |
+| `CHAOS_CONTROL_URL`, `CRDB_ADMIN_URL` | The chaos control plane and the DB Console, for the Platform page | empty, derived |
+| `OLLAMA_NUM_CTX`, `OLLAMA_KEEP_ALIVE` | Ollama's context window and idle unload time | `8192`, `5m` |
 
-Per-provider credentials are in "Start the app" above; `AWS_REGION`
-defaults to `us-east-1`. Override model lists with `WATSONX_MODELS`, `OPENAI_MODELS`, `AWS_MODELS`,
-`GEMINI_MODELS` (comma-separated). Cache, fraud, and pool tuning live in
-`banko_ai/config/` (`CACHE_SIMILARITY_THRESHOLD`, `CACHE_TTL_HOURS`,
-`FRAUD_DUPLICATE_WINDOW_DAYS`, `DB_POOL_SIZE`, …).
+That is a short list. `banko-ai config --docs` prints the full reference
+as Markdown, and model lists, pools, caches, the coach and the load
+simulator all have their own settings there.
+
+## Load and chaos
+
+![Platform](https://raw.githubusercontent.com/cockroachlabs-field/banko-ai-assistant/main/docs/images/platform-light.png)
+
+Ninety simulated customers at 30 operations a second, after us-west-2 went down and came back ([dark theme](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/images/platform-dark.png)).
+
+Open **Platform**, pick a profile (balanced, payments, browsing, search or
+your own weights), the number of customers and operations per second, and
+press Start load. Simulated `load-` customers spread across the database's
+regions and go through the real ledger, so money integrity is checked
+while it runs. Latency counts from when each operation was due, so a
+struggling cluster shows as latency and dropped operations rather than
+quietly less load.
+
+On a multi-region cluster every customer is served through a node in their
+home region, as a regional deployment of the app would serve them. That
+needs a database URL that reaches every region, such as the chaos demo's
+load balancer. For a chaos demo with realistic latency, run with
+`RLS_MODE=off`: under row-level security CockroachDB 26.3 plans each
+statement after a round trip to a system range. Give a freshly created
+database about fifteen minutes for its leases to settle in their regions.
+With `CHAOS_CONTROL_URL` set, the chaos card takes regions down and brings
+them back.
+
+```bash
+banko-ai load run --profile payments --users 500 --rate 200 --duration 5m
+banko-ai load start --url http://localhost:5000 --rate 200   # drives a running app
+banko-ai load users clear
+```
+
+## The Spending Coach
+
+Post a synthetic signal and watch it become a nudge on `/coach` (signed in
+as maya):
+
+```bash
+export CDC_WEBHOOK_HMAC_SECRET=dev-only-secret     # same value as the app
+uv run python scripts/coach/mock_signals.py --type=budget_threshold   # or anomaly, recurring_drift
+```
+
+For the real path, `scripts/coach/cdc-demo/run-cdc-demo.sh` starts Kafka
+and the Debezium CockroachDB connector on the `spending_signals` table; run
+the app with `COACH_KAFKA_ENABLED=true KAFKA_BOOTSTRAP_SERVERS=localhost:29092`
+and an `INSERT INTO spending_signals` reaches the coach with no webhook.
+`scripts/coach/assert_nudges.py` checks either transport end to end, and
+[PIPELINE_CONTRACT.md](PIPELINE_CONTRACT.md) is the producer contract. The
+companion repo
+[`cockroachdb-watsonx-data-pipeline`](https://github.com/viragtripathi/cockroachdb-watsonx-data-pipeline)
+streams the same changes into Apache Iceberg on watsonx.data.
 
 ## API
 
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/health` | GET | DB + AI status |
-| `/api/ai-providers` | GET | List providers |
-| `/api/models` | GET / POST | List or switch models |
-| `/api/search` | POST | Vector search |
-| `/api/rag` | POST | RAG-based Q&A |
-| `/api/upload-receipt` | POST | Run a receipt through the agent pipeline |
-| `/api/agents/status` | GET | Agent dashboard data |
-| `/api/chat-history/<id>` | GET / DELETE | Persistent chat per session |
+The banking data has a JSON API under `/api/v1` (dashboard, accounts and
+statements, transactions and semantic search, cash flow, budgets, recurring
+bills, goals, transfers with idempotency keys), scoped to the signed-in
+user. `/api/health`, `/api/health/live` and `/api/health/ready` report the
+app's state. Routes and examples are in [`docs/API.md`](docs/API.md).
 
-Full list with examples in [`docs/API.md`](docs/API.md). Quick check:
+## Upgrading from 1.3
 
-```bash
-curl -X POST http://localhost:5000/api/rag \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What are my biggest expenses this month?"}'
-```
-
-## The Spending Coach (streaming + agentic)
-
-Everything above waits for a question. The Coach reacts to events: a
-spending signal arrives, an agent investigates with real budget and
-transaction tools, and a nudge appears live on the `/coach` tab, for
-example "you've used 82% of your dining budget with 9 days left." Signals
-and nudges live in CockroachDB with row-level TTLs, and the agent's
-conversation state checkpoints there too.
-
-Kick it off the quick way, by posting a synthetic signal at the webhook:
-
-```bash
-export CDC_WEBHOOK_HMAC_SECRET=dev-only-secret   # same value as the app
-uv run python scripts/coach/mock_signals.py --type=budget_threshold
-# also: --type=anomaly, --type=recurring_drift
-```
-
-The coach page shows the signed-in user's nudges. By default the script
-targets the maya persona, so sign in as `maya` to watch the nudge land,
-or pass `--user-id` (or set `COACH_DEFAULT_USER_ID`) for the account you
-signed up with.
-
-Or run the real thing: CockroachDB changefeeds streaming through Debezium
-and Kafka into the app. One script brings up Kafka, Kafka Connect, and the
-Debezium CockroachDB connector, then registers a source on the
-`spending_signals` table:
-
-```bash
-scripts/coach/cdc-demo/run-cdc-demo.sh
-# then run the app with the Kafka transport on:
-COACH_KAFKA_ENABLED=true KAFKA_BOOTSTRAP_SERVERS=localhost:29092 \
-  AI_SERVICE=watsonx banko-ai run
-```
-
-With that stack up, sending a change event is just SQL. Insert a row and
-CockroachDB streams it to the Coach, no webhook involved. The coach page
-shows the signed-in user's nudges, so target the username you signed up
-with:
-
-```sql
-INSERT INTO spending_signals
-  (user_id, signal_type, severity, payload, idempotency_key)
-VALUES
-  ((SELECT user_id FROM users WHERE username = 'YOUR-USERNAME'),
-   'budget_threshold', 'warn',
-   '{"category": "dining", "pct_used": 0.82, "monthly_budget": 400.0,
-     "spent_so_far": 328.0, "days_remaining": 9}',
-   'demo:' || gen_random_uuid()::STRING);
-```
-
-Watch `/coach` while you run it. To verify the whole path automatically:
-
-```bash
-uv run python scripts/coach/assert_nudges.py             # webhook transport
-uv run python scripts/coach/assert_nudges.py --via sql   # the CDC pipeline
-```
-
-The producer contract (payload shapes, idempotency, both transports) is
-in [PIPELINE_CONTRACT.md](PIPELINE_CONTRACT.md).
-
-## Where the data plane comes from
-
-This repo is the agent side. A companion repo,
-[`viragtripathi/cockroachdb-watsonx-data-pipeline`](https://github.com/viragtripathi/cockroachdb-watsonx-data-pipeline),
-streams CockroachDB CDC events into Apache Iceberg on IBM watsonx.data
-(both via webhook and Debezium → Kafka). Neither repo requires the other —
-this app works against a local CockroachDB with its own sample data — but
-the two together demo the end-to-end transactional + lakehouse path.
+- Python 3.11 or later.
+- Point 2.0 at your existing database: the first boot adds the new tables
+  and columns in place (or run `banko-ai migrate` beforehand). Existing
+  rows stay.
+- The driver is psycopg 3. `DATABASE_URL` takes `cockroachdb://` or
+  `postgresql://` as before.
+- Old setting names still work with a warning: `WATSONX_MODEL_ID`,
+  `WATSONX_URL`, `AWS_MODEL_ID`, `GEMINI_API_KEY` and `CACHE_THRESHOLD`.
+  Settings that no longer do anything, `SAMPLE_DATA_COUNT` among them, say
+  so once at startup.
+- There is no ownerless sample data any more: personas and new users get
+  their own seeded history. `generate-data` and `clear-data` point to
+  `banko-ai seed` and `banko-ai reset`, and `status` to `banko-ai doctor`.
+- The image runs as any user in group 0. If you used the 1.x airgap compose
+  file, remove its old model volume once (`docker volume rm <project>_hf-cache`);
+  the model is baked into the image and the volume comes back with the
+  right owner.
 
 ## Testing
 
 ```bash
-python -m pytest tests/ -v                # all tests
-ruff check banko_ai/                      # lint
+make test-local          # ruff, mypy (advisory) and pytest
 ```
 
-Integration tests need a populated CockroachDB; they're skipped in CI when
-the DB isn't available.
+The suite needs a CockroachDB at `DATABASE_URL`; tests that need one skip
+without it. `BANKO_UI_TESTS=1 uv run pytest tests/ui` drives every page in
+a real browser, and `scripts/smoke.py` checks a running app through its
+provider.
 
 ## Troubleshooting
 
-- **CockroachDB version** — must be v25.4.0+ for vector indexes
-  (`cockroach version`).
-- **DB connection error** — confirm the single-node command above is
-  running, then `cockroach sql --insecure --execute "SHOW TABLES;"`.
-- **AI provider issues** — confirm keys are exported, then hit
-  `/api/health`. For watsonx, `/diagnostics/watsonx` has connection
-  details.
-- **Port 5000 in use (macOS)** — AirPlay Receiver claims port 5000.
-  Either disable it in System Settings → AirDrop & Handoff, or run
-  `banko-ai run --port 5001`.
+Start with `banko-ai doctor`. Beyond that: receipts that read as "Unknown"
+mean tesseract is missing (`scripts/setup_system_deps.sh`), and
+`/api/health?refresh=1` re-checks the provider and the database.
 
 ## License
 

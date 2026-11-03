@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine.url import make_url
 
+from banko_ai.services.seeding import ensure_personas
 from banko_ai.web.auth import UserManager
 
 DB = os.getenv("DATABASE_URL")
@@ -78,9 +79,9 @@ def test_duplicate_create_raises(um):
         um.create("spec-test-user", "diner")
 
 
-def test_persona_backfill_idempotent(um):
-    um.backfill_personas()
-    um.backfill_personas()
+def test_persona_backfill_idempotent(um, scratch_db):
+    ensure_personas(scratch_db)
+    ensure_personas(scratch_db)
     maya = um.get("00000000-0000-0000-0000-0000000000a1")
     assert maya is not None and maya["spending_style"] == "diner"
 
@@ -94,7 +95,7 @@ def test_clear_demo_users_removes_data(um, scratch_db):
 
 
 def test_clear_demo_users_preserves_personas(um, scratch_db):
-    um.backfill_personas()
+    ensure_personas(scratch_db)
     um.create("spec-wipe-me-2", "subscriber", demo_user=True)
     from banko_ai.web.auth import clear_demo_users
     clear_demo_users(scratch_db)
@@ -105,3 +106,19 @@ def test_clear_demo_users_preserves_personas(um, scratch_db):
     assert sam is not None and sam["username"] == "sam"
     assert riley is not None and riley["username"] == "riley"
     assert um.get_by_username("spec-wipe-me-2") is None
+
+
+def test_clear_demo_users_deletes_through_the_one_helper(um, scratch_db, monkeypatch):
+    from banko_ai.services import users as user_service
+    from banko_ai.web.auth import clear_demo_users
+    seen = []
+    real = user_service.delete_users
+
+    def spy(ids, **kwargs):
+        seen.extend(ids)
+        return real(ids, **kwargs)
+
+    monkeypatch.setattr(user_service, "delete_users", spy)
+    created = um.create("spec-wipe-me-3", "saver", demo_user=True)
+    assert clear_demo_users(scratch_db)["users"] >= 1
+    assert str(created["user_id"]) in seen and um.get_by_username("spec-wipe-me-3") is None

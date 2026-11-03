@@ -5,13 +5,13 @@ import os
 import pytest
 from sqlalchemy import create_engine, text
 
-from banko_ai.utils.migration import (
+from banko_ai.db.regions import (
     detect_database_regions,
     detect_regions,
-    migrate_regional_tables,
     regional_tables_ready,
     resolve_primary_region,
 )
+from banko_ai.utils.migration import migrate_regional_tables
 
 DB = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
