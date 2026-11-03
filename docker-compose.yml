@@ -3,7 +3,7 @@ version: '3.8'
 services:
   # CockroachDB database
   cockroachdb:
-    image: cockroachdb/cockroach:${COCKROACHDB_VERSION:-v25.4.13}
+    image: cockroachdb/cockroach:${COCKROACHDB_VERSION:-v25.4.19}
     container_name: banko-cockroachdb
     hostname: cockroachdb
     ports:
