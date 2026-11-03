@@ -105,7 +105,7 @@ docker pull virag/banko-ai-assistant:latest
 docker run -d \
   --name cockroachdb \
   -p 26257:26257 -p 8080:8080 \
-  cockroachdb/cockroach:v25.4.6 \
+  cockroachdb/cockroach:v25.4.19 \
   start-single-node --insecure
 
 # Wait for CockroachDB to be ready

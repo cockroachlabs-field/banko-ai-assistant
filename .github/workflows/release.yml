@@ -50,7 +50,7 @@ jobs:
         run: |
           docker run -d --name cockroachdb \
             -p 26257:26257 -p 8080:8080 \
-            cockroachdb/cockroach:latest \
+            cockroachdb/cockroach:v25.4.19 \
             start-single-node --insecure
           echo "Waiting for CockroachDB..."
           for i in {1..30}; do

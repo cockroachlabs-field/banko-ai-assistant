@@ -6,7 +6,7 @@
 
 services:
   cockroachdb:
-    image: cockroachdb/cockroach:${COCKROACHDB_VERSION:-v25.4.13}
+    image: cockroachdb/cockroach:${COCKROACHDB_VERSION:-v25.4.19}
     container_name: banko-airgap-cockroachdb
     hostname: cockroachdb
     ports:
