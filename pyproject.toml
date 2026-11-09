@@ -51,7 +51,7 @@ dependencies = [
     # 2026-06-24). google-genai replaces it for both Vertex AI and the public
     # Generative AI API (switch via the vertexai=True client flag).
     "google-auth>=2.23.0,<3.0.0",
-    "google-genai>=2.34.0",
+    "google-genai>=3.0.0",
     
     # CockroachDB LangChain integration: the LangGraph checkpointer (CockroachDBSaver)
     "langchain-cockroachdb>=0.5.1",  # 0.4.1: concurrent pooled checkpoints, TLS EOF retries, atomic writes; 0.5.1: pipelined writes skip prepared statements
