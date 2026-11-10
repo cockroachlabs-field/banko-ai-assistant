@@ -226,3 +226,16 @@ def test_profile_service(member):
     p = get_profile(member)
     assert p["user_id"] == member and p["spending_style"] == "balanced"
     assert get_profile("not-a-uuid") is None
+
+
+def test_the_tab_icon_is_the_cockroach_labs_brandmark(monkeypatch, member):
+    """Every page and the login page link the brandmark, which follows the
+    browser's light or dark theme; the old roach mark is gone."""
+    client = app_client(monkeypatch)
+    icon = client.get("/static/favicon.svg")
+    assert icon.status_code == 200 and icon.mimetype == "image/svg+xml"
+    assert b"Cockroach Labs brandmark" in icon.data and b"prefers-color-scheme: dark" in icon.data
+    for html in (_render(client, member), client.get("/login").get_data(as_text=True)):
+        assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
+        assert "roach-logo" not in html
+    assert client.get("/static/roach-logo.svg").status_code == 404
