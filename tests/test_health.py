@@ -193,3 +193,80 @@ def test_rls_off_by_choice_is_ready_not_degraded(monkeypatch, make_app):
     rls = _wait_state(app.extensions["banko_readiness"], "rls", 60)
     assert rls is not None and rls.state == "ready"
     assert "off by choice" in rls.detail
+
+
+# Row-level TTL on the checkpoint tables has a warm-up step of its own, after
+# the checkpointer's: its run can take 15 seconds, and nothing waits on it.
+
+def _warm_up_the_assistant(monkeypatch, keep_ttl):
+    """Warm-up as a real boot runs it, with a stand-in checkpointer and no
+    seeding. Returns what the assistant lane called, in order."""
+    from banko_ai.config.settings import reset_config
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setenv("BANKO_SKIP_AUTOSETUP", "0")
+    reset_config()
+    monkeypatch.setattr("banko_ai.services.seeding.seed_personas", lambda url=None, on_progress=None: {})
+    called = []
+
+    def ttl():
+        called.append("ttl")
+        return keep_ttl()
+
+    monkeypatch.setattr("banko_ai.assistant.checkpoint.get_saver", lambda: called.append("checkpointer"))
+    monkeypatch.setattr("banko_ai.assistant.checkpoint.keep_ttl", ttl)
+    return called
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_checkpoint_ttl_is_a_step_of_its_own_after_the_checkpointer(monkeypatch, make_app):
+    called = _warm_up_the_assistant(monkeypatch, lambda: "set to 7 days")
+    readiness = make_app().extensions["banko_readiness"]
+    ttl = _wait_state(readiness, "checkpoint_ttl", 60)
+    assert ttl is not None and (ttl.state, ttl.detail) == ("ready", "set to 7 days")
+    assert called == ["checkpointer", "ttl"] and readiness.is_ready("assistant")
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_a_ttl_run_in_progress_holds_neither_the_checkpointer_nor_the_ready_line(monkeypatch, make_app):
+    running, release = threading.Event(), threading.Event()
+
+    def slow():
+        running.set()
+        release.wait(60)
+        return "set to 7 days"
+
+    _warm_up_the_assistant(monkeypatch, slow)
+    readiness = make_app().extensions["banko_readiness"]
+    try:
+        assert running.wait(60)
+        deadline = time.time() + 60
+        while time.time() < deadline and not readiness.finished():
+            time.sleep(0.2)
+        assert readiness.finished() and readiness.is_ready("assistant")
+        assert readiness.get("checkpoint_ttl").state == "running"
+    finally:
+        release.set()
+    assert _wait_state(readiness, "checkpoint_ttl", 30).state == "ready"
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_a_ttl_run_that_fails_names_its_error_class_and_not_its_text(monkeypatch, make_app):
+    def refused():
+        raise RuntimeError("refused by db-7.internal")
+
+    _warm_up_the_assistant(monkeypatch, refused)
+    app = make_app()
+    ttl = _wait_state(app.extensions["banko_readiness"], "checkpoint_ttl", 60)
+    assert ttl is not None and ttl.state == "failed"
+    assert "RuntimeError" in ttl.detail and "next boot" in ttl.detail and "db-7" not in ttl.detail
+    assert app.extensions["banko_readiness"].is_ready("assistant")
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_with_warm_up_skipped_the_ttl_step_is_skipped_too(monkeypatch, make_app):
+    called = []
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setattr("banko_ai.assistant.checkpoint.keep_ttl", lambda: called.append("ttl") or "set")
+    ttl = _wait_state(make_app().extensions["banko_readiness"], "checkpoint_ttl", 60)
+    assert ttl is not None and ttl.state == "ready" and "skipped" in ttl.detail
+    assert called == []
