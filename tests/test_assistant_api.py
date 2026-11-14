@@ -19,7 +19,7 @@ from banko_ai.services.seeding import seed_user
 from banko_ai.web import assistant_api
 from tests._app import app_client, stop_apps
 from tests._chat import ScriptedChat
-from tests._money import drop_user, make_user
+from tests._money import drop_user, make_user, seeded_diner
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
 
@@ -39,8 +39,7 @@ def _drop(uid: str) -> None:
 
 @pytest.fixture(scope="module")
 def member():
-    uid = make_user("diner")
-    seed_user(uid, months=1, today=date.today())
+    uid = seeded_diner(1)
     yield uid
     _drop(uid)
 

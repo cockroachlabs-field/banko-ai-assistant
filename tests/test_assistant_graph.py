@@ -18,15 +18,14 @@ from banko_ai.db.engine import get_engine
 from banko_ai.services import memories, threads
 from banko_ai.services.seeding import seed_user
 from tests._chat import ScriptedChat
-from tests._money import drop_user, make_user
+from tests._money import drop_user, make_user, seeded_diner
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
 
 
 @pytest.fixture(scope="module")
 def member():
-    uid = make_user("diner")
-    seed_user(uid, months=2, today=date.today())
+    uid = seeded_diner(2)
     yield uid
     with get_engine().begin() as c:
         for t in ("search_cache", "answer_cache", "memories", "assistant_actions", "receipts"):
