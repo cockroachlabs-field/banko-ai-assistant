@@ -218,6 +218,18 @@ def test_unresolved_category_raises_tool_error(ctx):
     assert not out["ok"] and "No category called 'NoSuchCategory'" in out["error"]
 
 
+def test_a_made_up_expense_id_is_not_a_lookup_that_broke(ctx):
+    """Models pass placeholders such as "<expense_id>". That is the model's
+    mistake: no candidates, and nothing for the answer to apologize for."""
+    out = T.run_tool("duplicate_check", {"expense_id": "<expense_id>"}, ctx)
+    assert out["ok"] is True and out["result"] == {"candidates": []}
+
+
+def test_remembering_nothing_is_bad_arguments(ctx):
+    out = T.run_tool("remember", {"content": "   "}, ctx)
+    assert out["ok"] is False and out["error"] == "bad arguments"
+
+
 def test_library_value_error_becomes_failed(ctx, monkeypatch):
     def broken(*args, **kwargs):
         raise ValueError("secret library detail")
