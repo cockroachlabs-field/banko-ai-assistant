@@ -216,3 +216,11 @@ def test_crdb_admin_settings_default_empty_and_mask_the_password(monkeypatch):
     monkeypatch.setenv("CRDB_ADMIN_PASSWORD", "pa55word")
     info = {i.env: i for i in S.Settings().describe()}
     assert "pa55word" not in info["CRDB_ADMIN_PASSWORD"].value
+
+
+def test_ollama_is_reached_at_the_address_its_daemon_binds():
+    """Ollama listens on 127.0.0.1 unless told otherwise. "localhost" can
+    resolve to ::1 first, and a client only moves on to IPv4 when that
+    connection is refused. Whatever else answers on ::1 (a security agent, a
+    proxy) leaves the app with "ollama did not answer"."""
+    assert S.Settings().ollama_host == "http://127.0.0.1:11434"
