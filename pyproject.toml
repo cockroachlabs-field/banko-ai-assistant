@@ -34,7 +34,7 @@ dependencies = [
     "jinja2>=3.1.6,<4.0.0",
     
     # Database
-    "psycopg[binary]>=3.3.6,<4.0.0",  # psycopg 3: server-side binding, automatic prepared statements, the driver langchain-cockroachdb already uses
+    "psycopg[binary]>=3.3.8,<4.0.0",  # psycopg 3: server-side binding, automatic prepared statements, the driver langchain-cockroachdb already uses
     "sqlalchemy>=2.0.0,<3.0.0",
     "sqlalchemy-cockroachdb>=2.0.4,<3.0.0",
     
