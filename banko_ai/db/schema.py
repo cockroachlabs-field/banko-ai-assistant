@@ -36,7 +36,10 @@ from .rls import policy_statements, policy_tables, rls_statements, role_statemen
 log = logging.getLogger("banko.schema")
 narration = logging.getLogger("banko.migration")  # the lines the demo console shows
 
-REGISTRY_VERSION = 2
+# Part of the fingerprint. Raise it when an upgrade must reach databases whose
+# rendered DDL did not change: 3 came with _vector_ops_upgrade, which an
+# earlier build of 2.0 had stamped as current with its L2 indexes still there.
+REGISTRY_VERSION = 3
 FINGERPRINT_KEY = "schema_fingerprint"
 LOCK_KEY = "schema_lock"
 # The schema lease. A LeaseHeartbeat keeps it fresh while a boot applies the
@@ -596,8 +599,28 @@ def _scoped_transfer_key_upgrade(conn: Connection, topo: Topology) -> list[str]:
     return out
 
 
+_VECTOR_OPS = re.compile(r"\bvector_\w+_ops\b")
+
+
+def _vector_ops_upgrade(conn: Connection, topo: Topology) -> list[str]:
+    """Existing indexes are matched by name, and a database first created
+    before 1.0.36 holds L2 vector indexes under the names this registry gives
+    its cosine ones: every 1.x release since created them IF NOT EXISTS, so
+    they were never replaced. A cosine search pinned to such an index is an
+    error (SQLSTATE 42809), so each is dropped and built again."""
+    wanted = {(t.name, i.name): i for t in tables() for i in t.indexes if i.vector}
+    out = []
+    for table, name, definition in conn.execute(text(
+            "SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' "
+            "ORDER BY tablename, indexname")).fetchall():
+        index = wanted.get((str(table), str(name)))
+        if index is not None and set(_VECTOR_OPS.findall(str(definition))) != set(_VECTOR_OPS.findall(index.columns)):
+            out += [f"DROP INDEX {table}@{name}", index.create(str(table))]
+    return out
+
+
 UPGRADES: tuple[Upgrade, ...] = (_naive_timestamp_upgrade, _users_ttl_upgrade, _ttl_drift_upgrade,
-                                 _scoped_transfer_key_upgrade)
+                                 _scoped_transfer_key_upgrade, _vector_ops_upgrade)
 
 
 @dataclass

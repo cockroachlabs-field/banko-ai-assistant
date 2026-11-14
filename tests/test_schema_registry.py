@@ -231,6 +231,76 @@ def test_upgrade_from_v13_schema(scratch_url):
     assert "ttl_expire_after" not in users_ddl
 
 
+_USER, _VECTOR = "11111111-1111-1111-1111-111111111111", "[" + ",".join(["0.05"] * 384) + "]"
+
+
+def _pre_cosine_expenses(url: str, locality: str = "") -> None:
+    """expenses as a release before 1.0.36 created it, with three of one user's rows."""
+    with get_engine(url).connect() as conn:
+        conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn.execute(text("""
+            CREATE TABLE expenses (
+                expense_id UUID PRIMARY KEY DEFAULT gen_random_uuid(), user_id UUID NOT NULL,
+                expense_date DATE NOT NULL, expense_amount DECIMAL(10,2) NOT NULL,
+                shopping_type STRING NOT NULL, description STRING, merchant STRING,
+                payment_method STRING NOT NULL, recurring BOOL DEFAULT false, tags STRING[],
+                embedding VECTOR(384), created_at TIMESTAMP DEFAULT now(),
+                VECTOR INDEX idx_expenses_embedding (embedding vector_l2_ops),
+                VECTOR INDEX idx_expenses_user_embedding (user_id, embedding vector_l2_ops),
+                INDEX idx_expenses_user_date (user_id ASC, expense_date DESC))""" + (f" LOCALITY {locality}" if locality else "")))
+        for _ in range(3):
+            conn.execute(text("INSERT INTO expenses (user_id, expense_date, expense_amount, shopping_type, payment_method, "
+                              "embedding) VALUES (:u, current_date, 9.99, 'Coffee', 'Credit Card', :v)"),
+                         {"u": _USER, "v": _VECTOR})
+
+
+def _expense_vector_indexes(url: str) -> dict[str, str]:
+    with get_engine(url).connect() as conn:
+        return {str(name): str(definition).split(" USING ")[1] for name, definition in conn.execute(text(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'expenses' AND indexdef LIKE '%cspann%'"))}
+
+
+_L2 = {"idx_expenses_embedding": "cspann (embedding vector_l2_ops)",
+       "idx_expenses_user_embedding": "cspann (user_id, embedding vector_l2_ops)"}
+_COSINE = {"idx_expenses_embedding": "cspann (embedding vector_cosine_ops)",
+           "idx_expenses_user_embedding": "cspann (user_id, embedding vector_cosine_ops)"}
+
+
+def test_vector_indexes_from_before_the_cosine_change_are_rebuilt(scratch_url):
+    """A database first created before 1.0.36 holds L2 vector indexes under
+    the names the registry gives its cosine ones, and every 1.x release since
+    created them IF NOT EXISTS, so they were never replaced. A cosine search
+    pinned to such an index is an error, so the upgrade builds them again."""
+    from banko_ai.services._vector import nearest
+    from banko_ai.services.transactions import _EXPENSE_SEARCH
+    _pre_cosine_expenses(scratch_url)
+    assert S.ensure_schema(scratch_url).changed
+    assert _expense_vector_indexes(scratch_url) == _COSINE
+    with get_engine(scratch_url).connect() as conn:
+        found = nearest(conn, user_id=_USER, qvec=_VECTOR, k=3, **_EXPENSE_SEARCH)
+        assert len(found) == 3  # the rows 1.x left, through the index 2.0 pins
+        # With the indexes current there is nothing left for the next upgrade to do.
+        assert S._vector_ops_upgrade(conn, PLAIN) == []
+
+
+def test_a_database_an_earlier_build_of_2_0_stamped_is_repaired_on_its_next_boot(scratch_url, monkeypatch):
+    """A 2.0 build from before that upgrade left the L2 indexes and a
+    fingerprint that says current, and a boot that finds the schema current
+    runs nothing. The registry version moved with the upgrade, so the next
+    boot applies the registry once more, and a boot that dies halfway is
+    picked up by the one after."""
+    _pre_cosine_expenses(scratch_url)
+    with monkeypatch.context() as earlier:
+        earlier.setattr(S, "REGISTRY_VERSION", 2)
+        earlier.setattr(S, "UPGRADES", tuple(u for u in S.UPGRADES if u is not S._vector_ops_upgrade))
+        assert S.ensure_schema(scratch_url).changed
+        assert not S.ensure_schema(scratch_url).changed  # that build's own next boot: current
+    assert _expense_vector_indexes(scratch_url) == _L2
+    assert S.ensure_schema(scratch_url).changed
+    assert _expense_vector_indexes(scratch_url) == _COSINE
+    assert not S.ensure_schema(scratch_url).changed
+
+
 def test_concurrent_boots_apply_schema_once(scratch_url):
     results, errors = [], []
 
@@ -307,6 +377,36 @@ def test_fresh_multi_region_database_is_born_regional():
         assert elapsed < 180
     finally:
         _drop(MR_URL, "banko_schema_mr_test")
+
+
+@pytest.mark.skipif(not MR_URL, reason="BANKO_TEST_MR_URL not set")
+@pytest.mark.parametrize("locality", ["REGIONAL BY ROW", "REGIONAL BY TABLE IN PRIMARY REGION"])
+def test_pre_cosine_vector_indexes_are_rebuilt_on_a_multi_region_database(locality):
+    """The two shapes an old database has on a multi-region cluster: the
+    table 1.3 already made REGIONAL BY ROW, rebuilt in place, and the one
+    still REGIONAL BY TABLE, rebuilt and then converted by the locality step."""
+    from banko_ai.services._vector import nearest
+    from banko_ai.services.transactions import _EXPENSE_SEARCH
+    name = "banko_pre_cosine_mr_test"
+    url = _scratch(MR_URL, name)
+    try:
+        with get_engine(url).connect() as conn:
+            conn.execution_options(isolation_level="AUTOCOMMIT")
+            regions = [str(r[0]) for r in conn.execute(text("SELECT region FROM [SHOW REGIONS FROM CLUSTER]"))]
+            conn.execute(text(f'ALTER DATABASE {name} SET PRIMARY REGION "{regions[0]}"'))
+            for region in regions[1:]:
+                conn.execute(text(f'ALTER DATABASE {name} ADD REGION "{region}"'))
+        _pre_cosine_expenses(url, locality)
+        assert S.ensure_schema(url).changed
+        assert _expense_vector_indexes(url) == _COSINE
+        S.run_pending_conversions(url)
+        assert _expense_vector_indexes(url) == _COSINE
+        with get_engine(url).connect() as conn:
+            where = conn.execute(text("SELECT locality FROM [SHOW TABLES] WHERE table_name = 'expenses'")).scalar()
+            found = nearest(conn, user_id=_USER, qvec=_VECTOR, k=3, **_EXPENSE_SEARCH)
+        assert where == "REGIONAL BY ROW" and len(found) == 3
+    finally:
+        _drop(MR_URL, name)
 
 
 def _unique_indexes(conn, table: str) -> dict[str, list[str]]:
