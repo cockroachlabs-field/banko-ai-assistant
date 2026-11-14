@@ -58,6 +58,29 @@ def reads_spanish(text: str) -> bool:
     return sum(word in padded for word in SPANISH) >= 2
 
 
+def tool_steps(answer: dict, status: str) -> list[dict]:
+    """The tool calls the answer's trace reports with this status."""
+    return [step for step in (answer.get("meta") or {}).get("trace") or []
+            if step.get("kind") == "tool" and step.get("status") == status]
+
+
+def tools(answer: dict, status: str) -> list[str]:
+    """The tools the answer's trace reports with this status, each named once."""
+    return list(dict.fromkeys(step.get("label", "?") for step in tool_steps(answer, status)))
+
+
+def new_total() -> str:
+    return f"{random.randint(700, 1999) / 100:.2f}"
+
+
+def failed_tools(answer: dict) -> list[str]:
+    """The tools that raised while this answer was put together. The
+    assistant still answers then, without that tool's facts, so the answer
+    alone says nothing about the tool. A tool that declined (no such
+    merchant, bad arguments) is a warning in the trace and not counted."""
+    return tools(answer, "error")
+
+
 def receipt_png(total: str) -> bytes:
     """A clean receipt tesseract can read: merchant, items, total, date."""
     from PIL import Image, ImageDraw, ImageFont
@@ -84,7 +107,7 @@ class Smoke:
         self.http = requests.Session()
         self.failures = 0
         self.user_id: str | None = None
-        self.total = f"{random.randint(700, 1999) / 100:.2f}"  # a new purchase each run, never a duplicate
+        self.total = new_total()  # a new purchase each run; receipt() picks another if this one was posted lately
 
     # -- plumbing -------------------------------------------------------------------------------
 
@@ -118,6 +141,9 @@ class Smoke:
         answers = [d for e, d in events if e == "answer"]
         if not answers:
             raise AssertionError(f"no answer event (got {[e for e, _ in events]})")
+        failed = failed_tools(answers[0])
+        if failed:
+            raise AssertionError(f"{', '.join(failed)} failed; details are in the server log")
         return answers[0]
 
     @staticmethod
@@ -193,9 +219,16 @@ class Smoke:
         tid = self.thread()
         a = self.ask(tid, "show me my coffee purchases")
         self.expect_route(a, "plan")
-        nxt = ((a.get("meta") or {}).get("search") or {}).get("next")
-        if not nxt:
-            return "answered; no second page to show"
+        if a.get("cached"):  # the receipt check's new purchase should have retired every earlier answer
+            raise AssertionError("the answer came from the answer cache, so no search ran")
+        searches = [step for step in tool_steps(a, "success") if step.get("label") == "search_transactions"]
+        if not searches:
+            raise AssertionError(f"no search ran: {a['answer'][:120]!r}")
+        if all(str(step.get("detail", "")).startswith("0 rows") for step in searches):
+            raise AssertionError("the search found no purchases, and the receipt check just posted one")
+        # The answer names its search only when there is a next page to ask for.
+        if not ((a.get("meta") or {}).get("search") or {}).get("next"):
+            return "answered from a search; no second page to show"
         more = self.ask(tid, "show more")
         self.expect_route(more, "more")
         items = ((more.get("meta") or {}).get("search") or {}).get("items") or []
@@ -209,7 +242,7 @@ class Smoke:
             raise AssertionError(f"not Spanish: {a.get('answer', '')[:120]!r}")
         return (a["answer"].splitlines()[0])[:100]
 
-    def receipt(self) -> str:
+    def upload_receipt(self) -> dict:
         r = self.http.post(self.url + "/api/v1/receipts",
                            files={"receipt": ("smoke-receipt.png", receipt_png(self.total), "image/png")},
                            stream=True, timeout=TIMEOUT)
@@ -223,6 +256,19 @@ class Smoke:
             raise AssertionError(f"no receipt event (got {[e for e, _ in events]})")
         if found.get("status") not in ("posted", "duplicate") or not found.get("merchant"):
             raise AssertionError(f"receipt ended {found.get('status')!r} with merchant {found.get('merchant')!r}")
+        return found
+
+    def receipt(self) -> str:
+        # A total an earlier run posted in the last few days comes back a
+        # duplicate and posts nothing, and the checks after this one count on
+        # a new purchase having retired earlier runs' cached answers.
+        for _ in range(3):
+            found = self.upload_receipt()
+            if found["status"] == "posted":
+                break
+            self.total = new_total()
+        else:
+            raise AssertionError("three receipts in a row came back duplicates, so no new purchase was posted")
         tid = found["thread_id"]
         for question in ("what was the total on this receipt?", "is this receipt a duplicate?",
                          "which merchant was this receipt from?"):

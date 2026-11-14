@@ -334,3 +334,38 @@ def test_a_posted_receipt_still_reports_when_its_thread_cannot_open(client, monk
     assert [k for k, _ in evs][-2:] == ["receipt", "done"]
     receipt = dict(evs)["receipt"]
     assert receipt["status"] == "posted" and receipt["thread_id"] is None
+
+
+def test_the_release_smoke_reads_the_answers_this_api_really_sends(client, chat, monkeypatch):
+    """scripts/smoke.py fails a check when the answer's trace reports a tool
+    that raised, and needs a search that ran and found rows. Its own tests
+    use handwritten trace steps; this one hands it real answers, so a change
+    to a step's kind, label, status or row count cannot quietly disarm it."""
+    import importlib.util
+    import re
+    from pathlib import Path
+
+    from banko_ai.services import caches
+    from banko_ai.services import transactions as txns
+    spec = importlib.util.spec_from_file_location("smoke", Path(__file__).resolve().parents[1] / "scripts" / "smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+
+    def ask(question):
+        chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "dinner"}}]}',
+                                    '{"steps": []}', "Here are your dinners.")
+        resp = client.post(f"/api/v1/assistant/threads/{_thread(client)}/messages", json={"message": question})
+        return next(data for event, data in events(resp) if event == "answer")
+
+    worked = ask("show me my dinners out")
+    assert smoke.failed_tools(worked) == []
+    searches = [step for step in smoke.tool_steps(worked, "success") if step["label"] == "search_transactions"]
+    assert len(searches) == 1 and re.match(r"[1-9]\d* rows", searches[0]["detail"])
+
+    def down(*args, **kwargs):
+        raise RuntimeError("connection reset by peer")
+    monkeypatch.setattr(txns, "semantic_search", down)
+    monkeypatch.setattr(caches, "get_search", lambda *args, **kwargs: None)
+    broke = ask("show me every dinner out")
+    assert smoke.failed_tools(broke) == ["search_transactions"]
+    assert smoke.tool_steps(broke, "success") == [] and broke["answer"] == G.LOOKUP_FAILED
