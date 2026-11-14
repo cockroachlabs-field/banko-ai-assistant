@@ -357,9 +357,9 @@ def test_an_answer_without_one_successful_tool_is_not_cached(g, member, thread, 
     monkeypatch.setattr(T.txns, "semantic_search", down)
     q = "which weekend outings could I cut from my budget?"
     chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"category": "fun"}}]}',
-                        '{"steps": []}', "I couldn't look that up.")
+                        '{"steps": []}', "unused: no model writes this reply")
     out, _ = _turn(g, member, thread, q, chat)
-    assert out["route"]["kind"] == "plan" and out["answer"] == "I couldn't look that up."
+    assert out["route"]["kind"] == "plan" and out["answer"] == G.LOOKUP_FAILED
     assert _answer_rows(member, q) == 0
 
 
@@ -834,6 +834,78 @@ def test_an_answer_with_any_failed_tool_call_is_not_cached(g, member, thread):
     out, _ = _turn(g, member, thread, q, chat)
     assert out["route"]["kind"] == "plan" and out["answer"].startswith("Here are a few dinners")
     assert _answer_rows(member, q) == 0
+
+
+def _search_raises(monkeypatch, only: str | None = None):
+    """The transaction search fails as a lost connection would, for every
+    query or for one. The search cache goes with the connection, so an
+    earlier test's cached result never stands in for the search."""
+    from banko_ai.services import caches
+    from banko_ai.services import transactions as txns
+    real = txns.semantic_search
+    monkeypatch.setattr(caches, "get_search", lambda *args, **kwargs: None)
+
+    def search(user_id, query, **kw):
+        if only is None or query == only:
+            raise RuntimeError("connection reset by peer")
+        return real(user_id, query, **kw)
+
+    monkeypatch.setattr(txns, "semantic_search", search)
+
+
+def test_when_every_lookup_raised_the_reply_says_so(g, member, thread, monkeypatch):
+    """A lookup that raised leaves the model no facts, and an answer written
+    from none reads as "you have none". The reply is a fixed line instead, and
+    no model writes one."""
+    _search_raises(monkeypatch)
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
+                        '{"steps": []}', "I don't have any information about your coffee purchases.")
+    out, events = _turn(g, member, thread, "show me my coffee purchases", chat)
+    assert out["route"]["kind"] == "plan" and out["answer"] == G.LOOKUP_FAILED
+    assert "".join(e["text"] for e in events if e["type"] == "token") == out["answer"]
+    assert not [kind for kind, _ in chat.calls if kind == "stream"]
+    assert "connection reset" not in json.dumps(events, default=str)
+
+
+def test_when_one_lookup_raised_the_answer_carries_a_note(g, member, thread, monkeypatch):
+    _search_raises(monkeypatch, only="restaurants")
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}},'
+                        ' {"tool": "search_transactions", "args": {"query": "restaurants"}}]}',
+                        '{"steps": []}', "Here are your coffee purchases.")
+    out, events = _turn(g, member, thread, "compare my coffee and restaurant purchases", chat)
+    assert out["answer"] == f"Here are your coffee purchases.\n\n{G.LOOKUP_PARTLY_FAILED}"
+    assert "".join(e["text"] for e in events if e["type"] == "token") == out["answer"]
+
+
+def test_a_lookup_that_declined_adds_no_note(g, member, thread):
+    """Arguments the planner got wrong are its own mistake, and a merchant the
+    user never visited is an answer. Neither is a lookup that broke."""
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "dinner", "date_from": "lately"}},'
+                        ' {"tool": "spend_summary", "args": {"merchant": "NoSuchMerchant"}},'
+                        ' {"tool": "search_transactions", "args": {"query": "dinner"}}]}',
+                        '{"steps": []}', "Here are a few dinners.")
+    out, _ = _turn(g, member, thread, "which dinners out could I skip?", chat)
+    assert out["answer"] == "Here are a few dinners."
+
+
+def test_the_incomplete_note_is_in_the_users_language(g, member, thread, monkeypatch):
+    _search_raises(monkeypatch, only="restaurantes")
+    note = "Una de mis consultas no funcionó ahora, así que esto puede estar incompleto."
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "café"}},'
+                        ' {"tool": "search_transactions", "args": {"query": "restaurantes"}}]}',
+                        '{"steps": []}', "Aquí están tus compras de café.", note)
+    out, events = _turn(g, member, thread, "compara mis compras de café y restaurantes", chat, language_code="es-ES")
+    assert out["answer"] == f"Aquí están tus compras de café.\n\n{note}"
+    assert "".join(e["text"] for e in events if e["type"] == "token") == out["answer"]
+
+
+def test_the_failed_lookup_line_is_in_the_users_language(g, member, thread, monkeypatch):
+    _search_raises(monkeypatch)
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "café"}}]}',
+                        '{"steps": []}', "No pude consultarlo ahora mismo. Vuelve a preguntar en un momento.")
+    out, _ = _turn(g, member, thread, "muéstrame mis compras de café", chat, language_code="es-ES")
+    assert out["answer"] == "No pude consultarlo ahora mismo. Vuelve a preguntar en un momento."
+    assert G.LOOKUP_FAILED in chat.prompts()[-1]  # the line itself was what the model translated
 
 
 def test_the_model_hears_which_counts_were_capped():

@@ -543,6 +543,10 @@ def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
     return {"region": serving_regions(explain) or home, "db_ms": db_ms, "explain": explain}
 
 
+# A lookup that raised left the model without those facts, and an answer
+# written without them reads as "you have none". These say what happened.
+LOOKUP_FAILED = "I couldn't look that up just now. Please ask again in a moment."
+LOOKUP_PARTLY_FAILED = "One of my lookups didn't work just now, so this may be incomplete."
 PROPOSAL_STATUS = "waiting for you to confirm"
 CONFIRM_LINE = "Waiting for your confirmation: {summary}."
 
@@ -623,19 +627,29 @@ def _confirmation(proposals: list[dict], language: str, chat: Chat) -> str:
     return answers.translate(lines, language, chat)
 
 
+def _raised(results: list[dict]) -> bool:
+    """Whether a lookup raised (a lost connection, a database error). One
+    that declined, no such merchant or arguments it could not use, did not."""
+    return any(not r.get("ok") and r.get("error") == "failed" for r in results)
+
+
 def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     deps = runtime.context
     language = state.get("language") or "English"
     answer = state.get("answer") or ""
+    results = state.get("results") or []
     generated = False
     if answer:
         if not state.get("streamed"):  # a fixed or cached answer; a streamed one already went out
             _emit_text(answer)
+    elif _raised(results) and not any(r.get("ok") for r in results):
+        # Nothing to write from, and a model given no facts says the user has none.
+        answer = answers.translate(LOOKUP_FAILED, language, deps.chat)
+        _emit_text(answer)
     else:
         msgs = answer_messages(state["message"], language=language,
                                history=state.get("messages") or [], memories=state.get("memories") or [],
-                               facts=_facts(state.get("results") or []),
-                               context_facts=state.get("context_facts") or "")
+                               facts=_facts(results), context_facts=state.get("context_facts") or "")
         narration.generating(language)
         _running("answer", "Writing the answer")
         t0 = time.perf_counter()
@@ -646,7 +660,10 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         answer = "".join(parts).strip()
         generated = True
         _step("LLM answer", "streamed", ms=_since(t0), status="success", key="answer")
-    results = state.get("results") or []
+        if _raised(results):
+            note = answers.translate(LOOKUP_PARTLY_FAILED, language, deps.chat)
+            _emit({"type": "token", "text": f"\n\n{note}" if answer else note})
+            answer = f"{answer}\n\n{note}" if answer else note
     citations = _cited(answer, results) if results else _cited_from_ledger(state["user_id"], answer, deps)
     # From here on the answer holds canonical markers for real purchases only.
     answer = answers.resolve_citations(answer, {c["expense_id"] for c in citations})

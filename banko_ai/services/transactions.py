@@ -443,6 +443,8 @@ def duplicate_check(user_id: str, expense_id: str, *, window_days: int, max_dist
                     url: str | None = None) -> dict:
     """Find possible duplicates of one expense: same amount, nearby date, similar description."""
     url = request_url(url)
+    if not valid_uuid(expense_id):  # a model's placeholder is no expense, not a query that broke
+        return {"candidates": []}
     with read_session(user_id, url=url) as conn:
         row = conn.execute(text("SELECT expense_amount, expense_date, embedding::STRING FROM expenses "
                                 "WHERE expense_id = CAST(:x AS UUID) AND user_id = CAST(:u AS UUID)"),

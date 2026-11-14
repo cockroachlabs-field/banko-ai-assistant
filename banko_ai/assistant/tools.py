@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, ValidationError
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
@@ -99,7 +99,7 @@ class QueryArgs(BaseModel):
 
 
 class RememberArgs(BaseModel):
-    content: str = Field(min_length=1, max_length=500)
+    content: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
 
 
 class RecategorizeArgs(BaseModel):

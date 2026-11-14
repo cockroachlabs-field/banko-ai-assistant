@@ -1,6 +1,6 @@
 """Ollama provider: local models as a first-class AI_SERVICE.
 
-Talks plain HTTP to an Ollama daemon (default http://localhost:11434), the
+Talks plain HTTP to an Ollama daemon (default http://127.0.0.1:11434), the
 same requests-only pattern the watsonx provider uses. No SDK dependency.
 Embeddings stay on sentence-transformers like every other provider, so the
 whole app runs with the network cable unplugged.
