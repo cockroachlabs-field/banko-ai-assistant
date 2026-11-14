@@ -199,7 +199,7 @@ class Settings(BaseSettings):
     cache_strict_mode: bool = _field(True, group="cache", env="CACHE_STRICT_MODE", description="Only reuse an answer when the underlying expense rows are identical.")
 
     # Demo data
-    banko_skip_autosetup: bool = _field(False, group="data", env="BANKO_SKIP_AUTOSETUP", description="Start without seeding the personas, the integrity checker or the checkpointer warm-up (`banko-ai run --no-data`).")
+    banko_skip_autosetup: bool = _field(False, group="data", env="BANKO_SKIP_AUTOSETUP", description="Start without seeding the personas, the integrity checker or the checkpointer warm-up, its TTL upkeep included (`banko-ai run --no-data`).")
     demo_user_ttl_days: int = _field(0, group="data", env="DEMO_USER_TTL_DAYS", description="Delete signed-up demo users older than this many days at boot. 0 keeps them.")
     monthly_budget_default: float = _field(10000.0, group="data", env="MONTHLY_BUDGET_DEFAULT", description="Monthly budget the budget agent assumes when a user has none.")
     fraud_duplicate_window_days: int = _field(60, group="data", env="FRAUD_DUPLICATE_WINDOW_DAYS", description="Days the fraud agent looks back for duplicate charges.")
@@ -242,7 +242,7 @@ class Settings(BaseSettings):
     coach_agg_lookback_days: int = _field(30, group="coach", env="COACH_AGG_LOOKBACK_DAYS", description="Days coach aggregates look back by default.")
     coach_signal_ttl_days: int = _field(30, group="coach", env="COACH_SIGNAL_TTL_DAYS", description="Row-level TTL for spending_signals, in days.")
     coach_nudge_ttl_days: int = _field(90, group="coach", env="COACH_NUDGE_TTL_DAYS", description="Row-level TTL for coach_nudges, in days.")
-    checkpoint_ttl_days: int = _field(7, group="coach", env="CHECKPOINT_TTL_DAYS", description="Row-level TTL for LangGraph checkpoints, in days. 0 keeps them.")
+    checkpoint_ttl_days: int = _field(7, group="coach", env="CHECKPOINT_TTL_DAYS", description="Row-level TTL for LangGraph checkpoints, in days, for a database that has none yet. 0 sets none. A database that already has a TTL keeps it, interval included.")
 
     # Assistant
     brand_name: str = _field("Banko", group="assistant", env="BRAND_NAME",

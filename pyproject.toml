@@ -54,7 +54,7 @@ dependencies = [
     "google-genai>=2.34.0",
     
     # CockroachDB LangChain integration: the LangGraph checkpointer (CockroachDBSaver)
-    "langchain-cockroachdb>=0.5.1",  # 0.4.1: concurrent pooled checkpoints, TLS EOF retries, atomic writes; 0.5.1: pipelined writes skip prepared statements
+    "langchain-cockroachdb>=0.6.0",  # 0.4.1: concurrent pooled checkpoints, TLS EOF retries, atomic writes; 0.5.1: pipelined writes skip prepared statements; 0.6.0: checkpointer TTL keeps what a live thread still uses
     
     # Agent Framework / LangGraph (1.x ecosystem, langchain-core>=1.2.11 for CVE fix)
     "langgraph>=1.2.19",

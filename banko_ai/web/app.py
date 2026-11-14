@@ -430,8 +430,8 @@ def create_app() -> Flask:
             IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
 
     def _assistant_step() -> str:
-        # Builds the checkpointer once: the checkpoint tables and their TTL on
-        # a first boot, a no-op afterwards, so the first question never pays for it.
+        # Builds the checkpointer once: the checkpoint tables on a first
+        # boot, a no-op afterwards, so the first question never pays for it.
         if config.banko_skip_autosetup:
             return "skipped (BANKO_SKIP_AUTOSETUP)"
         if not readiness.wait_for("schema", timeout=600):
@@ -439,6 +439,23 @@ def create_app() -> Flask:
         from ..assistant.checkpoint import get_saver
         get_saver()
         return "checkpointer ready"
+
+    def _checkpoint_ttl_step() -> str:
+        # Row-level TTL on the checkpoint tables. On a first boot, and once
+        # after the move to langchain-cockroachdb 0.6, the run pauses TTL and
+        # waits about 15 seconds for other savers, so it has a step of its
+        # own: the checkpointer is in use meanwhile and nothing waits here.
+        if config.banko_skip_autosetup:
+            return "skipped (BANKO_SKIP_AUTOSETUP)"
+        if not readiness.is_ready("assistant"):
+            raise RuntimeError("the checkpointer is not ready; the next boot tries again")
+        from ..assistant.checkpoint import keep_ttl
+        try:
+            return keep_ttl()
+        except Exception as e:
+            # Class name only: the message could name a host. The log has the rest.
+            boot_log.warning("checkpoint TTL: the run did not finish; the next boot tries again", exc_info=True)
+            raise RuntimeError(f"the run did not finish ({e.__class__.__name__}); the next boot tries again") from None
 
     def _emit_welcome_signal(user: dict, base_url: str) -> None:
         """Post a welcome signal matched to the user's spending style to this
@@ -1429,7 +1446,9 @@ def create_app() -> Flask:
     readiness.mark_background("integrity")
     readiness.mark_background("rls")
     start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-warmup-seed")
-    # Lane D: the assistant's checkpointer, also background.
+    # Lane D: the assistant's checkpointer, then its tables' TTL, also background.
     readiness.mark_background("assistant")
-    start_warmup(readiness, [("assistant", _assistant_step)], stop=warmup_stop, name="banko-warmup-assistant")
+    readiness.mark_background("checkpoint_ttl")
+    start_warmup(readiness, [("assistant", _assistant_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
+                 stop=warmup_stop, name="banko-warmup-assistant")
     return app
