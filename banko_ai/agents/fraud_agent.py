@@ -11,12 +11,15 @@ This agent:
 """
 
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
 from .tools.search_tools import create_search_tools
+
+log = logging.getLogger("banko.agents.fraud")
 
 
 def reasoning_prompt(expense: dict, result: dict) -> str:
@@ -36,6 +39,56 @@ Fraud signals found:
 Fraud confidence: {result['confidence']:.2%}
 
 In two or three sentences, say why this purchase is or is not likely fraud, naming the signals that decided it. Refer to the person as the customer."""
+
+
+HIGH_VALUE = 1000  # dollars; a purchase above it is a signal on its own
+
+# What each check says when it ran and found nothing, and what it is called
+# when it could not run. The amount rule always runs.
+CLEARED = {
+    "duplicates": "no other charge of that amount there on the same day",
+    "outliers": "not one of the customer's outlier amounts",
+    "similar": "no close match in the similarity search",
+    "high_value": f"not above the ${HIGH_VALUE:,} high-value mark",
+}
+UNCHECKED = {"duplicates": "duplicate charges", "outliers": "outlier amounts", "similar": "similar purchases"}
+
+
+def _listed(parts: list[str]) -> str:
+    if len(parts) < 3:
+        return " and ".join(parts)
+    return ", ".join(parts[:-1]) + ", and " + parts[-1]
+
+
+def unchecked(ran: dict[str, bool]) -> list[str]:
+    """The checks that could not run, by the names a reader sees."""
+    return [words for check, words in UNCHECKED.items() if not ran.get(check)]
+
+
+def _not_checked(ran: dict[str, bool]) -> str:
+    # First in the line, so a reader, or a line cut short, has it before the rest.
+    missed = unchecked(ran)
+    return f"Not checked this time: {_listed(missed)}. " if missed else ""
+
+
+def _purchase(expense: dict) -> str:
+    return f"the customer's ${float(expense['amount']):,.2f} purchase at {expense.get('merchant') or 'an unnamed merchant'}"
+
+
+def no_signal_reasoning(expense: dict, ran: dict[str, bool]) -> str:
+    """What the Agents page shows for a purchase with no fraud signal: any
+    check that could not run, then the ones that ran and found nothing. The
+    checks computed all of it, so no model is asked to write it."""
+    cleared = _listed([words for check, words in CLEARED.items() if check == "high_value" or ran.get(check)])
+    opening = "The other checks found no fraud signal for" if unchecked(ran) else "No fraud signal for"
+    return f"{_not_checked(ran)}{opening} {_purchase(expense)}: {cleared}."
+
+
+def signals_reasoning(expense: dict, result: dict) -> str:
+    """The line for a flagged purchase when the model cannot write one: the
+    signals as the checks stated them. Never the provider's error."""
+    found = "; ".join(signal["details"] for signal in result["signals"])
+    return f"Flagged on {_purchase(expense)}: {found}. Fraud confidence {result['confidence']:.0%}."
 
 
 class FraudAgent(BaseAgent):
@@ -145,30 +198,12 @@ Be thorough but not overly cautious. False positives are costly."""
             # Normalize field names (tool returns expense_amount/expense_date)
             expense['amount'] = expense.get('amount') or expense.get('expense_amount', 0)
             expense['date'] = expense.get('date') or expense.get('expense_date', '')
+            ran = {'duplicates': False, 'outliers': False, 'similar': False}
             
-            # Signal 1: Check for duplicates within the configured window
+            # Signal 1: another charge of the same amount at the same merchant that day
             try:
-                from sqlalchemy import text
-
-                from ..db.engine import get_engine
-                dup_engine = get_engine(self.database_url)
-                with dup_engine.connect() as conn:
-                    dup_result = conn.execute(text("""
-                        SELECT expense_id::TEXT, merchant, expense_amount, expense_date
-                        FROM expenses
-                        WHERE user_id = :user_id
-                        AND merchant ILIKE :merchant
-                        AND expense_amount = :amount
-                        AND expense_date = :expense_date
-                        AND expense_id != :expense_id
-                    """), {
-                        'user_id': user_id,
-                        'merchant': expense['merchant'],
-                        'amount': expense['amount'],
-                        'expense_date': expense['date'],
-                        'expense_id': expense_id,
-                    })
-                    dup_rows = dup_result.fetchall()
+                dup_rows = self._same_day_duplicates(user_id, expense, expense_id)
+                ran['duplicates'] = True
 
                 if dup_rows:
                     result['signals'].append({
@@ -189,6 +224,7 @@ Be thorough but not overly cautious. False positives are costly."""
                     days=self.duplicate_window_days
                 )
                 duplicate_data = json.loads(duplicate_result)
+                ran['duplicates'] = ran['duplicates'] or bool(duplicate_data.get('success'))
                 
                 if duplicate_data.get('success') and duplicate_data.get('count', 0) > 0:
                     for dup_group in duplicate_data.get('duplicates', []):
@@ -210,18 +246,23 @@ Be thorough but not overly cautious. False positives are costly."""
             )
             anomaly_data = json.loads(anomaly_result)
             
-            if anomaly_data.get('success'):
-                anomalies = anomaly_data.get('anomalies', [])
-                for anomaly in anomalies:
-                    if anomaly['expense_id'] == expense_id:
-                        z_score = abs(anomaly['z_score'])
-                        result['signals'].append({
-                            'type': 'anomaly',
-                            'severity': 'high' if z_score > 3.0 else 'medium',
-                            'details': f"Statistical outlier: z-score {z_score:.2f} ({anomaly['type']})"
-                        })
-                        result['confidence'] += min(0.3, z_score / 10.0)
-                        break
+            # Decided from the customer's mean and spread, not from the tool's
+            # list: that holds the twenty most unusual purchases, and an
+            # outlier ranked below them would read as none. With too little
+            # history to have a spread there are no statistics, and nothing
+            # was compared.
+            stats = anomaly_data.get('statistics') or {}
+            if anomaly_data.get('success') and stats.get('std_dev'):
+                ran['outliers'] = True
+                z_score = (float(expense['amount']) - stats['mean']) / stats['std_dev']
+                if abs(z_score) > stats['threshold']:
+                    result['signals'].append({
+                        'type': 'anomaly',
+                        'severity': 'high' if abs(z_score) > 3.0 else 'medium',
+                        'details': f"Statistical outlier: z-score {abs(z_score):.2f} "
+                                   f"({'unusually_high' if z_score > 0 else 'unusually_low'})"
+                    })
+                    result['confidence'] += min(0.3, abs(z_score) / 10.0)
             
             # Signal 3: Search for similar past fraud cases
             search_query = f"{expense['merchant']} {expense['category']} suspicious fraud"
@@ -232,6 +273,7 @@ Be thorough but not overly cautious. False positives are costly."""
                 limit=5
             )
             similar_data = json.loads(similar_result)
+            ran['similar'] = bool(similar_data.get('success'))
             
             if similar_data.get('success') and similar_data.get('count', 0) > 0:
                 # Check if any similar expenses were flagged as fraud
@@ -247,7 +289,7 @@ Be thorough but not overly cautious. False positives are costly."""
             
             # Signal 4: Amount-based rules
             amount = expense['amount']
-            if amount > 1000:
+            if amount > HIGH_VALUE:
                 result['signals'].append({
                     'type': 'high_value',
                     'severity': 'low',
@@ -266,8 +308,23 @@ Be thorough but not overly cautious. False positives are costly."""
             else:
                 result['recommendation'] = 'approve'
             
-            # Generate reasoning with LLM
-            reasoning = self.think(reasoning_prompt(expense, result))
+            # The model explains a purchase that tripped a signal. One that
+            # tripped none has nothing to weigh: the checks are the reasoning.
+            # Either way a check that could not run is named first, and a
+            # model that cannot answer leaves the signals, not its error.
+            result['unchecked'] = unchecked(ran)
+            if result['signals']:
+                try:
+                    explained = self.ask(reasoning_prompt(expense, result)).strip()
+                    if not explained:
+                        raise ValueError("the model answered with nothing")
+                    reasoning = _not_checked(ran) + explained
+                except Exception:
+                    log.warning("the model did not explain a flagged purchase; its signals are shown instead",
+                                exc_info=True)
+                    reasoning = _not_checked(ran) + signals_reasoning(expense, result)
+            else:
+                reasoning = no_signal_reasoning(expense, ran)
             result['reasoning'] = reasoning
             
             # Store decision for learning
@@ -309,6 +366,28 @@ Be thorough but not overly cautious. False positives are costly."""
         
         return result
     
+    def _same_day_duplicates(self, user_id: str, expense: dict, expense_id: str) -> list:
+        """Other charges of this amount at this merchant on the same day."""
+        from sqlalchemy import text
+
+        from ..db.engine import get_engine
+        with get_engine(self.database_url).connect() as conn:
+            return list(conn.execute(text("""
+                SELECT expense_id::TEXT, merchant, expense_amount, expense_date
+                FROM expenses
+                WHERE user_id = :user_id
+                AND merchant ILIKE :merchant
+                AND expense_amount = :amount
+                AND expense_date = :expense_date
+                AND expense_id != :expense_id
+            """), {
+                'user_id': user_id,
+                'merchant': expense['merchant'],
+                'amount': expense['amount'],
+                'expense_date': expense['date'],
+                'expense_id': expense_id,
+            }).fetchall())
+
     def scan_recent_expenses(
         self,
         hours: int = 1,
