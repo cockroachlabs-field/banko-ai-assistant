@@ -96,6 +96,17 @@ def test_a_persona_is_named_next_to_the_real_provider(env, monkeypatch):
 
 
 @needs_db
+def test_a_database_name_that_does_not_exist_is_said_in_plain_words(env):
+    from banko_ai import doctor
+    from banko_ai.utils.db_retry import normalize_db_url
+    env(DATABASE_URL=make_url(normalize_db_url(DB)).set(database="dafaultdb").render_as_string(hide_password=False))
+    found = _by_name(doctor.run_checks())
+    assert found["database"].state == "fail"
+    assert found["database"].detail == 'no database named "dafaultdb" on this cluster; check DATABASE_URL'
+    assert found["schema"].state == "skip"
+
+
+@needs_db
 def test_schema_state_reads_missing_current_and_out_of_date():
     from banko_ai.db.engine import get_engine
     from banko_ai.db.schema import ensure_schema, schema_state
