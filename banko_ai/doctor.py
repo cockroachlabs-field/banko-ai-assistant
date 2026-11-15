@@ -1,13 +1,16 @@
 """banko-ai doctor: is this machine ready to demo? One line per check, each
 answering within a few seconds, so it doubles as the wifi-off check before
-a talk. Errors name their class only: a message could echo a URL with a
-password in it."""
+a talk. The provider check is the one that can take longer: it asks the
+model a question, and a local model that is not loaded yet loads first.
+Errors name their class or a fixed reason only: a message could echo a URL
+with a password in it."""
 
 from __future__ import annotations
 
 import shutil
 import socket
 import subprocess
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -17,6 +20,8 @@ from .config.settings import Settings, get_config
 
 OK, FAIL, SKIP = "ok", "fail", "skip"
 TIMEOUT = 3.0
+# How long a hosted model gets to answer one question; it takes a second or two.
+ANSWER_SECONDS = 20.0
 
 
 @dataclass(frozen=True)
@@ -89,17 +94,69 @@ def _embedding_model(cfg: Settings) -> Check:
     return Check("embedding model", FAIL, f"{name} not cached; the first boot downloads it, which needs the network")
 
 
+def _chat():
+    """The model as every answer reaches it."""
+    from .ai_providers.streaming import ProviderChat
+    return ProviderChat()
+
+
+_OUT_OF_QUOTA = ("quota", "resource_exhausted", "resourceexhausted")
+_CREDENTIALS = ("invalid_api_key", "incorrect api key", "api key not valid", "unauthorized", "authenticationerror",
+                "invalid_grant", "expiredtoken", "accessdenied", "permission_denied", "nocredentials")
+
+
+def _why(exc: BaseException) -> str:
+    """Why the model gave no answer, in words fixed here. The error's own
+    text is searched and never shown: it can carry a key or a URL."""
+    said = ""
+    seen: BaseException | None = exc
+    while seen is not None and len(said) < 20_000:
+        said += f" {seen.__class__.__name__} {seen}".lower()
+        seen = seen.__cause__ or seen.__context__
+    if any(word in said for word in _OUT_OF_QUOTA):
+        return "is out of quota; its account needs more before it answers again"
+    if any(word in said for word in _CREDENTIALS):
+        return "rejected the credentials"
+    return f"did not answer ({exc.__class__.__name__}); check its credentials and network"
+
+
+def _answer_seconds(cfg: Settings) -> float:
+    """A local model may have to load into memory first, so it gets as long
+    as the app itself waits for it."""
+    return float(cfg.ollama_timeout_seconds) if cfg.ai_service == "ollama" else ANSWER_SECONDS
+
+
+def _one_answer(seconds: float) -> str | None:
+    """Ask the model one question. None when it replied, else why not."""
+    outcome: list[str | None] = []
+
+    def ask() -> None:
+        try:
+            reply = _chat().complete([{"role": "user", "content": "Reply with the single word OK."}], temperature=0.0)
+            outcome.append(None if str(reply or "").strip() else "did not answer (an empty reply)")
+        except Exception as exc:
+            outcome.append(_why(exc))
+
+    worker = threading.Thread(target=ask, name="banko-doctor-ask", daemon=True)
+    worker.start()
+    worker.join(seconds)
+    return outcome[0] if outcome else f"did not answer within {seconds:.0f} s"
+
+
 def _provider(cfg: Settings) -> Check:
+    """A login token or a model list is not an answer: an account that is out
+    of quota still hands those out, and a local model can be listed and fail
+    to load. So this asks one real question, a few tokens each run."""
     from .ai_providers.factory import AIProviderFactory
-    from .web.app import bounded_connection_test
     shown = f", shown as {cfg.ai_display_provider}" if cfg.ai_display_provider else ""
     try:
-        provider = AIProviderFactory.create_provider(cfg.ai_service, cfg.get_ai_config()[cfg.ai_service])
+        AIProviderFactory.create_provider(cfg.ai_service, cfg.get_ai_config()[cfg.ai_service])
     except Exception as exc:
         return Check("AI provider", FAIL, f"{cfg.ai_service} is not set up ({exc.__class__.__name__}){shown}")
-    if bounded_connection_test(provider, seconds=TIMEOUT * 2):
+    why_not = _one_answer(_answer_seconds(cfg))
+    if why_not is None:
         return Check("AI provider", OK, f"{cfg.ai_service} answers{shown}")
-    return Check("AI provider", FAIL, f"{cfg.ai_service} did not answer; check its credentials and network{shown}")
+    return Check("AI provider", FAIL, f"{cfg.ai_service} {why_not}{shown}")
 
 
 def _ollama_model(cfg: Settings) -> Check:
