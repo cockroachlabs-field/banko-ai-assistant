@@ -113,6 +113,7 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 ### Frontend
 
 - Agent dashboard activity feed must reflect REAL agent activity. The user has been bitten by canned/hardcoded demo lights — never ship a dashboard with synthetic events.
+- Agent activity is read through `/api/v1/agents`, which answers for one user. The old `/api/agents/status`, `/activity` and `/stats` routes were removed in November 2026: they needed no sign-in and returned every user's activity, fraud reasoning with its merchant and amount included. Never add an endpoint that reads `agent_decisions` or `agent_state` without scoping it to a user.
 
 ### Documentation
 

@@ -1398,8 +1398,6 @@ def create_app() -> Flask:
                                message=NEUTRAL_FAILED), 500
 
     # Register blueprints
-    from .agent_dashboard import agent_dashboard
-    app.register_blueprint(agent_dashboard)
     from .api_v1 import api_v1
     app.register_blueprint(api_v1)
     from .assistant_api import assistant_api

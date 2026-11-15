@@ -12,7 +12,6 @@
 | `/api/ai-providers` | GET | List available AI providers |
 | `/api/models` | GET | List available models for current provider |
 | `/api/models` | POST | Switch to a different model |
-| `/api/agents/status` | GET | Agent dashboard data (deprecated; use `/api/v1/agents/stats`) |
 | `/cache-stats` | GET | Cache performance metrics |
 
 ### Search & RAG
@@ -404,8 +403,8 @@ curl -X POST http://localhost:5000/api/models \
 curl -X POST http://localhost:5000/api/upload-receipt \
   -F "receipt=@receipt.png"
 
-# Agent status
-curl http://localhost:5000/api/agents/status
+# The agents seen, and today's activity (the default persona's when nobody is signed in)
+curl http://localhost:5000/api/v1/agents/stats
 ```
 
 ### Python
