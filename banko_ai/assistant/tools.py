@@ -20,6 +20,7 @@ from ..config.settings import get_config
 from ..services import accounts, actions, budgets, caches, goals, ledger, memories, receipts, recurring, reports
 from ..services import transactions as txns
 from ..services._sql import jsonable
+from ..utils.embeddings import ModelWarmingUp, note_skipped
 from ..utils.request_trace import trace_step
 from . import narration
 
@@ -287,8 +288,11 @@ def run_tool(name: str, args: dict | None, ctx: ToolContext) -> dict:
     except (ledger.NotFound, ToolError) as exc:
         trace_step("tool", name, str(exc), status="warning")
         return done(ok=False, error=str(exc))
-    except Exception:
-        log.warning("tool %s failed", name, exc_info=True)
+    except Exception as exc:
+        if isinstance(exc, ModelWarmingUp):
+            note_skipped(log, f"tool {name}", exc)
+        else:
+            log.warning("tool %s failed", name, exc_info=True)
         trace_step("tool", name, "failed; details are in the server log", status="error")
         return done(ok=False, error="failed")
     # Counts that were cut to their range, so the answer never claims the 100 rows or 24 months it asked for.

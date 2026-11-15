@@ -907,6 +907,39 @@ def test_the_failed_lookup_line_is_in_the_users_language(g, member, thread, monk
     assert G.LOOKUP_FAILED in chat.prompts()[-1]  # the line itself was what the model translated
 
 
+def _recall_raises(monkeypatch, error):
+    def recall(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(memories, "recall", recall)
+
+
+def test_a_model_that_is_still_loading_is_one_line_in_the_log(g, member, thread, monkeypatch, caplog):
+    """In the first seconds after a boot the embedding model is still
+    loading. The turn goes on without what needs it and the log says so in a
+    line: a traceback there reads as a failure."""
+    import logging
+
+    from banko_ai.utils.embeddings import ModelWarmingUp
+    _recall_raises(monkeypatch, ModelWarmingUp("embedding model all-MiniLM-L6-v2 is still loading"))
+    caplog.set_level(logging.INFO, logger="banko.assistant")
+    out, _ = _turn(g, member, thread, "how much did I spend on restaurants in the last 35 days", ScriptedChat("- steady"))
+    assert out["answer"].startswith("You spent")
+    about = [r for r in caplog.records if "memory recall" in r.getMessage()]
+    assert [r.getMessage() for r in about] == ["memory recall skipped: the embedding model is still loading"]
+    assert about[0].exc_info is None and about[0].levelno == logging.INFO
+
+
+def test_any_other_reason_to_skip_a_step_keeps_its_traceback(g, member, thread, monkeypatch, caplog):
+    import logging
+    _recall_raises(monkeypatch, RuntimeError("connection reset by peer"))
+    caplog.set_level(logging.INFO, logger="banko.assistant")
+    out, _ = _turn(g, member, thread, "how much did I spend on restaurants in the last 36 days", ScriptedChat("- steady"))
+    assert out["answer"].startswith("You spent")
+    about = [r for r in caplog.records if "memory recall" in r.getMessage()]
+    assert [r.getMessage() for r in about] == ["memory recall skipped"]
+    assert about[0].exc_info is not None and about[0].levelno == logging.WARNING
+
+
 def test_the_model_hears_which_counts_were_capped():
     from banko_ai.assistant import graph as G
     facts = G._facts([{"tool": "cashflow", "ok": True, "result": {"months": []}, "clamped": {"months": 12}}])
