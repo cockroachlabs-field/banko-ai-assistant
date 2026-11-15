@@ -81,6 +81,28 @@ class ReceiptHooks:
     budget: Callable[[str], str]
 
 
+def fraud_words(check: dict) -> str:
+    """What the receipt card says about the fraud check. The agent catches
+    its own failures and hands back a result with an error in it; one that
+    reached no verdict raises here, so the card says the check failed
+    instead of guessing that nothing is wrong."""
+    if not check.get("reasoning"):
+        raise RuntimeError(f"the fraud analysis reached no verdict: {check.get('error')}")
+    if check.get("fraud_detected"):
+        return f"Suspicious transaction (confidence {check.get('confidence', 0):.0%})"
+    return "No issues in the checks that ran" if check.get("unchecked") else "No issues detected"
+
+
+def budget_words(status: dict) -> str:
+    """What the receipt card says about the budget check. "ok" is the
+    agent's placeholder until it has the month's spending: a check that got
+    no further raises, as above."""
+    found = str(status.get("status") or "ok")
+    if found == "ok":
+        raise RuntimeError(f"the budget check computed no status: {status.get('error')}")
+    return {"over_budget": "Over budget", "on_pace_to_exceed": "On pace to exceed"}.get(found, "Within budget")
+
+
 def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHooks:
     """The real agents: tesseract OCR, LLM field extraction, fraud and budget checks."""
     import json as _json
@@ -113,18 +135,14 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
         agent = FraudAgent(region=region, llm=get_llm_for_agent(0.2, model_override=model), database_url=db_url,
                            embedding_model=get_embedding_model(), fraud_threshold=0.7,
                            duplicate_window_days=get_config().fraud_duplicate_window_days)
-        check = agent.analyze_expense(expense_id)
-        if not check.get("fraud_detected"):
-            return "No issues detected"
-        return f"Suspicious transaction (confidence {check.get('confidence', 0):.0%})"
+        return fraud_words(agent.analyze_expense(expense_id))
 
     def budget(user_id: str) -> str:
         from ..agents.budget_agent import BudgetAgent
         agent = BudgetAgent(region=region, llm=get_llm_for_agent(0.2, model_override=model), database_url=db_url,
                             alert_threshold=0.8)
-        status = agent.check_budget_status(user_id=user_id,
-                                           monthly_budget=get_config().monthly_budget_default).get("status")
-        return {"over_budget": "Over budget", "on_pace_to_exceed": "On pace to exceed"}.get(str(status or ""), "Within budget")
+        return budget_words(agent.check_budget_status(user_id=user_id,
+                                                      monthly_budget=get_config().monthly_budget_default))
 
     return ReceiptHooks(ocr=ocr, extract=extract, fraud=fraud, budget=budget)
 

@@ -285,3 +285,39 @@ def test_fail_itself_raising_still_ends_cleanly(member, image):
         status = c.execute(text("SELECT status FROM receipts WHERE user_id = CAST(:u AS UUID) "
                                 "ORDER BY created_at DESC LIMIT 1"), {"u": member}).scalar()
     assert status == "failed"
+
+
+def test_the_card_does_not_call_a_fraud_analysis_that_reached_no_verdict_clean():
+    """The agents catch their own failures and hand back a result with an
+    error in it. Read only for its flag, that result said "No issues detected"."""
+    with pytest.raises(RuntimeError):
+        receipts.fraud_words({"fraud_detected": False, "reasoning": "", "error": "Expense not found"})
+    clean = {"fraud_detected": False, "reasoning": "No fraud signal for the customer's purchase.", "unchecked": []}
+    assert receipts.fraud_words(clean) == "No issues detected"
+    assert receipts.fraud_words({**clean, "unchecked": ["similar purchases"]}) == "No issues in the checks that ran"
+    assert receipts.fraud_words({"fraud_detected": True, "confidence": 0.7, "reasoning": "Two charges."}) == (
+        "Suspicious transaction (confidence 70%)")
+    # A verdict that was reached stands, even when keeping a record of it failed afterwards.
+    assert receipts.fraud_words({**clean, "error": "the decision could not be stored"}) == "No issues detected"
+
+
+def test_the_card_does_not_call_a_budget_check_that_computed_nothing_within_budget():
+    with pytest.raises(RuntimeError):  # "ok" is the agent's placeholder until it has the month's spending
+        receipts.budget_words({"status": "ok", "error": "Could not retrieve spending data"})
+    assert receipts.budget_words({"status": "on_track"}) == "Within budget"
+    assert receipts.budget_words({"status": "approaching_limit"}) == "Within budget"
+    assert receipts.budget_words({"status": "on_pace_to_exceed"}) == "On pace to exceed"
+    assert receipts.budget_words({"status": "over_budget", "error": "the decision could not be stored"}) == "Over budget"
+
+
+def test_a_check_that_fails_says_so_on_the_card_and_the_receipt_still_posts(member, image):
+    def no_verdict(user_id, expense_id):
+        raise RuntimeError("the fraud analysis reached no verdict")
+
+    fields = {**FIELDS, "merchant": "Checks Down Market", "amount": 31.18}
+    hooks = receipts.ReceiptHooks(ocr=lambda path: "CHECKS DOWN MARKET TOTAL 31.18", extract=lambda text_: dict(fields),
+                                  fraud=no_verdict, budget=lambda u: "Within budget")
+    events = _run(member, image, hooks)
+    ended = {e["step"]: (e["status"], e.get("detail")) for e in events if e["type"] == "step" and e["status"] != "start"}
+    assert ended["fraud"] == ("failed", "check failed") and ended["budget"] == ("done", "Within budget")
+    assert events[-1]["type"] == "receipt" and events[-1]["status"] == "posted"
