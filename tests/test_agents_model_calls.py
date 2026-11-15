@@ -1,7 +1,7 @@
-"""The fraud agent asks the model only when a purchase tripped a signal. One
-that tripped none costs no tokens: what the agent reports is computed, so it
-is written in code, from the checks that ran. A check that could not run is
-named, never counted as clean."""
+"""The agents behind a receipt ask the model only when there is something to
+explain. A purchase with no fraud signal and a routine budget check cost no
+tokens: what they report is computed, so it is written in code, from the
+checks that ran. A check that could not run is named, never counted as clean."""
 
 import json
 import os
@@ -248,3 +248,22 @@ def test_an_explanation_sent_in_parts_is_read_as_its_text(member):
     card_purchase(member, "Charged Twice In Parts", "19.84")
     check = agent.analyze_expense(card_purchase(member, "Charged Twice In Parts", "19.84"))
     assert check["reasoning"] == "Two identical charges point to a duplicate."
+
+
+def test_a_budget_check_asks_the_model_nothing(member):
+    """Its status and advice are computed. The text the model was asked for
+    on top of them went, cut to 200 characters, into a memory row that
+    nothing reads; the computed advice goes there now."""
+    from banko_ai.agents.budget_agent import BudgetAgent
+    from banko_ai.config.settings import get_config
+    model = CountingModel()
+    agent = BudgetAgent(region="test", llm=model, database_url=get_config().database_url, alert_threshold=0.8)
+    AGENTS.append(str(agent.agent_id))
+    status = agent.check_budget_status(user_id=member, monthly_budget=3000.0)
+    assert status["status"] in {"on_track", "on_pace_to_exceed", "approaching_limit", "over_budget"}
+    assert status["recommendation"]  # the computed advice is still there
+    assert model.asked == [] and "ai_insights" not in status
+    with get_engine().connect() as c:
+        remembered = str(c.execute(text("SELECT content FROM agent_memory WHERE agent_id = CAST(:a AS UUID) "
+                                        "ORDER BY created_at DESC LIMIT 1"), {"a": agent.agent_id}).scalar())
+    assert status["recommendation"][0] in remembered
