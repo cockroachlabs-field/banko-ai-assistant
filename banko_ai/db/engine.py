@@ -276,6 +276,25 @@ def mask_url(url: str) -> str:
         return "(unparseable database URL)"
 
 
+NO_SUCH_DATABASE = 'no database named "{name}" on this cluster; check DATABASE_URL'
+
+
+def missing_database(exc: BaseException, url: str | None = None) -> str | None:
+    """The database name, when exc says the database in the URL does not
+    exist (SQLSTATE 3D000). CockroachDB accepts the connection and says so
+    only when a statement touches the database, and no retry cures a typo.
+    The name comes from the URL, never from the error text."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if getattr(getattr(seen, "orig", seen), "sqlstate", None) == "3D000":
+            try:
+                return make_url(normalize_db_url(url or get_config().database_url)).database or ""
+            except Exception:
+                return ""
+        seen = seen.__cause__
+    return None
+
+
 @dataclass
 class TxnStats:
     retries: int = 0

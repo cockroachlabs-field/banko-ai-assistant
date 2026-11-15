@@ -45,7 +45,7 @@ from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine, mask_url, missing_table
+from ..db.engine import NO_SUCH_DATABASE, get_engine, mask_url, missing_database, missing_table
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..observability.metrics import metrics
@@ -217,8 +217,14 @@ def create_app() -> Flask:
             try:
                 return fn()
             except Exception as e:
-                readiness.set(step, "running", f"waiting for the database ({e.__class__.__name__})")
-                boot_log.warning("%s: database not ready yet (%s); retrying in %.0fs", step, e, delay)
+                name = missing_database(e, config.database_url)
+                if name is not None:  # a typo in DATABASE_URL: one plain line, no SQL
+                    said = NO_SUCH_DATABASE.format(name=name)
+                    readiness.set(step, "running", said)
+                    boot_log.warning("%s: %s (retrying in %.0fs)", step, said, delay)
+                else:
+                    readiness.set(step, "running", f"waiting for the database ({e.__class__.__name__})")
+                    boot_log.warning("%s: database not ready yet (%s); retrying in %.0fs", step, e, delay)
                 if warmup_stop.wait(delay):
                     raise RuntimeError("warm-up stopped") from e
                 delay = min(delay * 2, 30.0)

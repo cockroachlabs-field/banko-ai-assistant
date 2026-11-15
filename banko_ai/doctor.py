@@ -48,14 +48,24 @@ def _reachable(url: str) -> bool:
 def _database(cfg: Settings) -> Check:
     from sqlalchemy import text
 
-    from .db.engine import get_engine
+    from .db.engine import NO_SUCH_DATABASE, get_engine, missing_database
     if not _reachable(cfg.database_url):
         return Check("database", FAIL, "unreachable (no answer on its host and port); check DATABASE_URL")
     try:
         with get_engine(cfg.database_url).connect() as conn:
             version = str(conn.execute(text("SELECT version()")).scalar() or "")
+            # CockroachDB accepts a connection to a database that does not
+            # exist, and only a statement that touches it says so.
+            there = conn.execute(text(
+                "SELECT count(*) FROM [SHOW DATABASES] WHERE database_name = current_database()")).scalar()
+            name = str(conn.execute(text("SELECT current_database()")).scalar() or "")
     except Exception as exc:
+        missing = missing_database(exc, cfg.database_url)
+        if missing is not None:
+            return Check("database", FAIL, NO_SUCH_DATABASE.format(name=missing))
         return Check("database", FAIL, f"unreachable ({exc.__class__.__name__}); check DATABASE_URL")
+    if not there:
+        return Check("database", FAIL, NO_SUCH_DATABASE.format(name=name))
     words = version.split()
     return Check("database", OK, " ".join(words[:3]) if words[:1] == ["CockroachDB"] else version[:60])
 
