@@ -8,6 +8,7 @@ Provides:
 """
 
 import json
+from decimal import Decimal
 
 from langchain_core.tools import Tool
 from sqlalchemy import text
@@ -179,8 +180,10 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                 """), {'user_id': user_id})
                 
                 row = result.fetchone()
-                mean = float(row[0]) if row[0] else 0.0
-                std_dev = float(row[1]) if row[1] else 0.0
+                # Kept as the database's decimals: psycopg 3 binds a Python
+                # float as FLOAT8, and CockroachDB has no DECIMAL - FLOAT.
+                mean = row[0] or Decimal(0)
+                std_dev = row[1] or Decimal(0)
                 
                 if std_dev == 0:
                     return json.dumps({
@@ -190,8 +193,9 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                     })
                 
                 # Find outliers
-                upper_bound = mean + (threshold * std_dev)
-                lower_bound = mean - (threshold * std_dev)
+                spread = Decimal(str(threshold)) * std_dev
+                upper_bound = mean + spread
+                lower_bound = mean - spread
                 
                 result = conn.execute(text("""
                     SELECT 
@@ -227,8 +231,8 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                 'success': True,
                 'user_id': user_id,
                 'statistics': {
-                    'mean': mean,
-                    'std_dev': std_dev,
+                    'mean': float(mean),
+                    'std_dev': float(std_dev),
                     'threshold': threshold
                 },
                 'anomalies': anomalies,
