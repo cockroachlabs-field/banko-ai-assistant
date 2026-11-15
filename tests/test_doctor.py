@@ -81,18 +81,79 @@ def test_the_port_check_tells_a_taken_port_from_a_free_one(env):
     assert free.state == "ok"
 
 
-def test_a_persona_is_named_next_to_the_real_provider(env, monkeypatch):
+class _Says:
+    """A model that replies with this text, raises this error, or takes this long."""
+
+    def __init__(self, reply="OK", error=None, seconds=0.0):
+        self.reply, self.error, self.seconds, self.asked = reply, error, seconds, 0
+
+    def complete(self, messages, *, temperature=0.3):
+        self.asked += 1
+        time.sleep(self.seconds)
+        if self.error is not None:
+            raise self.error
+        return self.reply
+
+
+def _provider_line(env, monkeypatch, chat, **settings):
+    """doctor's provider line for a watsonx that is set up and whose model behaves like `chat`."""
     from banko_ai import doctor
     from banko_ai.ai_providers.factory import AIProviderFactory
+    env(**{"AI_SERVICE": "watsonx", "WATSONX_API_KEY": "key", "WATSONX_PROJECT_ID": "project", **settings})
+    monkeypatch.setattr(AIProviderFactory, "create_provider", staticmethod(lambda service, config: object()))
+    monkeypatch.setattr(doctor, "_chat", lambda: chat)
+    return doctor._provider(doctor.get_config())
 
-    class Answers:
-        def test_connection(self):
-            return True
 
-    env(AI_SERVICE="openai", OPENAI_API_KEY="sk-test", AI_DISPLAY_PROVIDER="watsonx", AI_DISPLAY_MODEL="granite")
-    monkeypatch.setattr(AIProviderFactory, "create_provider", staticmethod(lambda service, config: Answers()))
-    line = doctor._provider(doctor.get_config())
+def test_a_persona_is_named_next_to_the_real_provider(env, monkeypatch):
+    line = _provider_line(env, monkeypatch, _Says("OK"), AI_SERVICE="openai", OPENAI_API_KEY="sk-test",
+                          AI_DISPLAY_PROVIDER="watsonx", AI_DISPLAY_MODEL="granite")
     assert line.state == "ok" and "openai" in line.detail and "shown as watsonx" in line.detail
+
+
+def test_the_provider_check_asks_the_model_a_question(env, monkeypatch):
+    """A login token is not an answer: an account that is out of tokens
+    still hands one out, and a local model that is listed can still fail to
+    load. The check asks one question and needs a reply."""
+    chat = _Says("OK")
+    line = _provider_line(env, monkeypatch, chat)
+    assert line.state == "ok" and line.detail == "watsonx answers" and chat.asked == 1
+    silent = _provider_line(env, monkeypatch, _Says("  "))
+    assert silent.state == "fail" and "watsonx did not answer" in silent.detail
+
+
+@pytest.mark.parametrize("error, words", [
+    (RuntimeError('Status code: 403, body: {"errors":[{"code":"token_quota_reached","message":'
+                  '"Request of 1 token(s) from quota was rejected"}]}'), "watsonx is out of quota"),
+    (RuntimeError("Error code: 429 - {'error': {'code': 'insufficient_quota', 'message': 'You exceeded your "
+                  "current quota'}}"), "watsonx is out of quota"),
+    (RuntimeError("Error code: 401 - {'error': {'code': 'invalid_api_key', 'message': 'Incorrect API key "
+                  "provided: sk-secret'}}"), "watsonx rejected the credentials"),
+    (ConnectionError("https://user:hunter2@host.example/ is unreachable"), "watsonx did not answer (ConnectionError)"),
+])
+def test_a_provider_that_cannot_answer_is_red_and_says_why_in_fixed_words(env, monkeypatch, error, words):
+    line = _provider_line(env, monkeypatch, _Says(error=error))
+    assert line.state == "fail" and words in line.detail
+    for leak in ("hunter2", "sk-secret", "host.example", "Request of 1 token", "body", "Error code"):
+        assert leak not in line.detail
+
+
+def test_a_provider_that_takes_too_long_is_given_up_on(env, monkeypatch):
+    from banko_ai import doctor
+    monkeypatch.setattr(doctor, "ANSWER_SECONDS", 0.3)
+    started = time.monotonic()
+    line = _provider_line(env, monkeypatch, _Says(seconds=5))
+    assert time.monotonic() - started < 3
+    assert line.state == "fail" and "watsonx did not answer within" in line.detail
+
+
+def test_a_local_model_gets_as_long_as_the_app_waits_for_it(env):
+    """It may have to load into memory before its first answer."""
+    from banko_ai import doctor
+    env(AI_SERVICE="ollama", OLLAMA_TIMEOUT_SECONDS="75")
+    assert doctor._answer_seconds(doctor.get_config()) == 75
+    env(AI_SERVICE="openai", OPENAI_API_KEY="sk-test")
+    assert doctor._answer_seconds(doctor.get_config()) == doctor.ANSWER_SECONDS
 
 
 @needs_db
