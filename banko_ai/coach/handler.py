@@ -58,6 +58,14 @@ class SignalHandler:
                                             "type": signal.signal_type.value,
                                             "user_id": signal.user_id})
 
+        if self._is_load_customer(signal):
+            # Nobody reads a simulated customer's nudge, and with the
+            # pipeline attached to a load run each one costs two model
+            # calls. Asked before the claim, so the signal stays unclaimed:
+            # a claimed signal with no nudge is what the boot replay looks
+            # for, and it would go through every one of these again.
+            return {"status": "suppressed", "signal_id": signal.signal_id}
+
         # Atomic claim: set consumed_at up front with a compare-and-set.
         # Both transports share this handler, and the same signal arrives
         # on both within a second (the webhook claim INSERTs the row, the
@@ -132,6 +140,20 @@ class SignalHandler:
                 "WHERE idempotency_key = :k AND consumed_at IS NULL"
             ), {"k": signal.idempotency_key})
         return result.rowcount == 1
+
+    def _is_load_customer(self, signal: Signal) -> bool:
+        """Whether the signal is about one of the load simulator's users. A
+        lookup that fails, or finds no such user, reads as a person: a load
+        customer cleared while their signals were still in flight gets a
+        nudge like anyone else."""
+        from ..services.load_users import LOAD_PREFIX
+        try:
+            with self._engine().connect() as conn:
+                name = conn.execute(text("SELECT username FROM users WHERE user_id = CAST(:u AS UUID)"),
+                                    {"u": signal.user_id}).scalar()
+        except Exception:
+            return False
+        return str(name or "").startswith(LOAD_PREFIX)
 
     def _unclaim(self, signal: Signal) -> None:
         eng = self._engine()

@@ -162,6 +162,41 @@ def test_handler_skips_suppressed_signal_type(db_url):
     assert emitter.events == []
 
 
+def test_a_load_customer_gets_no_model_written_nudge(db_url):
+    """The load simulator's customers are named load-<n>-<hex> and nobody
+    reads their nudges. With the pipeline attached to a load run every one of
+    their signals would cost two model calls."""
+    load_user = "00000000-0000-0000-0000-00000010ad01"
+    eng = create_engine(db_url)
+    with eng.begin() as conn:
+        conn.execute(text("UPSERT INTO users (user_id, username, spending_style, demo_user) VALUES "
+                          "(:u, 'load-00001-ab12', 'diner', true), (:p, 'h-person', 'diner', true)"),
+                     {"u": load_user, "p": TEST_USER})
+    try:
+        coach, emitter = StubCoach(), StubEmitter()
+        handler = SignalHandler(coach=coach, emitter=emitter, database_url=db_url)
+        signal = _make_signal(db_url, "h-load-user", user_id=load_user)
+        assert handler.handle(signal)["status"] == "suppressed"
+        assert coach.calls == [] and emitter.events == []
+        # Left unclaimed. A claimed signal with no nudge is what the boot
+        # replay looks for, and every restart would go through each of a load
+        # run's signals again.
+        from banko_ai.coach.handler import replay_stranded_signals
+        assert replay_stranded_signals(handler, db_url) == 0 and coach.calls == []
+        with eng.connect() as conn:
+            assert conn.execute(text("SELECT consumed_at FROM spending_signals WHERE signal_id = :s"),
+                                {"s": signal.signal_id}).scalar() is None
+        # A person's signal still reaches the coach.
+        assert handler.handle(_make_signal(db_url, "h-person"))["status"] == "delivered"
+        assert len(coach.calls) == 1
+    finally:
+        with eng.begin() as conn:
+            conn.execute(text("DELETE FROM coach_nudges WHERE user_id IN (:u, :p)"), {"u": load_user, "p": TEST_USER})
+            conn.execute(text("DELETE FROM spending_signals WHERE user_id IN (:u, :p)"), {"u": load_user, "p": TEST_USER})
+            conn.execute(text("DELETE FROM users WHERE user_id IN (:u, :p)"), {"u": load_user, "p": TEST_USER})
+        eng.dispose()
+
+
 def test_handler_skips_stale_event_without_llm_call(db_url):
     # A Kafka event whose source row was deleted (test cleanup, TTL,
     # clear-demo-users) must be skipped before the LLM runs; it used to
