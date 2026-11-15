@@ -239,3 +239,19 @@ def test_the_tab_icon_is_the_cockroach_labs_brandmark(monkeypatch, member):
         assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
         assert "roach-logo" not in html
     assert client.get("/static/roach-logo.svg").status_code == 404
+
+
+def test_the_pages_with_their_own_head_carry_the_tab_icon(monkeypatch, member):
+    """The getting-ready page and the error page do not extend the shell.
+    Without the link a browser asks for /favicon.ico, and the log gets a 404
+    every time someone opens the app while it starts."""
+    from flask import render_template
+    client = app_client(monkeypatch)
+    with client.application.test_request_context("/"):
+        warming = render_template("errors/warming.html", detail="Creating the schema.", brand_name="Banko")
+    with client.session_transaction() as s:
+        s["user_id"] = member
+    missing = client.get("/no-such-page")
+    assert missing.status_code == 404
+    for html in (warming, missing.get_data(as_text=True)):
+        assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
