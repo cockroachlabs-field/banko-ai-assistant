@@ -36,6 +36,7 @@ from ..db.engine import get_engine, routed
 from ..db.regions import money_region, read_region
 from ..services import caches, ledger, memories, receipts, reports, threads
 from ..services import transactions as txns
+from ..utils.embeddings import note_skipped
 from ..utils.request_trace import serving_regions, trace_step
 from . import answers, background, narration
 from .planner import first_object, parse_plan, plan_and_act
@@ -168,8 +169,8 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
     try:
         recalled = memories.recall(user_id, message, url=deps.url)
-    except Exception:
-        log.warning("memory recall skipped", exc_info=True)
+    except Exception as exc:
+        note_skipped(log, "memory recall", exc)
     if recalled:
         _step("Memory recall", f"{len(recalled)} memories", ms=_since(t0), status="success", key="ingest")
     else:
@@ -238,8 +239,8 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                 {"agg": [agg.operation, agg.category, agg.merchant, str(agg.window_start),
                                          str(agg.window_end), agg.total, agg.count], "lang": language})
         hit = caches.get_search(user_id, key, url=deps.url, stat="narrative")
-    except Exception:  # a cache outage is a miss, never a broken answer
-        log.warning("narrative cache read skipped", exc_info=True)
+    except Exception as exc:  # a cache outage is a miss, never a broken answer
+        note_skipped(log, "narrative cache read", exc)
     saved = 0
     if hit:
         text, cached, streamed = hit[0]["answer"], True, False
@@ -447,8 +448,8 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             from ..services._vector import embed
             hit = caches.get_answer(user_id, version=ledger.data_version(user_id, deps.url), language=language,
                                     query=state["message"], qvec=embed(state["message"]), url=deps.url)
-        except Exception:  # a cache outage is a miss, never a broken answer
-            log.warning("answer cache read skipped", exc_info=True)
+        except Exception as exc:  # a cache outage is a miss, never a broken answer
+            note_skipped(log, "answer cache read", exc)
         if hit:
             narration.answer_cache(True, hit["tokens"])
             _step("Answer cache", f"hit, about {hit['tokens']:,} tokens saved", ms=_since(t0), status="hit",

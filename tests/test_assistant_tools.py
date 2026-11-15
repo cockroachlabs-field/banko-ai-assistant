@@ -230,6 +230,26 @@ def test_remembering_nothing_is_bad_arguments(ctx):
     assert out["ok"] is False and out["error"] == "bad arguments"
 
 
+def test_a_search_while_the_model_loads_fails_in_one_log_line(ctx, monkeypatch, caplog):
+    """The search cannot run until the embedding model has loaded. That is a
+    failed lookup for the answer, and a line in the log, not a traceback."""
+    import logging
+
+    from banko_ai.services import caches
+    from banko_ai.utils.embeddings import ModelWarmingUp
+
+    def loading(*args, **kwargs):
+        raise ModelWarmingUp("embedding model all-MiniLM-L6-v2 is still loading")
+    monkeypatch.setattr(T.txns, "semantic_search", loading)
+    monkeypatch.setattr(caches, "get_search", lambda *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="banko.assistant")
+    out = T.run_tool("search_transactions", {"query": "coffee while loading"}, ctx)
+    assert out["ok"] is False and out["error"] == "failed"
+    about = [r for r in caplog.records if "search_transactions" in r.getMessage()]
+    assert [r.getMessage() for r in about] == ["tool search_transactions skipped: the embedding model is still loading"]
+    assert about[0].exc_info is None
+
+
 def test_library_value_error_becomes_failed(ctx, monkeypatch):
     def broken(*args, **kwargs):
         raise ValueError("secret library detail")

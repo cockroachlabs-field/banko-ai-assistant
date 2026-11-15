@@ -15,6 +15,8 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_for
 
+from ..utils.embeddings import note_skipped
+
 log = logging.getLogger("banko.assistant")
 WORKERS = 4
 
@@ -30,8 +32,8 @@ def submit(what: str, fn: Callable[..., object], *args, **kwargs) -> Future:
     def run() -> None:
         try:
             fn(*args, **kwargs)
-        except Exception:
-            log.warning("%s skipped", what, exc_info=True)
+        except Exception as exc:
+            note_skipped(log, what, exc)
 
     with _lock:
         if _pool is None:
