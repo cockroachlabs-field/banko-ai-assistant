@@ -32,6 +32,11 @@ os.environ.setdefault("INTEGRITY_INTERVAL_SECONDS", "0")
 # The shell profile turns Kafka on for the live demo, and any app a test
 # builds would join that consumer group. A test that wants it sets it itself.
 os.environ["COACH_KAFKA_ENABLED"] = "false"
+# Nor does the shell's AI provider reach a test: with one configured and its
+# key exported, apps that tests build called it. The suite sees what CI sees.
+from tests._env import without_providers
+
+without_providers(os.environ)
 
 # Normalize the scheme once for every test module: postgresql:// works for
 # the app (it normalizes internally), so it should work for the suite too.
