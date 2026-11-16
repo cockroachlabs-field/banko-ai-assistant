@@ -40,10 +40,10 @@ dependencies = [
     
     # AI & Embeddings
     "sentence-transformers>=6.3.0,<7.0.0",
-    "openai>=3.49.0",
+    "openai>=3.50.0",
     
     # AWS Integration
-    "boto3>=1.44.0",
+    "boto3>=1.44.2",
     "botocore>=1.35.0",
     
     # Google Integration
@@ -51,19 +51,19 @@ dependencies = [
     # 2026-06-24). google-genai replaces it for both Vertex AI and the public
     # Generative AI API (switch via the vertexai=True client flag).
     "google-auth>=2.62.2,<3.0.0",
-    "google-genai>=3.2.0",
+    "google-genai>=3.3.0",
     
     # CockroachDB LangChain integration: the LangGraph checkpointer (CockroachDBSaver)
     "langchain-cockroachdb>=0.6.0",  # 0.4.1: concurrent pooled checkpoints, TLS EOF retries, atomic writes; 0.5.1: pipelined writes skip prepared statements; 0.6.0: checkpointer TTL keeps what a live thread still uses
     
     # Agent Framework / LangGraph (1.x ecosystem, langchain-core>=1.2.11 for CVE fix)
-    "langgraph>=1.2.20",
+    "langgraph>=1.2.21",
     "langchain>=1.5.0",
     "langchain-core>=1.3.3",
     "langchain-openai>=1.7.4",
     "langchain-aws>=1.9.3",
     "langchain-ibm>=1.0.0",
-    "langchain-google-genai>=4.4.3",
+    "langchain-google-genai>=4.5.0",
     "langchain-ollama>=1.0.0",  # native /api/chat so num_ctx and keep_alive apply on the agent path too
     "langchain-community>=0.4.0",
     
@@ -98,10 +98,10 @@ dependencies = [
 dev = [
     "pytest>=9.2.0",
     "pytest-cov>=4.0.0",
-    "ruff>=0.17.4",
+    "ruff>=0.17.5",
     "mypy>=2.4.1"
 ]
-ui = ["playwright>=1.65.0"]
+ui = ["playwright>=1.65.1"]
 
 [project.scripts]
 banko-ai = "banko_ai.cli:main"
