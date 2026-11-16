@@ -84,7 +84,7 @@ dependencies = [
     "kafka-python>=3.0.13,<4.0.0",
     
     # Production Server (Updated for CVE-2024-1135 and CVE-2024-6827 fixes)
-    "gunicorn>=23.0.0,<27.0.0",
+    "gunicorn>=27.0.1,<28.0.0",
     
     # Utilities (CVE-2025-66418, CVE-2025-66471, CVE-2026-21441, GHSA-8988-9cw3-xx77, GHSA-vxq7-64xx-v4gw)
     "urllib3>=2.8.0",
