@@ -11,9 +11,12 @@
 #   CRDB_USER             default root
 #   CRDB_DB               default defaultdb
 #   CHANGEFEED_KAFKA_URI  default kafka://localhost:29092 (URI the CRDB
-#                         process itself pushes the changefeed to; use
-#                         kafka://kafka:9092 if CRDB runs in this compose
-#                         network)
+#                         process itself pushes the changefeed to;
+#                         kafka://kafka:9092 when CRDB runs in containers)
+#   CRDB_CONTAINERS       the CockroachDB containers the changefeed runs on.
+#                         Default: every running cockroachdb/cockroach
+#                         container. Name them (space separated) on a
+#                         machine that runs more than one cluster.
 #
 # Connector plugin resolution order:
 #   1. ./connect-plugins already populated
@@ -44,12 +47,16 @@ else
 fi
 
 # When CockroachDB runs in docker (the repo compose container or any other
-# stack, like the 5-node chaos cluster), the changefeed sink URI must be
+# stack, like the chaos demo's cluster), the changefeed sink URI must be
 # reachable FROM THE CRDB NODES, so it has to be the in-network kafka:9092;
-# kafka://localhost:29092 would make each node dial itself. Every CRDB
-# container also gets joined to the cdc network in step 2.
-CRDB_CONTAINERS="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
-    | awk '$2 ~ /cockroachdb\/cockroach/ {print $1}')"
+# kafka://localhost:29092 would make each node dial itself. Step 2 puts
+# Kafka on the nodes' own network under that name.
+if [ -n "${CRDB_CONTAINERS+set}" ]; then
+    CRDB_CONTAINERS="$(printf '%s\n' $CRDB_CONTAINERS)"
+else
+    CRDB_CONTAINERS="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null \
+        | awk '$2 ~ /cockroachdb\/cockroach/ {print $1}')"
+fi
 if echo "$CRDB_CONTAINERS" | grep -q '^banko-cockroachdb$'; then
     CRDB_DEFAULT_HOST="banko-cockroachdb"
     KAFKA_URI_DEFAULT="kafka://kafka:9092"
@@ -117,10 +124,40 @@ HINT
     exit 1
 fi
 if [ -n "$CRDB_CONTAINERS" ]; then
-    for c in $CRDB_CONTAINERS; do
-        docker network connect cdc-demo_default "$c" 2>/dev/null || true
+    # The changefeed runs on the CockroachDB nodes, so each of them has to
+    # reach kafka:9092. Kafka joins their network under that name, and the
+    # nodes are left as they are. This script used to join every node to
+    # the cdc network instead. A container on two networks can come back
+    # from a restart with its interfaces in the other order, and whatever
+    # shapes traffic on eth0 (the chaos demo's latency between regions)
+    # then shapes the wrong network.
+    networks_of() {
+        docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$1" 2>/dev/null \
+            | grep -v '^$' || true
+    }
+    reaches_kafka() { docker exec "$1" getent hosts kafka >/dev/null 2>&1; }
+    CRDB_NETWORKS="$(for c in $CRDB_CONTAINERS; do networks_of "$c"; done | grep -v '^cdc-demo_default$' | sort -u)"
+    for net in $CRDB_NETWORKS; do
+        docker network connect --alias kafka "$net" banko-cdc-kafka 2>/dev/null || true
     done
-    echo "   joined the cdc network: $(echo $CRDB_CONTAINERS | tr '\n' ' ')"
+    [ -n "$CRDB_NETWORKS" ] && echo "   kafka joined: $(echo $CRDB_NETWORKS | tr '\n' ' ')"
+    for c in $CRDB_CONTAINERS; do
+        if networks_of "$c" | grep -q '^cdc-demo_default$'; then
+            # Left there by an earlier run of this script.
+            docker network disconnect cdc-demo_default "$c" 2>/dev/null || true
+            if reaches_kafka "$c"; then
+                echo "   $c: taken off the cdc network. If it restarted while it was on both, restart it once more."
+                continue
+            fi
+        elif reaches_kafka "$c"; then
+            continue
+        fi
+        # No name resolution on this node's network (the default bridge has
+        # none): joining the cdc network is the only way to the broker.
+        docker network connect cdc-demo_default "$c" 2>/dev/null || true
+        echo "   $c: cannot find kafka on its own network, so it joined the cdc network."
+        echo "      Anything that shapes this node's traffic by interface name can pick the wrong one after a restart."
+    done
 fi
 printf "   waiting for connect"
 for _ in $(seq 1 60); do
@@ -177,6 +214,7 @@ Next:
        COACH_KAFKA_ENABLED=true KAFKA_BOOTSTRAP_SERVERS=localhost:29092 \
        AI_SERVICE=watsonx CDC_WEBHOOK_HMAC_SECRET=dev-only-secret \
        DATABASE_URL=<same db as CRDB_DB above> uv run banko-ai run
+     (Banko in a container on the cluster's network: KAFKA_BOOTSTRAP_SERVERS=kafka:9092)
   2. Open http://localhost:5000/coach
   3. Insert a signal row and watch CockroachDB stream it into a nudge.
      The coach page shows the signed-in user's nudges, so target the
