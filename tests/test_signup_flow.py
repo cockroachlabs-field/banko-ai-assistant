@@ -15,11 +15,19 @@ DB = os.getenv("DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
 
 
+# What the app handed the coach. A sign-up ends with a welcome signal, and the
+# coach answers a signal by asking the model: these tests are about signing
+# up, so the hand-off is written down here and no model is asked, whatever
+# provider the shell that runs the suite has configured.
+handed_to_coach: list = []
+
+
 @pytest.fixture(scope="module")
 def client():
     os.environ["BANKO_SKIP_AUTOSETUP"] = "1"
     app = create_app()
     app.config["TESTING"] = True
+    app.extensions["banko_coach"]["submit"] = lambda signal: handed_to_coach.append(signal) or True
     yield app.test_client()
     app.extensions["banko_warmup_stop"].set()
     # Cleanup: delete the test user and their rows. Retries because on a
@@ -144,7 +152,7 @@ def test_load_customer_names_are_reserved(client):
 
 
 def test_a_new_users_welcome_signal_reaches_the_coach_without_the_webhook(client, monkeypatch):
-    """The welcome nudge is handed to the coach in this process, after
+    """The welcome signal is handed to the coach in this process, after
     seeding. It used to be posted to this server's own webhook at the address
     the sign-up request came in on: behind a proxy with a sign-in in front
     that is the public address, the post never arrived, and nothing was
@@ -165,27 +173,15 @@ def test_a_new_users_welcome_signal_reaches_the_coach_without_the_webhook(client
         assert r.status_code == 302
         user = UserManager(DB).get_by_username("flow-welcome-user")
         assert _wait_seeded(user["user_id"]) == "done"
-        engine = create_engine(DB)
-        try:
-            deadline, signal, nudges = time.monotonic() + 30, None, 0
-            while time.monotonic() < deadline and not nudges:
-                with engine.connect() as conn:
-                    signal = conn.execute(text("SELECT signal_type FROM spending_signals WHERE idempotency_key = :k"),
-                                          {"k": f"welcome:{user['user_id']}"}).scalar()
-                    nudges = conn.execute(text("SELECT count(*) FROM coach_nudges WHERE user_id = :u"),
-                                          {"u": user["user_id"]}).scalar()
-                time.sleep(0.2)
-        finally:
-            engine.dispose()
-        assert signal == "budget_threshold"   # a saver's welcome
-        assert nudges == 1                     # and the coach answered it
-        assert posts == []                     # with no call to its own address
+        deadline = time.monotonic() + 30
+        mine: list = []
+        while time.monotonic() < deadline and not mine:    # handed over on the seeding thread, right after
+            mine = [s for s in handed_to_coach if s.user_id == user["user_id"]]
+            time.sleep(0.05)
+        assert [(s.signal_type, s.idempotency_key) for s in mine] == [
+            ("budget_threshold", f"welcome:{user['user_id']}")]   # a saver's welcome, once
+        assert posts == []                                         # with no call to its own address
     finally:
         reset_config()
         if user:
-            engine = create_engine(DB)
-            with engine.begin() as conn:
-                conn.execute(text("DELETE FROM coach_nudges WHERE user_id = :u"), {"u": user["user_id"]})
-                conn.execute(text("DELETE FROM spending_signals WHERE user_id = :u"), {"u": user["user_id"]})
-            engine.dispose()
             drop_user(user["user_id"])
