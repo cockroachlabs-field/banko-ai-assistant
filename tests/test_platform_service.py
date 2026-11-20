@@ -50,7 +50,19 @@ def test_vector_stats_count_vectors():
 
 def test_cdc_status_never_raises():
     c = P.cdc_status()
-    assert isinstance(c["changefeeds"], list) and c["signals_per_min"] >= 0 and c["nudges_per_min"] >= 0
+    # A list, or None where this role may not list the jobs.
+    assert c["changefeeds"] is None or isinstance(c["changefeeds"], list)
+    assert c["signals_per_min"] >= 0 and c["nudges_per_min"] >= 0
+
+
+def test_a_listing_that_fails_without_a_word_still_reads_as_not_listed(monkeypatch):
+    """The reason is the first line of the error. An error with no text had
+    no first line, and the whole card failed over it."""
+    def fails(conn):
+        raise RuntimeError()
+
+    monkeypatch.setattr(P, "changefeeds", fails)
+    assert P.cdc_status()["changefeeds"] is None
 
 
 def test_the_changefeed_statement_runs_on_this_cluster():

@@ -180,7 +180,7 @@ def cdc_status(*, url: str | None = None) -> dict:
             feeds = changefeeds(conn)
         except Exception as exc:
             feeds = None
-            reason = str(exc).splitlines()[0][:300]
+            reason = (str(exc).splitlines() or [exc.__class__.__name__])[0][:300]
             if reason not in _unlisted:
                 _unlisted.add(reason)
                 log.warning("the changefeed jobs could not be listed: %s", reason)
