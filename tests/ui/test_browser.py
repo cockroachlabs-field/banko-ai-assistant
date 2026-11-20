@@ -1615,6 +1615,26 @@ def test_the_chaos_card_shows_only_with_a_plane(server, browser):
         ctx.close()
 
 
+def test_the_cdc_card_tells_no_changefeeds_from_a_list_that_failed(server, browser):
+    api = _PlatformApi()
+    ctx, page, errors = _platform(browser, api)
+    try:
+        _login(page, server, "maya")
+        for feeds, shown, hidden in (
+                ([], "No changefeeds on this cluster.", "The changefeeds could not be listed."),
+                (None, "The changefeeds could not be listed.", "No changefeeds on this cluster."),
+                ([{"job_id": "7", "status": "running", "running_status": "running", "lag_s": 2.4,
+                   "sink": "kafka://kafka"}], "kafka://kafka · running", "No changefeeds on this cluster.")):
+            api.data = {**_DATA, "cdc": {**_DATA["cdc"], "changefeeds": feeds}}
+            page.goto(server + "/platform")
+            expect(page.get_by_text(shown)).to_be_visible()
+            expect(page.get_by_text(hidden)).to_be_hidden()
+        expect(page.get_by_text("lag 2.4 s")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_an_outage_asks_twice_when_the_plane_warns(server, browser):
     api = _PlatformApi(live=_live(controls={**_CONTROLS, "chaos": True}), cluster=_CLUSTER_CHAOS)
     api.replies["/chaos"] = [(409, {"error": "3 ranges lose quorum", "code": "needs_confirm", "needs_confirm": True,

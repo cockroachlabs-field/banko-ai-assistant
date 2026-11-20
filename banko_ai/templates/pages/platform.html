@@ -228,10 +228,11 @@
       <template x-if="data && data.cdc"><div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
         <div class="b-row"><span>Coach signals</span><b x-text="rate(data.cdc.signals_per_min) + '/min'"></b></div>
         <div class="b-row"><span>Nudges written</span><b x-text="rate(data.cdc.nudges_per_min) + '/min'"></b></div>
-        <template x-for="f in data.cdc.changefeeds" :key="f.job_id">
+        <template x-for="f in (data.cdc.changefeeds || [])" :key="f.job_id">
           <div class="b-row"><span x-text="(f.sink || 'changefeed') + ' · ' + f.status"></span><span class="b-muted" x-text="f.lag_s == null ? '' : 'lag ' + f.lag_s + ' s'"></span></div>
         </template>
-        <div class="b-muted" x-show="!data.cdc.changefeeds.length">No changefeeds on this cluster.</div>
+        <div class="b-muted" x-show="data.cdc.changefeeds && !data.cdc.changefeeds.length">No changefeeds on this cluster.</div>
+        <div class="b-muted" x-show="!data.cdc.changefeeds">The changefeeds could not be listed.</div>
       </div></template>
     </div>
   </div>
