@@ -65,6 +65,29 @@ def _fresh_settings():
     reset_catalog()
 
 
+@pytest.fixture(autouse=True)
+def _requests_stay_on_the_suite_database():
+    """Row-level security remembers one app URL per process, and every
+    request-path read that names no URL uses it. A test that boots an app
+    on a database of its own has to put the suite's back: left behind, the
+    next test to read that way reaches a database that may be gone, and
+    fails far from the test that caused it. So that test fails instead."""
+    yield
+    from sqlalchemy.engine import make_url
+
+    from banko_ai.db import rls
+
+    left, suite = rls.app_url(), os.environ.get("DATABASE_URL")
+    if left and suite:
+        def place(url: str) -> tuple:
+            found = make_url(url)
+            return found.host, found.port, found.database
+
+        assert place(left) == place(suite), (
+            f"this test left requests pointed at the database {make_url(left).database!r}, "
+            f"not the suite's {make_url(suite).database!r}")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _ensure_app_schema():
     """Create the real application schema before any test touches the

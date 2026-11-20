@@ -191,7 +191,9 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
     back with the schema, the personas and the checkpointer's tables."""
     from banko_ai.assistant import checkpoint
     from banko_ai.config.settings import reset_config
+    from banko_ai.db import rls
     from banko_ai.db.schema import schema_state
+    from banko_ai.services.seeding import forget_statuses
     from banko_ai.web.app import create_app
 
     name = "banko_rebuilt_test"
@@ -213,6 +215,7 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
         monkeypatch.setenv(key, value)
     reset_config()
     recreate()
+    suite = (rls._status, rls._app_url)   # one app URL per process: this app's must not outlive it
     app = create_app()
     readiness = app.extensions["banko_readiness"]
     try:
@@ -260,6 +263,8 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
     finally:
         app.extensions["banko_warmup_stop"].set()
         reset_config()
+        rls._status, rls._app_url = suite
+        forget_statuses()                  # the personas' history here is about to go with the database
         with admin.connect() as conn:
             conn.execute(text(f"DROP DATABASE IF EXISTS {name} CASCADE"))
         admin.dispose()
