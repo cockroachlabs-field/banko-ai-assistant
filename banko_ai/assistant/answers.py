@@ -47,15 +47,21 @@ def _render_by_size(agg, window: str) -> str:
     def rows(found: list[dict]) -> list[str]:
         return [f"| {r['date']} | {r['merchant']} | {r['category']} | ${r['amount']:,.2f} |" for r in found]
 
-    if getattr(agg, "limit", 1) > 1:
-        return "\n".join([f"Your {len(agg.rows)} {word} {what}s{where} {window}, out of {agg.count}:", "",
-                          *table, *rows(agg.rows)])
-    first = agg.rows[0]
+    first, asked = agg.rows[0], getattr(agg, "limit", 1)
     named = "" if merchant else f" at **{first['merchant']}**"
     category = "" if agg.category and not merchant else f" ({first['category']})"
+    one = f"{what}{where} {window} was **${first['amount']:,.2f}**{named}{category} on {first['date']}"
+    if asked > 1 and agg.count == 1:
+        return f"Your only {one}."      # several were asked for: there is one, and no list of one
+    if asked > 1:
+        listed = [f"Your {len(agg.rows)} {word} {what}s{where} {window}, out of {agg.count}:", "",
+                  *table, *rows(agg.rows)]
+        if len(agg.rows) < min(asked, agg.count):
+            # More were asked for than one answer lists, and more exist.
+            listed += ["", f"You asked for {asked}; {len(agg.rows)} is the most I list."]
+        return "\n".join(listed)
     ending = ". It was the only one." if agg.count == 1 else f", out of {agg.count} purchases."
-    headline = (f"Your {word} {what}{where} {window} was **${first['amount']:,.2f}**{named}{category} "
-                f"on {first['date']}{ending}")
+    headline = f"Your {word} {one}{ending}"
     if len(agg.rows) < 2:
         return headline
     return "\n".join([headline, "", f"The next {next_word}:", "", *table, *rows(agg.rows[1:])])
@@ -65,6 +71,11 @@ def render_aggregation_markdown(agg) -> str:
     window = _window(agg)
     merchant = getattr(agg, "merchant", None)
     scope = f"at {merchant}" if merchant else f"on {agg.category or 'all categories'}"
+    if not agg.count and agg.operation in _SIZE_WORDS and not (merchant or agg.category):
+        # Nothing was bought in the window: there is no largest, and no
+        # other category to try.
+        one_day = agg.window_end - agg.window_start == timedelta(days=1)
+        return f"You have no purchases {f'on {agg.window_start}' if one_day else window}."
     if not agg.count:
         return (f"No matching transactions {scope} {window}. "
                 f"Try a wider window or a different category.")

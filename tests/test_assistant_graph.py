@@ -949,7 +949,7 @@ def test_the_biggest_purchase_comes_from_sql_and_no_model_picks_it(g, member, th
 
 def test_the_top_purchases_are_listed_in_order(g, member, thread):
     from datetime import date
-    top = _purchases(member, date.today().replace(month=1, day=1), date.today().replace(year=date.today().year + 1))
+    top = _purchases(member, date(date.today().year, 1, 1), date(date.today().year + 1, 1, 1))
     chat = ScriptedChat("unused")
     out, _ = _turn(g, member, thread, "show me my top 5 purchases this year", chat)
     listed = [line for line in out["answer"].splitlines() if line.startswith("| 20")]
@@ -962,3 +962,121 @@ def test_the_biggest_purchase_in_another_language_is_translated_not_rewritten(g,
     out, _ = _turn(g, member, thread, "what was my biggest purchase last month?", chat, language_code="es-ES")
     assert out["answer"].startswith("Tu compra más grande") and len(chat.calls) == 1
     assert "Your biggest purchase" in chat.prompts()[-1]            # the card it was asked to translate
+
+
+def test_the_plan_under_a_size_answer_is_of_the_statement_that_ordered_the_purchases(g, member, thread):
+    """It was the plan of the totals statement, which the rows in the answer
+    did not come from."""
+    out, events = _turn(g, member, thread, "What was my biggest purchase last month?", ScriptedChat("unused"))
+    plan = out["meta"]["explain"]
+    assert plan and "expense_amount" in plan and ("top-k" in plan or "sort" in plan)
+    assert "group (scalar)" not in plan
+    assert any(e["type"] == "step" and e["label"] == "EXPLAIN ANALYZE" for e in events)
+
+
+def test_a_size_question_about_nothing_the_user_has_goes_to_the_planner(g, member, thread):
+    """"My biggest moon base purchase": no category and none of this user's
+    merchants. The totals say so and stop. Here the words between "biggest"
+    and "purchase" are as likely not a name at all, so the question goes
+    where it went before this route existed."""
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "moon base"}}]}',
+                        '{"steps": []}', "I found nothing bought at a moon base.")
+    out, events = _turn(g, member, thread, "what was my biggest moon base purchase last month?", chat)
+    assert out["route"]["kind"] == "plan" and out["answer"].startswith("I found nothing bought at a moon base")
+    assert "couldn't find a category" not in out["answer"]
+    assert any(e["type"] == "step" and e["label"] == "Category lookup" and e["status"] == "warning" for e in events)
+
+
+def test_a_size_question_with_no_purchases_under_its_subject_goes_to_the_planner(g, member, thread):
+    """Income is a category, and no purchase carries it: "No matching
+    transactions on Income" read as no income at all."""
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "salary deposit"}}]}',
+                        '{"steps": []}', "Your largest deposit was your salary.")
+    out, events = _turn(g, member, thread, "my largest income transaction", chat)
+    assert out["route"]["kind"] == "plan" and out["answer"].startswith("Your largest deposit")
+    assert "No matching transactions" not in out["answer"]
+    assert any(e["type"] == "step" and e["label"] == "Aggregation SQL" and e["status"] == "warning" for e in events)
+
+
+def test_no_purchases_in_the_window_is_said_without_the_model(g, member, thread):
+    quiet = ScriptedChat("the model should not be asked")
+    out, _ = _turn(g, member, thread, "what was my biggest purchase in March 2019?", quiet)
+    assert out["route"]["kind"] == "aggregate" and quiet.calls == []
+    assert out["answer"] == "You have no purchases from 2019-03-01 to 2019-03-31."
+
+
+def test_ties_come_in_one_order_and_fewer_than_asked_are_all_listed(g, member, thread):
+    """Three purchases of one amount, two of them on one day: latest first,
+    then by id, every time. Five were asked for and four exist."""
+    from banko_ai.services.accounts import list_accounts
+    from banko_ai.services.ledger import post_purchase
+    acct = next(a for a in list_accounts(member)["accounts"] if a["kind"] == "credit")["account_id"]
+    same_day = {}
+    for merchant, amount, day in (("Tie Harbor", "700.00", date(2024, 3, 12)), ("Tie Summit", "700.00", date(2024, 3, 12)),
+                                  ("Tie Meadow", "700.00", date(2024, 3, 10)), ("Small Dune", "20.00", date(2024, 3, 5))):
+        expense_id = post_purchase(member, acct, amount=amount, merchant=merchant, category="Travel", expense_date=day)
+        if day == date(2024, 3, 12):
+            same_day[expense_id] = merchant
+    out, _ = _turn(g, member, thread, "show me my top 5 purchases in March 2024", ScriptedChat("unused"))
+    assert out["route"]["kind"] == "aggregate"
+    assert out["answer"].splitlines()[0] == "Your 4 biggest purchases from 2024-03-01 to 2024-03-31, out of 4:"
+    listed = [line.split("|")[2].strip() for line in out["answer"].splitlines() if line.startswith("| 2024")]
+    assert listed == [same_day[i] for i in sorted(same_day)] + ["Tie Meadow", "Small Dune"]
+    again, _ = _turn(g, member, thread, "show me my top 5 purchases in March 2024", ScriptedChat("unused"))
+    assert again["answer"] == out["answer"]
+
+
+def test_a_size_question_is_not_about_the_receipt_on_the_table(g, member, thread):
+    doc = str(uuid.uuid4())
+    with get_engine().begin() as c:
+        c.execute(text("INSERT INTO receipts (document_id, user_id, status, extracted) VALUES "
+                       "(CAST(:d AS UUID), CAST(:u AS UUID), 'posted', CAST(:x AS JSONB))"),
+                  {"d": doc, "u": member, "x": json.dumps({"merchant": "Trader Joe's", "amount": 23.47,
+                                                           "items": ["Pinot Noir wine"], "date": "2026-10-10"})})
+    G.set_active_receipt(thread, {"document_id": doc, "merchant": "Trader Joe's", "items": ["Pinot Noir wine"],
+                                  "amount": 23.47}, graph=g)
+    quiet = ScriptedChat("the model should not be asked")
+    out, _ = _turn(g, member, thread, "What was my biggest purchase last month?", quiet)
+    assert out["route"]["kind"] == "aggregate" and quiet.calls == []
+    assert out["answer"].startswith("Your biggest purchase from ")
+    about_it, _ = _turn(g, member, thread, "what was the biggest charge on that receipt?",
+                        ScriptedChat("The wine, at $12.99."))
+    assert about_it["route"]["kind"] == "receipt" and about_it["answer"].startswith("The wine")
+
+
+def test_the_biggest_purchase_after_a_list_stays_with_the_conversation(g, member, thread):
+    """Asked after a groceries total, "what was the biggest purchase?" means
+    the biggest of those. It used to get the last 90 days of everything."""
+    _turn(g, member, thread, "how much did I spend on groceries in the last 40 days", ScriptedChat("- Steady."))
+    chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "groceries"}}]}',
+                        '{"steps": []}', "The biggest grocery purchase was at Local Market.")
+    out, _ = _turn(g, member, thread, "what was the biggest purchase?", chat)
+    assert out["route"]["kind"] == "plan" and out["answer"].startswith("The biggest grocery purchase")
+    # The biggest of the groceries, here. In another conversation the same
+    # words mean another list, so the answer is never kept under them.
+    assert _answer_rows(member, "what was the biggest purchase?") == 0
+    fresh, _ = _turn(g, member, thread, "what was my biggest purchase last month?", ScriptedChat("unused"))
+    assert fresh["route"]["kind"] == "aggregate"          # its own window: a new question, mid-conversation or not
+
+
+def test_the_biggest_purchase_at_a_merchant_or_in_a_category(g, member, thread):
+    merchant, _, _ = _top_merchant(member)
+    start, end = date.today() - timedelta(days=89), date.today() + timedelta(days=1)
+    with get_engine().connect() as c:
+        at_merchant = c.execute(text(
+            "SELECT max(expense_amount), count(*) FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant = :m "
+            "AND expense_date >= :s AND expense_date < :e"), {"u": member, "m": merchant, "s": start, "e": end}).one()
+        dining = c.execute(text(
+            "SELECT expense_amount, merchant FROM expenses WHERE user_id = CAST(:u AS UUID) "
+            "AND shopping_type = 'Restaurant' AND expense_date >= :s AND expense_date < :e "
+            "ORDER BY expense_amount DESC, expense_date DESC, expense_id LIMIT 1"),
+            {"u": member, "s": date(date.today().year, 1, 1), "e": end}).one()
+    quiet = ScriptedChat("the model should not be asked")
+    out, _ = _turn(g, member, thread, f"what was my biggest purchase at {merchant.lower()}?", quiet)
+    assert out["route"]["kind"] == "aggregate" and quiet.calls == []
+    assert out["answer"].startswith(f"Your biggest purchase at {merchant} from {start} to ")
+    assert f"**${float(at_merchant[0]):,.2f}**" in out["answer"].splitlines()[0]
+    out, _ = _turn(g, member, thread, "What was my priciest dining purchase this year?", quiet)
+    assert out["route"]["kind"] == "aggregate" and quiet.calls == []
+    assert out["answer"].startswith("Your biggest Restaurant purchase from ")
+    assert f"**${float(dining[0]):,.2f}** at **{dining[1]}**" in out["answer"].splitlines()[0]

@@ -213,10 +213,18 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     i = state["route"]["intent"]
     intent = AggregationIntent(i["operation"], i["subject"], date.fromisoformat(i["window_start"]),
                                date.fromisoformat(i["window_end"]), int(i.get("limit") or 1))
+    by_size = intent.operation in SIZE_ORDER
     merchant = None
     if intent.subject and resolve_category(intent.subject, url) is None:
         t0 = time.perf_counter()
         merchant = resolve_merchant(intent.subject, user_id, url)
+        if merchant is None and by_size:
+            # "My biggest moon base purchase": the words beside the size word
+            # are as likely not a name at all. The planner had this question
+            # before this route existed, and gets it again.
+            _step("Category lookup", f"no category or merchant called '{intent.subject}'; searching by meaning instead",
+                  ms=(time.perf_counter() - t0) * 1000, status="warning")
+            return _to_planner(state, f"'{intent.subject}' is no category and none of your merchants")
         if merchant is None:
             # A total across every category would answer a question nobody asked.
             _step("Category lookup", f"no category or merchant called '{intent.subject}'",
@@ -233,12 +241,18 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
     agg = run_aggregation(intent, user_id, url, region=region, merchant=merchant)
     db_ms = _since(t0)
+    if by_size and not agg.count and (agg.merchant or agg.category):
+        # "My largest income transaction": a category no purchase carries.
+        # "No matching transactions on Income" would read as no income at all.
+        _step("Aggregation SQL", f"no purchases {'at ' + agg.merchant if agg.merchant else 'on ' + str(agg.category)} "
+              "in that window; searching by meaning instead", ms=db_ms, status="warning", key="sql")
+        return _to_planner(state, f"no purchases under '{intent.subject}'")
     narration.aggregation_sql(agg, db_ms)
     _step("Aggregation SQL", f"${agg.total:,.2f} across {agg.count} transactions "
           f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success",
           key="sql")
     language = state.get("language") or "English"
-    if agg.operation in SIZE_ORDER:
+    if by_size:
         # The largest or smallest purchases: SQL ordered them and code writes
         # the card, so no model picks one. Nothing is narrated, so nothing
         # goes through the narrative cache either.
@@ -282,6 +296,11 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
 
+def _to_planner(state: TurnState, why: str) -> dict:
+    """Hand a turn a deterministic route could not answer on to the planner."""
+    return {"route": {**state["route"], "kind": "plan", "detail": why}}
+
+
 def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     """"Did I go to IKEA?": the visits come from SQL and the card from code,
     so no model lists, drops or invents a date. A place that is none of the
@@ -299,7 +318,7 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     if found is None:
         _step("Merchant lookup", f"no merchant called '{place}'; searching by meaning instead", ms=db_ms,
               status="warning", key="sql")
-        return {"route": {**state["route"], "kind": "plan", "detail": f"'{place}' is not one of your merchants"}}
+        return _to_planner(state, f"'{place}' is not one of your merchants")
     last_ever = None
     if window and not found["visits"]:
         last_ever = (txns.merchant_history(user_id, found["merchant"], recent=0, url=deps.url) or {}).get("last")
@@ -745,7 +764,8 @@ def _branch(state: TurnState) -> str:
     return {"remember": "memory", "forget": "memory"}.get(kind, kind)
 
 
-def _after_visits(state: TurnState) -> str:
+def _answered_or_planner(state: TurnState) -> str:
+    """After a route that answers from SQL: it answered, or handed the turn on."""
     return "plan" if state["route"]["kind"] == "plan" else "respond"
 
 
@@ -759,8 +779,9 @@ def build_graph(checkpointer):
     g.add_edge("ingest", "route")
     g.add_conditional_edges("route", _branch,
                             ["aggregate", "visits", "receipt", "memory", "offtopic", "plan", "more"])
-    g.add_conditional_edges("visits", _after_visits, ["plan", "respond"])
-    for name in ("aggregate", "receipt", "memory", "offtopic", "plan", "more"):
+    for name in ("aggregate", "visits"):
+        g.add_conditional_edges(name, _answered_or_planner, ["plan", "respond"])
+    for name in ("receipt", "memory", "offtopic", "plan", "more"):
         g.add_edge(name, "respond")
     g.add_edge("respond", "learn")
     g.add_edge("learn", END)

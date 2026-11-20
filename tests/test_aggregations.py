@@ -148,3 +148,49 @@ def test_the_largest_purchase_in_one_category_or_window():
     assert ever.rows[0]["amount"] == 999.99
     none = run_aggregation(AggregationIntent("largest", None, end - timedelta(days=2), end), USER, DB)
     assert none.rows == [] and none.count == 0
+
+
+def test_the_plan_of_a_size_question_is_the_plan_of_the_statement_that_ordered_the_rows():
+    """The trace shows how the answer was computed. For the largest
+    purchases that is the ORDER BY amount statement, not the totals."""
+    end = date.today() + timedelta(days=1)
+    largest = AggregationIntent("largest", None, end - timedelta(days=61), end, limit=3)
+    plan = explain_aggregation(largest, USER, DB)
+    assert "expense_amount" in plan and ("top-k" in plan or "sort" in plan), plan
+    assert "group (scalar)" not in plan
+    totals = explain_aggregation(AggregationIntent("sum", None, end - timedelta(days=61), end), USER, DB)
+    assert "group (scalar)" in totals
+
+
+def test_a_size_question_lists_ten_at_most_and_keeps_what_was_asked():
+    end = date.today() + timedelta(days=1)
+    r = run_aggregation(AggregationIntent("largest", None, end - timedelta(days=365), end, limit=50), USER, DB)
+    assert len(r.rows) == 5 and r.limit == 50            # all five there are; the card says what was asked
+    eng = create_engine(DB)
+    with eng.begin() as c:
+        for i in range(12):
+            c.execute(text("INSERT INTO expenses (expense_id, user_id, expense_date, expense_amount, shopping_type, "
+                           "description, merchant, payment_method) VALUES (:id, :u, :d, :a, 'Coffee', '', :m, "
+                           "'Credit Card')"), {"id": str(uuid.uuid4()), "u": USER, "d": date.today(),
+                                               "a": 3 + i, "m": f"C{i}"})
+    eng.dispose()
+    r = run_aggregation(AggregationIntent("largest", None, end - timedelta(days=365), end, limit=50), USER, DB)
+    assert len(r.rows) == 10 and r.count == 17 and r.limit == 50
+
+
+def test_purchases_of_the_same_amount_come_back_in_one_order():
+    """Latest first, then by id: the same question gives the same card."""
+    day = date.today() - timedelta(days=3)
+    ids = sorted(str(uuid.uuid4()) for _ in range(3))
+    eng = create_engine(DB)
+    with eng.begin() as c:
+        for expense_id, when in ((ids[2], day), (ids[0], day), (ids[1], day - timedelta(days=1))):
+            c.execute(text("INSERT INTO expenses (expense_id, user_id, expense_date, expense_amount, shopping_type, "
+                           "description, merchant, payment_method) VALUES (:id, :u, :d, 4321.00, 'Travel', '', :m, "
+                           "'Credit Card')"), {"id": expense_id, "u": USER, "d": when, "m": f"T-{expense_id[:4]}"})
+    eng.dispose()
+    end = date.today() + timedelta(days=1)
+    intent = AggregationIntent("largest", None, end - timedelta(days=30), end, limit=3)
+    first = run_aggregation(intent, USER, DB).rows
+    assert [row["merchant"] for row in first] == [f"T-{ids[0][:4]}", f"T-{ids[2][:4]}", f"T-{ids[1][:4]}"]
+    assert run_aggregation(intent, USER, DB).rows == first

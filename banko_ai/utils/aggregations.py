@@ -19,6 +19,9 @@ from .intent_classifier import AggregationIntent
 
 # Questions about the largest or smallest purchases order the rows by amount.
 SIZE_ORDER = {"largest": "DESC", "smallest": "ASC"}
+# The most purchases one size answer lists. More can be asked for: the card
+# then says how many it shows.
+MOST_LISTED = 10
 
 
 def _to_pyformat(sql: str) -> str:
@@ -134,14 +137,27 @@ def _where_and_params(intent: AggregationIntent, user_id: str,
     return where, params
 
 
+def _by_amount_sql(where: str, order: str) -> str:
+    """One statement for the rows and for their EXPLAIN, so the plan in the
+    trace is the plan of the query that answered. Purchases of the same
+    amount come latest first, then by id: the same question, the same card."""
+    return f"""
+        SELECT expense_date, merchant, expense_amount, shopping_type
+        FROM expenses {where}
+        ORDER BY expense_amount {order}, expense_date DESC, expense_id
+        LIMIT :n
+    """
+
+
 def _by_amount(conn, where: str, params: dict, order: str, n: int) -> list[dict]:
     return [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2]), "category": r[3]}
-            for r in conn.execute(text(f"""
-                SELECT expense_date, merchant, expense_amount, shopping_type
-                FROM expenses {where}
-                ORDER BY expense_amount {order}, expense_date DESC, expense_id
-                LIMIT :n
-            """), {**params, "n": n}).fetchall()]
+            for r in conn.execute(text(_by_amount_sql(where, order)), {**params, "n": n}).fetchall()]
+
+
+def _listed(intent: AggregationIntent) -> int:
+    """How many rows a size question reads. One was asked for: the two after
+    it come too, so the answer can show what the largest is the largest of."""
+    return 3 if intent.limit == 1 else min(intent.limit, MOST_LISTED)
 
 
 def run_aggregation(intent: AggregationIntent, user_id: str,
@@ -166,10 +182,7 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
             FROM expenses {where}
         """), params).fetchone()
         if intent.operation in SIZE_ORDER:
-            # The purchases themselves, in order of amount. One was asked
-            # for: the two after it come too, so the answer can show what
-            # the largest is the largest of.
-            rows = _by_amount(c, where, params, SIZE_ORDER[intent.operation], 3 if intent.limit == 1 else intent.limit)
+            rows = _by_amount(c, where, params, SIZE_ORDER[intent.operation], _listed(intent))
         else:
             rows = [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
                 SELECT expense_date, merchant, expense_amount
@@ -203,6 +216,8 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
                         region: str | None = None,
                         merchant: str | None = None) -> str:
     """Run EXPLAIN ANALYZE of the aggregation query and return the plan as text.
+    For the largest or smallest purchases that is the statement that ordered
+    them, which is where the rows in the answer came from.
 
     CockroachDB does not accept bound placeholders in EXPLAIN under server-side binding,
     so this statement binds parameters client-side with psycopg.ClientCursor."""
@@ -212,15 +227,17 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
     where, params = _where_and_params(intent, user_id, category, region, merchant)
 
     # Convert :name placeholders to %(name)s for client-side binding
-    where_pyformat = _to_pyformat(where)
-
-    sql = f"""
-        EXPLAIN ANALYZE
-        SELECT COALESCE(SUM(expense_amount), 0),
-               COUNT(*),
-               MIN(expense_date), MAX(expense_date)
-        FROM expenses {where_pyformat}
-    """
+    if intent.operation in SIZE_ORDER:
+        sql = "EXPLAIN ANALYZE " + _to_pyformat(_by_amount_sql(where, SIZE_ORDER[intent.operation]))
+        params = {**params, "n": _listed(intent)}
+    else:
+        sql = f"""
+            EXPLAIN ANALYZE
+            SELECT COALESCE(SUM(expense_amount), 0),
+                   COUNT(*),
+                   MIN(expense_date), MAX(expense_date)
+            FROM expenses {_to_pyformat(where)}
+        """
 
     from ..db.engine import get_engine, routed
     eng = get_engine(routed(database_url, user_id))

@@ -155,6 +155,12 @@ def test_spend_summary_says_which_purchases_were_the_largest(ctx, member):
     assert out["largest"][0]["amount"] >= max(row["amount"] for row in out["rows"])
 
 
+def test_the_planner_is_told_what_largest_is():
+    """A key nobody described is a key the model has to guess at."""
+    described = T.TOOLS["spend_summary"].description
+    assert "largest" in described and "most recent" in described
+
+
 def test_a_budget_proposal_names_a_real_spending_category(ctx, member):
     """"set my dining out budget to 300" used to store a proposal no Confirm could run."""
     from banko_ai.services import actions, budgets

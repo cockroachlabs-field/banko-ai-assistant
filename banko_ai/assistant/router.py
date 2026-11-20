@@ -143,7 +143,9 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         return Route("forget", "memory command", payload=m.group(1).strip().rstrip("."))
     if last_search is not None and asks_for_more(text):
         return Route("more", "next page of the last search", follow_up=True)
-    intent = classify_aggregation(text, today=today)
+    # A receipt on the table is a conversation too: "the biggest charge" then leans on it.
+    in_conversation = has_history or bool(active_receipt)
+    intent = classify_aggregation(text, today=today, has_history=in_conversation)
     if active_receipt and _about_receipt(text, active_receipt, last_route):
         # Strong references always win
         if _STRONG_REF.search(text):
@@ -167,4 +169,8 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         return Route("offtopic", "not a money question")
     if intent is not None:
         return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)
+    if in_conversation and classify_aggregation(text, today=today) is not None:
+        # "What was the biggest purchase?": an SQL question as a first
+        # message, here the biggest of what the conversation was about.
+        return Route("plan", "leans on this conversation", follow_up=True)
     return Route("plan", "open question")

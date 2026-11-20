@@ -200,5 +200,38 @@ def test_the_card_for_the_smallest_a_category_a_merchant_and_an_only_purchase():
     merchant = A.render_aggregation_markdown(_agg(operation="largest", merchant="Costco", count=4, rows=_TOP[2:]))
     assert merchant.startswith("Your biggest purchase at Costco from 2026-09-01 to 2026-09-30 was **$268.40** "
                                "(Groceries) on 2026-09-09, out of 4 purchases.")
-    assert "No matching transactions" in A.render_aggregation_markdown(
-        _agg(operation="largest", count=0, total=0.0, rows=[]))
+
+
+def test_several_were_asked_for_and_one_exists():
+    """It used to read "Your 1 biggest purchases ..., out of 1:"."""
+    one = [{"date": "2026-09-12", "merchant": "Nobu", "amount": 84.2, "category": "Restaurant"}]
+    text = A.render_aggregation_markdown(_agg(operation="largest", count=1, total=84.2, rows=one, limit=5))
+    assert text == ("Your only purchase from 2026-09-01 to 2026-09-30 was **$84.20** at **Nobu** (Restaurant) "
+                    "on 2026-09-12.")
+    smallest = A.render_aggregation_markdown(_agg(operation="smallest", category="Restaurant", count=1, total=84.2,
+                                                  rows=one, limit=3))
+    assert smallest == ("Your only Restaurant purchase from 2026-09-01 to 2026-09-30 was **$84.20** at **Nobu** "
+                        "on 2026-09-12.")
+
+
+def test_more_were_asked_for_than_the_card_lists():
+    """Fifty were asked for and ten are listed: the card says so, where it
+    used to list ten as if ten had been the question."""
+    ten = [{"date": "2026-09-01", "merchant": f"M{i}", "amount": 500.0 - i, "category": "Shopping"} for i in range(10)]
+    text = A.render_aggregation_markdown(_agg(operation="largest", count=96, total=9000.0, rows=ten, limit=50))
+    assert text.splitlines()[0] == "Your 10 biggest purchases from 2026-09-01 to 2026-09-30, out of 96:"
+    assert text.splitlines()[-1] == "You asked for 50; 10 is the most I list."
+    # Seven exist and all seven are listed: nothing was cut, so nothing is said.
+    seven = A.render_aggregation_markdown(_agg(operation="largest", count=7, total=3000.0, rows=ten[:7], limit=50))
+    assert "most I list" not in seven and seven.splitlines()[0].endswith("out of 7:")
+
+
+def test_no_purchases_at_all_is_said_plainly():
+    none = A.render_aggregation_markdown(_agg(operation="largest", count=0, total=0.0, rows=[]))
+    assert none == "You have no purchases from 2026-09-01 to 2026-09-30."
+    today = A.render_aggregation_markdown(_agg(operation="smallest", count=0, total=0.0, rows=[],
+                                               window_start=date(2026, 9, 12), window_end=date(2026, 9, 13)))
+    assert today == "You have no purchases on 2026-09-12."
+    # A category with nothing in it keeps the wording the totals use.
+    assert "No matching transactions on Restaurant" in A.render_aggregation_markdown(
+        _agg(operation="largest", category="Restaurant", count=0, total=0.0, rows=[]))

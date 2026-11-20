@@ -219,7 +219,8 @@ def _propose_budget(ctx: ToolContext, a: BudgetArgs) -> dict:
 
 TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("search_transactions", "find purchases by meaning (e.g. 'late night food', 'pizza')", SearchArgs, _search),
-    Tool("spend_summary", "exact totals from SQL for a window, optionally one category or merchant", SpendArgs, _spend),
+    Tool("spend_summary", "exact totals from SQL for a window, optionally one category or merchant; rows are the "
+         "most recent purchases and largest the three biggest, so name the biggest from largest", SpendArgs, _spend),
     Tool("receipt_details", "the active receipt (or one by document_id): merchant, total, items, linked expense",
          ReceiptArgs, _receipt),
     Tool("similar_transactions", "purchases most like one expense", ExpenseArgs,
