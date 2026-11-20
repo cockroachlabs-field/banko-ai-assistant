@@ -18,6 +18,12 @@
 #                         container. Name them (space separated) on a
 #                         machine that runs more than one cluster.
 #
+# Kafka joins the network of those containers, and so does Connect when it
+# reaches the database by a container's name. The containers themselves join
+# nothing. Take this stack down before the database's own
+# (docker compose -f docker-compose.cdc.yml down): a network cannot be
+# removed while one of these two is still on it.
+#
 # Connector plugin resolution order:
 #   1. ./connect-plugins already populated
 #   2. copy from ~/idea_workspace/debezium-cockroachdb-examples (local dev)
@@ -135,29 +141,69 @@ if [ -n "$CRDB_CONTAINERS" ]; then
         docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$1" 2>/dev/null \
             | grep -v '^$' || true
     }
+    on_network() { networks_of "$2" | grep -qx "$1"; }
     reaches_kafka() { docker exec "$1" getent hosts kafka >/dev/null 2>&1; }
-    CRDB_NETWORKS="$(for c in $CRDB_CONTAINERS; do networks_of "$c"; done | grep -v '^cdc-demo_default$' | sort -u)"
-    for net in $CRDB_NETWORKS; do
-        docker network connect --alias kafka "$net" banko-cdc-kafka 2>/dev/null || true
-    done
-    [ -n "$CRDB_NETWORKS" ] && echo "   kafka joined: $(echo $CRDB_NETWORKS | tr '\n' ' ')"
     for c in $CRDB_CONTAINERS; do
-        if networks_of "$c" | grep -q '^cdc-demo_default$'; then
-            # Left there by an earlier run of this script.
-            docker network disconnect cdc-demo_default "$c" 2>/dev/null || true
-            if reaches_kafka "$c"; then
+        if ! docker inspect "$c" >/dev/null 2>&1; then
+            echo "   $c is not a container on this machine. Check CRDB_CONTAINERS."
+            exit 1
+        fi
+    done
+    # The default networks (docker's bridge, podman's podman) resolve no
+    # names, so the broker could not be found there under any alias.
+    KAFKA_NETWORKS=""
+    for net in $(for c in $CRDB_CONTAINERS; do networks_of "$c"; done | sort -u); do
+        case "$net" in cdc-demo_default|bridge|podman|host|none) continue ;; esac
+        docker network connect --alias kafka "$net" banko-cdc-kafka 2>/dev/null || true
+        if on_network "$net" banko-cdc-kafka; then
+            KAFKA_NETWORKS="$KAFKA_NETWORKS $net"
+        fi
+    done
+    if [ -n "$KAFKA_NETWORKS" ]; then
+        echo "   kafka is on:$KAFKA_NETWORKS"
+    fi
+    for c in $CRDB_CONTAINERS; do
+        shared=""
+        for net in $KAFKA_NETWORKS; do
+            if on_network "$net" "$c"; then shared="$net"; fi
+        done
+        if [ -n "$shared" ]; then
+            if on_network cdc-demo_default "$c"; then
+                # Put there by an earlier run of this script.
+                docker network disconnect cdc-demo_default "$c" 2>/dev/null || true
                 echo "   $c: taken off the cdc network. If it restarted while it was on both, restart it once more."
-                continue
             fi
-        elif reaches_kafka "$c"; then
+            if ! reaches_kafka "$c"; then
+                echo "   $c cannot find kafka on $shared: that network resolves no names, and its changefeed"
+                echo "      will not deliver. If nothing shapes this node's traffic, join it by hand:"
+                echo "      docker network connect cdc-demo_default $c"
+            fi
             continue
         fi
-        # No name resolution on this node's network (the default bridge has
-        # none): joining the cdc network is the only way to the broker.
-        docker network connect cdc-demo_default "$c" 2>/dev/null || true
-        echo "   $c: cannot find kafka on its own network, so it joined the cdc network."
-        echo "      Anything that shapes this node's traffic by interface name can pick the wrong one after a restart."
+        # Its own network resolves no names: the cdc network is the only way
+        # to the broker. Once there it stays, so a live changefeed is not cut.
+        if ! on_network cdc-demo_default "$c"; then
+            docker network connect cdc-demo_default "$c" 2>/dev/null || true
+        fi
+        if on_network cdc-demo_default "$c"; then
+            echo "   $c: its own network resolves no names, so it is on the cdc network."
+            echo "      Anything that shapes this node's traffic by interface name can pick the wrong one after a restart."
+        else
+            echo "   $c could not join the cdc network, and cannot find kafka: its changefeed will not deliver."
+        fi
     done
+    # The connector opens its own connection to the database. When that is
+    # one of these containers, reached by its name, the connector has to be
+    # on that container's network too.
+    if echo "$CRDB_CONTAINERS" | grep -qx "$CRDB_HOST"; then
+        for net in $(networks_of "$CRDB_HOST"); do
+            case "$net" in cdc-demo_default|bridge|podman|host|none) continue ;; esac
+            docker network connect "$net" banko-cdc-connect 2>/dev/null || true
+            if on_network "$net" banko-cdc-connect; then
+                echo "   connect is on: $net (it reaches $CRDB_HOST by name)"
+            fi
+        done
+    fi
 fi
 printf "   waiting for connect"
 for _ in $(seq 1 60); do
@@ -201,8 +247,11 @@ CONFIG=$(sed -e "s|\${CRDB_HOST}|$CRDB_HOST|" \
              -e "s|\${CHANGEFEED_KAFKA_URI}|$CHANGEFEED_KAFKA_URI|" \
              spending-signals-source.json)
 curl -fs -X DELETE http://localhost:${CONNECT_PORT}/connectors/banko-spending-signals-source >/dev/null 2>&1 || true
-echo "$CONFIG" | curl -fs -X POST -H 'Content-Type: application/json' \
-    --data @- http://localhost:${CONNECT_PORT}/connectors >/dev/null
+if ! echo "$CONFIG" | curl -fs -X POST -H 'Content-Type: application/json' \
+    --data @- http://localhost:${CONNECT_PORT}/connectors >/dev/null; then
+    echo "   connect refused the connector; check: docker logs banko-cdc-connect"
+    exit 1
+fi
 sleep 3
 echo "== 5/5 connector status"
 curl -fs http://localhost:${CONNECT_PORT}/connectors/banko-spending-signals-source/status | python3 -m json.tool
