@@ -122,3 +122,49 @@ def test_the_provider_asks_again_without_a_temperature():
     assert reply.choices[0].message.content == "OK" and asked == [True, False]
     T.create_chat_completion(create, model="luna", messages=[], max_tokens=1000, temperature=0.7)
     assert asked == [True, False, False]
+
+
+@pytest.mark.parametrize("said", [
+    "litellm.UnsupportedParamsError: gpt-5 models don't support temperature=0.3. Only temperature=1 is supported.",
+    "`temperature` may only be set to 1 when thinking is enabled.",
+    "`temperature` is deprecated for this model.",
+    "Invalid request: temperature is not supported for reasoning models",
+])
+def test_other_gateways_say_it_in_their_own_words(said):
+    assert T.rejects_temperature(RuntimeError(f"Error code: 400 - {said}"))
+
+
+def test_a_model_is_remembered_only_when_dropping_the_temperature_helped(monkeypatch):
+    """A gateway that echoes the request can mention the temperature in an
+    error about something else. The request went out again without one, the
+    real error came back, and the model had already been marked: every later
+    request, the planner's at 0 included, went out at the provider's default
+    for the life of the process."""
+    from langchain_openai import ChatOpenAI
+    sent = []
+
+    def generate(self, messages, stop=None, run_manager=None, **kwargs):
+        sent.append(self.temperature)
+        raise RuntimeError("Error code: 400 - this model does not support tools (request had temperature=0.3)")
+
+    def stream(self, messages, stop=None, run_manager=None, **kwargs):
+        sent.append(self.temperature)
+        raise RuntimeError("Error code: 400 - this model does not support tools (request had temperature=0.3)")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(ChatOpenAI, "_generate", generate)
+    monkeypatch.setattr(ChatOpenAI, "_stream", stream)
+    with pytest.raises(RuntimeError, match="tools"):
+        T.chat_model(model="luna", api_key="k", base_url=None, temperature=0.3).invoke("Reply OK")
+    with pytest.raises(RuntimeError, match="tools"):
+        list(T.chat_model(model="luna", api_key="k", base_url=None, temperature=0.3).stream("Reply OK"))
+    assert sent == [0.3, None, 0.3, None]
+    assert not T.default_only("luna")
+    assert T.chat_model(model="luna", api_key="k", base_url=None, temperature=0).temperature == 0
+
+    def create(**kwargs):
+        raise RuntimeError("Error code: 400 - this model does not support tools (request had temperature=0.7)")
+
+    with pytest.raises(RuntimeError, match="tools"):
+        T.create_chat_completion(create, model="luna", messages=[], temperature=0.7)
+    assert not T.default_only("luna")

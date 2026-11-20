@@ -6,9 +6,11 @@ model. Only the default (1) value is supported." Banko sets a temperature on
 every request, so those models could not be used at all.
 
 Which models do this is not listed here, and a gateway can name them
-anything. It is learned: the first request a model refuses for its
-temperature goes out again without one, and the model is remembered for the
-life of the process, so later requests leave it out from the start."""
+anything. It is learned: a request refused in words about the temperature
+goes out again without one, and when that one is answered the model is
+remembered for the life of the process, so later requests leave it out from
+the start. A model is remembered only then: an error that merely mentions
+the temperature comes back the same without it, and nothing was learned."""
 
 from __future__ import annotations
 
@@ -24,13 +26,22 @@ _default_only: set[str] = set()
 _chat_class: type | None = None
 
 
+# How providers and gateways put it: "Unsupported value: 'temperature' does not
+# support 0.3", "models don't support temperature=0.3. Only temperature=1 is
+# supported", "`temperature` may only be set to 1", "`temperature` is
+# deprecated for this model".
+_REFUSALS = ("unsupported", "not support", "n't support", "only the default", "only temperature",
+             "may only be", "deprecated")
+
+
 def rejects_temperature(exc: BaseException) -> bool:
-    """Whether this failure is the provider refusing the temperature. Read
-    from the message: a gateway relays the provider's error as text, and the
-    status and parameter fields the SDK would carry are gone by then."""
+    """Whether this failure reads like the provider refusing the temperature,
+    which makes it worth one more try without. Read from the message: a
+    gateway relays the provider's error as text, and the status and parameter
+    fields the SDK would carry are gone by then. A loose reading costs one
+    request that fails the same way."""
     said = str(exc).lower()
-    return "temperature" in said and any(
-        phrase in said for phrase in ("unsupported value", "unsupported parameter", "does not support"))
+    return "temperature" in said and any(phrase in said for phrase in _REFUSALS)
 
 
 def default_only(model: str) -> bool:
@@ -61,8 +72,9 @@ def create_chat_completion(create: Callable[..., Any], *, model: str, temperatur
     except Exception as exc:
         if not rejects_temperature(exc):
             raise
+        answer = create(model=model, **kwargs)
         remember(model)
-        return create(model=model, **kwargs)
+        return answer
 
 
 def _class() -> type:
@@ -80,9 +92,14 @@ def _class() -> type:
                 except Exception as exc:
                     if self.temperature is None or not rejects_temperature(exc):
                         raise
+                    asked, self.temperature = self.temperature, None
+                    try:
+                        result = super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+                    except Exception:
+                        self.temperature = asked     # it was something else
+                        raise
                     remember(self.model_name)
-                    self.temperature = None
-                    return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+                    return result
 
             def _stream(self, messages, stop=None, run_manager=None, **kwargs):  # type: ignore[no-untyped-def]
                 started = False
@@ -96,9 +113,17 @@ def _class() -> type:
                     # one is a different failure, and half an answer is out.
                     if started or self.temperature is None or not rejects_temperature(exc):
                         raise
-                    remember(self.model_name)
-                    self.temperature = None
-                yield from super()._stream(messages, stop=stop, run_manager=run_manager, **kwargs)
+                    asked, self.temperature = self.temperature, None
+                try:
+                    for chunk in super()._stream(messages, stop=stop, run_manager=run_manager, **kwargs):
+                        if not started:
+                            started = True
+                            remember(self.model_name)
+                        yield chunk
+                except Exception:
+                    if not started:
+                        self.temperature = asked         # it was something else
+                    raise
 
         _chat_class = TemperatureOptional
     return _chat_class
