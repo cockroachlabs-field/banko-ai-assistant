@@ -121,3 +121,30 @@ def test_merchant_filter_matches_sql():
         assert "scan" in explain_aggregation(intent, uid, url, merchant=merchant)
     finally:
         drop_user(uid)
+
+
+def test_the_largest_purchases_come_back_in_order_of_amount():
+    """The rows a total carries are the most recent ones, which is how a
+    month's largest purchase went missing: it was not among the last ten."""
+    end = date.today() + timedelta(days=1)
+    r = run_aggregation(AggregationIntent("largest", None, end - timedelta(days=61), end, limit=3), USER, DB)
+    assert [(row["amount"], row["merchant"], row["category"]) for row in r.rows] == [
+        (100.00, "M2", "Restaurant"), (72.59, "M1", "Restaurant"), (50.00, "M0", "Restaurant")]
+    assert r.rows[0]["date"] == str(date.today() - timedelta(days=45))   # the oldest row in the window, and the largest
+    assert r.count == 4 and round(r.total, 2) == 247.59                    # still out of every purchase in the window
+
+
+def test_the_smallest_purchases_come_back_smallest_first():
+    end = date.today() + timedelta(days=1)
+    r = run_aggregation(AggregationIntent("smallest", None, end - timedelta(days=61), end, limit=2), USER, DB)
+    assert [row["amount"] for row in r.rows] == [25.00, 50.00]
+
+
+def test_the_largest_purchase_in_one_category_or_window():
+    end = date.today() + timedelta(days=1)
+    groceries = run_aggregation(AggregationIntent("largest", "groceries", end - timedelta(days=61), end), USER, DB)
+    assert [row["amount"] for row in groceries.rows] == [25.00] and groceries.category == "Groceries"
+    ever = run_aggregation(AggregationIntent("largest", None, end - timedelta(days=365), end), USER, DB)
+    assert ever.rows[0]["amount"] == 999.99
+    none = run_aggregation(AggregationIntent("largest", None, end - timedelta(days=2), end), USER, DB)
+    assert none.rows == [] and none.count == 0

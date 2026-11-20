@@ -200,13 +200,19 @@ NOT_FOUND = "I couldn't find a category or merchant called '{subject}'."
 
 
 def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
-    from ..utils.aggregations import explain_aggregation, resolve_category, resolve_merchant, run_aggregation
+    from ..utils.aggregations import (
+        SIZE_ORDER,
+        explain_aggregation,
+        resolve_category,
+        resolve_merchant,
+        run_aggregation,
+    )
     from ..utils.intent_classifier import AggregationIntent
     deps, user_id = runtime.context, state["user_id"]
     url = deps.url or get_config().database_url
     i = state["route"]["intent"]
     intent = AggregationIntent(i["operation"], i["subject"], date.fromisoformat(i["window_start"]),
-                               date.fromisoformat(i["window_end"]))
+                               date.fromisoformat(i["window_end"]), int(i.get("limit") or 1))
     merchant = None
     if intent.subject and resolve_category(intent.subject, url) is None:
         t0 = time.perf_counter()
@@ -232,6 +238,14 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
           f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success",
           key="sql")
     language = state.get("language") or "English"
+    if agg.operation in SIZE_ORDER:
+        # The largest or smallest purchases: SQL ordered them and code writes
+        # the card, so no model picks one. Nothing is narrated, so nothing
+        # goes through the narrative cache either.
+        explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region,
+                                                                  merchant=merchant), region)
+        return {"answer": answers.translate(answers.render_aggregation_markdown(agg), language, deps.chat),
+                "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
     key, hit = None, None
     try:
         key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),

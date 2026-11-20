@@ -87,7 +87,7 @@ class Route:
         if self.intent is not None:
             out["intent"] = {"operation": self.intent.operation, "subject": self.intent.subject,
                              "window_start": str(self.intent.window_start),
-                             "window_end": str(self.intent.window_end)}
+                             "window_end": str(self.intent.window_end), "limit": self.intent.limit}
         return out
 
 

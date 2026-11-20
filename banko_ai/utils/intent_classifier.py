@@ -190,10 +190,11 @@ def is_financial_query(query: str) -> bool:
 
 @dataclass(frozen=True)
 class AggregationIntent:
-    operation: str          # sum | count | average
+    operation: str          # sum | count | average | largest | smallest
     subject: str | None     # raw category phrase, None means all categories
     window_start: date      # inclusive
     window_end: date        # exclusive
+    limit: int = 1          # largest and smallest: how many purchases were asked for
 
 
 _OP_PATTERNS = [
@@ -201,6 +202,47 @@ _OP_PATTERNS = [
     ("count", r"\bhow many\b|\bnumber of\b|\bcount\b"),
     ("sum", r"\bhow much\b|\btotal\b|\bspent\b|\bspend\b|\bsum\b"),
 ]
+
+# "my biggest purchase last month", "most expensive restaurant purchase",
+# "top 5 purchases", "3 largest transactions": a size word, at most two words
+# (a category, or "single"), then a purchase noun. The largest purchase is a
+# fact SQL has. The planner's tools return the rows most like the wording, or
+# the most recent, never the largest. The noun comes after the size word, so
+# "which purchase was the biggest?", which leans on a list the turn before
+# showed, stays with the conversation.
+_NUMBER_WORDS = {w: n for n, w in enumerate(
+    "one two three four five six seven eight nine ten".split(), start=1)}
+_COUNT = r"(?:\d{1,2}|" + "|".join(_NUMBER_WORDS) + ")"
+_SIZE_RE = re.compile(
+    rf"(?:\b(?P<before>{_COUNT})\s+)?"
+    r"\b(?P<size>biggest|largest|most\s+expensive|priciest|costliest|highest|top"
+    r"|smallest|cheapest|least\s+expensive|lowest)\b"
+    rf"(?:\s+(?P<after>{_COUNT})\b)?"
+    r"(?P<between>(?:\s+[a-z][a-z'&-]*){0,2}?)"
+    r"\s+(?:purchase|expense|transaction|charge|payment|order|bill)(?P<plural>s)?\b"
+    r"(?!\s+(?:categor|merchant|store|type))")
+_SMALL_WORDS = ("smallest", "cheapest", "least", "lowest")
+# One purchase is not what these ask about: a category or a merchant with the
+# highest total, a reason, or a list the conversation already showed.
+_NOT_ONE_PURCHASE = re.compile(r"\bwhy\b|\bcategor(?:y|ies)\b|\bmerchants?\b|\b(?:those|these|them)\b")
+_SIZE_FILLERS = frozenset("single individual overall ever one-off".split())
+
+
+def _size_question(q: str) -> tuple[str, int, str | None] | None:
+    """(operation, how many, the category named between the words) for a
+    question about the largest or smallest purchases, else None."""
+    m = _SIZE_RE.search(q)
+    if m is None or _NOT_ONE_PURCHASE.search(q):
+        return None
+    operation = "smallest" if m.group("size").startswith(_SMALL_WORDS) else "largest"
+    asked = m.group("before") or m.group("after")
+    if asked:
+        limit = int(asked) if asked.isdigit() else _NUMBER_WORDS[asked]
+    else:
+        limit = 3 if m.group("plural") else 1
+    between = " ".join(w for w in m.group("between").split() if w not in _SIZE_FILLERS) or None
+    return operation, max(1, min(limit, 10)), between
+
 
 _SUBJECT_RE = re.compile(
     r"\b(?:on|for|at)\s+([a-z][a-z '&-]{2,30}?)"
@@ -302,20 +344,23 @@ def classify_aggregation(query: str,
                          today: date | None = None) -> AggregationIntent | None:
     q = query.lower().strip()
     today = today or date.today()
-    op = next((name for name, rx in _OP_PATTERNS if re.search(rx, q)), None)
+    size = _size_question(q)
+    op = size[0] if size else next((name for name, rx in _OP_PATTERNS if re.search(rx, q)), None)
     if op is None:
         return None
     # "show / list / recent / why" questions are retrieval or coach asks,
-    # not aggregation, even when a spend word appears.
-    if re.search(r"\bshow\b|\blist\b|\brecent\b|\bwhy\b|\bwhich\b", q):
+    # not aggregation, even when a spend word appears. "Show me my biggest
+    # purchase" and "which was my largest" still ask for one fact.
+    if size is None and re.search(r"\bshow\b|\blist\b|\brecent\b|\bwhy\b|\bwhich\b", q):
         return None
     window = _resolve_window(q, today)
     if window is None:
         end = today + timedelta(days=1)
         window = (end - timedelta(days=90), end)
     m = _SUBJECT_RE.search(q) or _SUBJECT_INLINE_RE.search(q)
-    subject = m.group(1).strip() if m else None
+    subject = m.group(1).strip() if m else (size[2] if size else None)
     if subject and all(w in _NOT_A_SUBJECT for w in subject.split()):
         subject = None
     return AggregationIntent(operation=op, subject=subject,
-                             window_start=window[0], window_end=window[1])
+                             window_start=window[0], window_end=window[1],
+                             limit=size[1] if size else 1)

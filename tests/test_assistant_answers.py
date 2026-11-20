@@ -163,3 +163,42 @@ def test_a_translation_keeps_category_names_as_the_page_shows_them():
     shows category names as written, so the answer does too."""
     prompt = A.translation_messages("You spent $1 on Groceries.", "Spanish")[0]["content"]
     assert "category name" in prompt and "merchant name" in prompt
+
+
+_TOP = [{"date": "2026-09-01", "merchant": "Parkside Apartments", "amount": 1500.0, "category": "Housing"},
+        {"date": "2026-09-14", "merchant": "Delta", "amount": 412.18, "category": "Travel"},
+        {"date": "2026-09-09", "merchant": "Costco", "amount": 268.4, "category": "Groceries"}]
+
+
+def test_the_largest_purchase_card_names_it_and_what_comes_next():
+    text = A.render_aggregation_markdown(_agg(operation="largest", count=96, total=4210.55, rows=_TOP))
+    assert text.splitlines()[0] == ("Your biggest purchase from 2026-09-01 to 2026-09-30 was **$1,500.00** at "
+                                    "**Parkside Apartments** (Housing) on 2026-09-01, out of 96 purchases.")
+    assert "The next largest:" in text
+    assert "| 2026-09-14 | Delta | Travel | $412.18 |" in text and "| 2026-09-09 | Costco | Groceries | $268.40 |" in text
+    assert "Parkside Apartments | Housing" not in text       # the headline is not repeated in the table
+
+
+def test_the_card_for_several_purchases_lists_them_in_order():
+    text = A.render_aggregation_markdown(_agg(operation="largest", count=96, total=4210.55, rows=_TOP, limit=3))
+    assert text.splitlines()[0] == "Your 3 biggest purchases from 2026-09-01 to 2026-09-30, out of 96:"
+    rows = [line for line in text.splitlines() if line.startswith("| 2026")]
+    assert rows == ["| 2026-09-01 | Parkside Apartments | Housing | $1,500.00 |",
+                    "| 2026-09-14 | Delta | Travel | $412.18 |", "| 2026-09-09 | Costco | Groceries | $268.40 |"]
+    asked_five = A.render_aggregation_markdown(_agg(operation="largest", count=3, total=2180.58, rows=_TOP, limit=5))
+    assert asked_five.splitlines()[0] == "Your 3 biggest purchases from 2026-09-01 to 2026-09-30, out of 3:"
+
+
+def test_the_card_for_the_smallest_a_category_a_merchant_and_an_only_purchase():
+    small = A.render_aggregation_markdown(_agg(operation="smallest", count=96, rows=list(reversed(_TOP))))
+    assert small.startswith("Your smallest purchase from 2026-09-01 to 2026-09-30 was **$268.40** at **Costco**")
+    assert "The next smallest:" in small
+    one = [{"date": "2026-09-12", "merchant": "Nobu", "amount": 84.2, "category": "Restaurant"}]
+    category = A.render_aggregation_markdown(_agg(operation="largest", category="Restaurant", count=1, rows=one))
+    assert category == ("Your biggest Restaurant purchase from 2026-09-01 to 2026-09-30 was **$84.20** at **Nobu** "
+                        "on 2026-09-12. It was the only one.")
+    merchant = A.render_aggregation_markdown(_agg(operation="largest", merchant="Costco", count=4, rows=_TOP[2:]))
+    assert merchant.startswith("Your biggest purchase at Costco from 2026-09-01 to 2026-09-30 was **$268.40** "
+                               "(Groceries) on 2026-09-09, out of 4 purchases.")
+    assert "No matching transactions" in A.render_aggregation_markdown(
+        _agg(operation="largest", count=0, total=0.0, rows=[]))

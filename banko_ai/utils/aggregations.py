@@ -17,6 +17,9 @@ from sqlalchemy import text
 
 from .intent_classifier import AggregationIntent
 
+# Questions about the largest or smallest purchases order the rows by amount.
+SIZE_ORDER = {"largest": "DESC", "smallest": "ASC"}
+
 
 def _to_pyformat(sql: str) -> str:
     """Convert :name placeholders to %(name)s format for psycopg's client-side binding.
@@ -40,6 +43,8 @@ class AggregationResult:
     last_date: date | None
     rows: list[dict] = field(default_factory=list)
     merchant: str | None = None
+    largest: list[dict] = field(default_factory=list)
+    limit: int = 1
 
 
 @lru_cache(maxsize=4)
@@ -129,10 +134,25 @@ def _where_and_params(intent: AggregationIntent, user_id: str,
     return where, params
 
 
+def _by_amount(conn, where: str, params: dict, order: str, n: int) -> list[dict]:
+    return [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2]), "category": r[3]}
+            for r in conn.execute(text(f"""
+                SELECT expense_date, merchant, expense_amount, shopping_type
+                FROM expenses {where}
+                ORDER BY expense_amount {order}, expense_date DESC, expense_id
+                LIMIT :n
+            """), {**params, "n": n}).fetchall()]
+
+
 def run_aggregation(intent: AggregationIntent, user_id: str,
                     database_url: str,
                     region: str | None = None,
-                    merchant: str | None = None) -> AggregationResult:
+                    merchant: str | None = None,
+                    top: int = 0) -> AggregationResult:
+    """rows are the 25 most recent purchases in the window, or, for a
+    question about the largest or smallest, those purchases in order of
+    amount. With top, largest also carries that many biggest purchases:
+    recent rows say nothing about which purchase was the largest."""
     from ..db.engine import get_engine, routed
     category = None if merchant else resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region, merchant)
@@ -145,12 +165,19 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
                    MIN(expense_date), MAX(expense_date)
             FROM expenses {where}
         """), params).fetchone()
-        detail = c.execute(text(f"""
-            SELECT expense_date, merchant, expense_amount
-            FROM expenses {where}
-            ORDER BY expense_date DESC
-            LIMIT 25
-        """), params).fetchall()
+        if intent.operation in SIZE_ORDER:
+            # The purchases themselves, in order of amount. One was asked
+            # for: the two after it come too, so the answer can show what
+            # the largest is the largest of.
+            rows = _by_amount(c, where, params, SIZE_ORDER[intent.operation], 3 if intent.limit == 1 else intent.limit)
+        else:
+            rows = [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
+                SELECT expense_date, merchant, expense_amount
+                FROM expenses {where}
+                ORDER BY expense_date DESC
+                LIMIT 25
+            """), params).fetchall()]
+        largest = _by_amount(c, where, params, "DESC", top) if top else []
 
     total = float(agg[0] or 0)
     count = int(agg[1] or 0)
@@ -164,9 +191,10 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
         average=round(total / count, 2) if count else 0.0,
         first_date=agg[2],
         last_date=agg[3],
-        rows=[{"date": str(r[0]), "merchant": r[1],
-               "amount": float(r[2])} for r in detail],
+        rows=rows,
         merchant=merchant,
+        largest=largest,
+        limit=intent.limit,
     )
 
 

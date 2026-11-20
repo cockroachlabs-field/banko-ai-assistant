@@ -919,3 +919,46 @@ def test_a_streamed_translation_in_html_paragraphs_is_stored_as_markdown(g, memb
     out, _ = _turn(g, member, thread, question, ScriptedChat("- Estable.", "<p>Gastaste **$1** en Groceries.</p>"),
                    language_code="es-ES")
     assert out["answer"] == "Gastaste **$1** en Groceries."
+
+
+def _purchases(member: str, start, end) -> list[tuple]:
+    with get_engine().connect() as c:
+        return c.execute(text("SELECT expense_amount, merchant FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                              "AND expense_date >= :s AND expense_date < :e "
+                              "ORDER BY expense_amount DESC, expense_date DESC, expense_id"),
+                         {"u": member, "s": start, "e": end}).fetchall()
+
+
+def test_the_biggest_purchase_comes_from_sql_and_no_model_picks_it(g, member, thread):
+    """It went to the planner, whose tools hand the model the rows most like
+    the wording or the most recent ones, never the largest: a month's rent
+    was left out, and a June purchase was once named as last month's."""
+    from datetime import date
+    first_this = date.today().replace(day=1)
+    first_last = (first_this.replace(year=first_this.year - 1, month=12) if first_this.month == 1
+                  else first_this.replace(month=first_this.month - 1))
+    top = _purchases(member, first_last, first_this)
+    chat = ScriptedChat("the model was asked, and it should not have been")
+    out, events = _turn(g, member, thread, "What can you tell me about my biggest purchase last month?", chat)
+    assert out["route"]["kind"] == "aggregate" and chat.calls == []
+    assert out["answer"].startswith(f"Your biggest purchase from {first_last} to ")
+    assert f"**${float(top[0][0]):,.2f}** at **{top[0][1]}**" in out["answer"]
+    assert f"${float(top[1][0]):,.2f}" in out["answer"] and f"out of {len(top)} purchases" in out["answer"]
+    assert any(e["type"] == "step" and e["label"] == "Aggregation SQL" for e in events)
+
+
+def test_the_top_purchases_are_listed_in_order(g, member, thread):
+    from datetime import date
+    top = _purchases(member, date.today().replace(month=1, day=1), date.today().replace(year=date.today().year + 1))
+    chat = ScriptedChat("unused")
+    out, _ = _turn(g, member, thread, "show me my top 5 purchases this year", chat)
+    listed = [line for line in out["answer"].splitlines() if line.startswith("| 20")]
+    assert chat.calls == [] and len(listed) == 5
+    assert [line.split("|")[-2].strip() for line in listed] == [f"${float(a):,.2f}" for a, _ in top[:5]]
+
+
+def test_the_biggest_purchase_in_another_language_is_translated_not_rewritten(g, member, thread):
+    chat = ScriptedChat(lambda messages: "Tu compra más grande ...")
+    out, _ = _turn(g, member, thread, "what was my biggest purchase last month?", chat, language_code="es-ES")
+    assert out["answer"].startswith("Tu compra más grande") and len(chat.calls) == 1
+    assert "Your biggest purchase" in chat.prompts()[-1]            # the card it was asked to translate

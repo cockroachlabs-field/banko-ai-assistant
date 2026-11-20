@@ -5,6 +5,8 @@ fixed "today" so the suite does not rot."""
 
 from datetime import date
 
+import pytest
+
 from banko_ai.utils.intent_classifier import classify_aggregation
 
 TODAY = date(2026, 7, 24)
@@ -85,3 +87,55 @@ def test_a_day_word_after_the_category_is_not_part_of_it():
     for q in ("how much did I spend on groceries yesterday", "how much did I spend on coffee today?"):
         intent = classify_aggregation(q, today=date(2026, 10, 14))
         assert intent.subject in ("groceries", "coffee") and (intent.window_end - intent.window_start).days == 1, q
+
+
+# The largest or smallest purchase is a fact SQL has. It used to go to the
+# planner, whose tools return the rows most like the wording, or the most
+# recent ones, never the largest: a month's rent was left out, and a June
+# purchase was once named as last month's.
+@pytest.mark.parametrize("question, operation, limit", [
+    ("What can you tell me about my biggest purchase last month?", "largest", 1),
+    ("what was my largest expense last month", "largest", 1),
+    ("How much was my most expensive purchase this year?", "largest", 1),
+    ("Which was my biggest purchase last month?", "largest", 1),
+    ("show me my top 5 purchases this year", "largest", 5),
+    ("my 3 biggest transactions in the past 30 days", "largest", 3),
+    ("what are my largest purchases this month", "largest", 3),
+    ("What was my smallest purchase last month?", "smallest", 1),
+    ("cheapest charge this week", "smallest", 1),
+])
+def test_the_largest_or_smallest_purchase_is_an_sql_question(question, operation, limit):
+    intent = classify_aggregation(question, today=TODAY)
+    assert intent is not None, question
+    assert (intent.operation, intent.limit) == (operation, limit), question
+
+
+def test_a_largest_purchase_question_keeps_its_window_and_subject():
+    intent = classify_aggregation("What was my biggest purchase last month?", today=TODAY)
+    assert (intent.window_start, intent.window_end) == (date(2026, 6, 1), date(2026, 7, 1)) and intent.subject is None
+    assert classify_aggregation("my biggest purchase at Costco this year", today=TODAY).subject == "costco"
+    assert classify_aggregation("most expensive restaurant purchase last month", today=TODAY).subject == "restaurant"
+    assert classify_aggregation("largest coffee order this month", today=TODAY).subject == "coffee"
+    assert classify_aggregation("my biggest single purchase last month", today=TODAY).subject is None
+
+
+@pytest.mark.parametrize("question", [
+    "which one was the biggest?",                      # leans on the turn before: the planner's
+    "of those, which purchase was the biggest?",
+    "what is my biggest expense category?",            # a category, not a purchase
+    "which category is my biggest expense?",
+    "what's my biggest month for spending?",
+    "who are my top 5 merchants?",
+    "why was my biggest purchase so high last month?",  # a why question
+    "what was my most recent purchase?",               # recent is not a size
+])
+def test_what_is_not_about_one_purchase_stays_where_it_was(question):
+    intent = classify_aggregation(question, today=TODAY)
+    assert intent is None or intent.operation not in ("largest", "smallest"), question
+
+
+def test_totals_averages_and_counts_read_as_before():
+    assert classify_aggregation("how much did I spend on restaurants last month", today=TODAY).operation == "sum"
+    assert classify_aggregation("average grocery spend this year", today=TODAY).operation == "average"
+    assert classify_aggregation("how many coffee purchases this month", today=TODAY).operation == "count"
+    assert classify_aggregation("how much did I spend on restaurants last month", today=TODAY).limit == 1

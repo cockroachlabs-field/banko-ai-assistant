@@ -147,3 +147,13 @@ def test_a_visit_question_about_the_active_receipt_stays_with_the_receipt():
     assert route("did I go to Trader Joe's?", active_receipt=RECEIPT, today=TODAY).kind == "receipt"
     # A window makes it a new question, as for any receipt follow-up.
     assert route("did I go to Trader Joe's this week?", active_receipt=RECEIPT, today=TODAY).kind == "visits"
+
+
+def test_a_largest_purchase_question_routes_to_sql_with_how_many():
+    from banko_ai.assistant.router import route
+    found = route("show me my top 5 purchases this year")
+    assert found.kind == "aggregate" and found.as_dict()["intent"]["operation"] == "largest"
+    assert found.as_dict()["intent"]["limit"] == 5
+    assert route("how much did I spend on coffee last month").as_dict()["intent"]["limit"] == 1
+    # Leaning on the list the turn before showed: the conversation's, not a new SQL question.
+    assert route("which one was the biggest?", has_history=True).kind == "plan"

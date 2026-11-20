@@ -30,6 +30,37 @@ def _window(agg) -> str:
     return f"from {agg.window_start} to {agg.window_end - timedelta(days=1)}"
 
 
+_SIZE_WORDS = {"largest": ("biggest", "largest"), "smallest": ("smallest", "smallest")}
+
+
+def _render_by_size(agg, window: str) -> str:
+    """The largest or smallest purchases, as SQL ordered them. One was asked
+    for: it is named, with how many it is the largest of, and the two after
+    it are listed so the next in line can be seen (a month's rent is often
+    the largest purchase, and rarely the one the question was about)."""
+    word, next_word = _SIZE_WORDS[agg.operation]
+    merchant = getattr(agg, "merchant", None)
+    what = f"{agg.category} purchase" if agg.category and not merchant else "purchase"
+    where = f" at {merchant}" if merchant else ""
+    table = ["| Date | Merchant | Category | Amount |", "|---|---|---|---|"]
+
+    def rows(found: list[dict]) -> list[str]:
+        return [f"| {r['date']} | {r['merchant']} | {r['category']} | ${r['amount']:,.2f} |" for r in found]
+
+    if getattr(agg, "limit", 1) > 1:
+        return "\n".join([f"Your {len(agg.rows)} {word} {what}s{where} {window}, out of {agg.count}:", "",
+                          *table, *rows(agg.rows)])
+    first = agg.rows[0]
+    named = "" if merchant else f" at **{first['merchant']}**"
+    category = "" if agg.category and not merchant else f" ({first['category']})"
+    ending = ". It was the only one." if agg.count == 1 else f", out of {agg.count} purchases."
+    headline = (f"Your {word} {what}{where} {window} was **${first['amount']:,.2f}**{named}{category} "
+                f"on {first['date']}{ending}")
+    if len(agg.rows) < 2:
+        return headline
+    return "\n".join([headline, "", f"The next {next_word}:", "", *table, *rows(agg.rows[1:])])
+
+
 def render_aggregation_markdown(agg) -> str:
     window = _window(agg)
     merchant = getattr(agg, "merchant", None)
@@ -37,6 +68,8 @@ def render_aggregation_markdown(agg) -> str:
     if not agg.count:
         return (f"No matching transactions {scope} {window}. "
                 f"Try a wider window or a different category.")
+    if agg.operation in _SIZE_WORDS:
+        return _render_by_size(agg, window)
     if agg.operation == "count":
         headline = f"You made **{agg.count} transactions** {scope} {window}."
     elif agg.operation == "average":
