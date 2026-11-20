@@ -145,6 +145,8 @@ class Settings(BaseSettings):
     db_pool_recycle: int = _field(1800, group="database", env="DB_POOL_RECYCLE", description="Recycle pooled connections after this many seconds.")
     db_pool_pre_ping: bool = _field(True, group="database", env="DB_POOL_PRE_PING", description="Check a connection before using it, so a restarted node or a haproxy reset stays invisible.")
     db_connect_timeout: int = _field(10, group="database", env="DB_CONNECT_TIMEOUT", description="Seconds to wait when opening a connection.")
+    schema_watch_seconds: int = _field(30, group="database", env="SCHEMA_WATCH_SECONDS",
+        description="How often a running Banko checks that its database still has its schema. An emptied database (a cluster rebuilt under it) is set up again without a restart. 0 turns the check off.")
     db_retry_max_attempts: int = _field(5, group="database", env="DB_RETRY_MAX_ATTEMPTS", description="Attempts for a transaction that hits a retryable error (40001, a dropped connection).")
     rls_mode: str = _field("auto", group="database", env="RLS_MODE",
         description="auto turns on row-level security for the money tables when the app role can log in; off keeps it off.")

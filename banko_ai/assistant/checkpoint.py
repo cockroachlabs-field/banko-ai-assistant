@@ -49,6 +49,13 @@ def get_saver():
         return _saver
 
 
+def ensure_tables() -> None:
+    """Make sure the checkpoint tables exist. get_saver() creates them once,
+    when it builds the saver; a database emptied under this process needs
+    them made again, on the saver it already has."""
+    get_saver().setup()
+
+
 def _blob_table(pool) -> str:
     """checkpoint_blobs as SHOW CREATE TABLE prints it. The 0.6 TTL setting shows there."""
     with pool.connection() as conn:

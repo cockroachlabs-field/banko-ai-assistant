@@ -43,7 +43,7 @@ from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine, mask_url
+from ..db.engine import get_engine, mask_url, missing_table
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..observability.metrics import metrics
@@ -413,6 +413,8 @@ def create_app() -> Flask:
         else:
             readiness.set("integrity", "ready", f"0 drift across {report.accounts} accounts")
 
+    integrity_started = threading.Event()   # the step runs again after a rebuilt database; the worker starts once
+
     def _persona_data_step() -> str:
         from ..services.integrity import IntegrityWorker
         if config.banko_skip_autosetup:
@@ -427,7 +429,9 @@ def create_app() -> Flask:
             written = seed_personas(config.database_url, on_progress=_persona_progress)
             return ", ".join(f"{name} +{n}" for name, n in written.items())
         finally:
-            IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
+            if not integrity_started.is_set():
+                integrity_started.set()
+                IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
 
     def _assistant_step() -> str:
         # Builds the checkpointer once: the checkpoint tables on a first
@@ -1374,6 +1378,15 @@ def create_app() -> Flask:
 
     @app.errorhandler(500)
     def server_error(error):
+        # The request that finds the tables gone: the schema watch has been
+        # poked and the setup is about to run again, so this one gets the
+        # getting-ready answer the next ones will, not an error page.
+        if app.extensions.get("banko_schema_watch") is not None and missing_table(error):
+            detail = "The database was rebuilt and is being set up again. Try again in a moment."
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "warming_up", "detail": detail}), 503
+            plain_page()
+            return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
         if _wants_json():
             return jsonify({"error": NEUTRAL_FAILED}), 500
         plain_page()
@@ -1406,6 +1419,37 @@ def create_app() -> Flask:
     from .shell import shell_context
     app.context_processor(shell_context)
 
+    def _checkpoint_tables_step() -> str:
+        if not readiness.wait_for("schema", timeout=600):
+            raise RuntimeError("the schema is not ready yet; the checkpoint tables are made on the first question")
+        from ..assistant import checkpoint
+        checkpoint.ensure_tables()
+        return "checkpoint tables present"
+
+    def _set_up_database_again() -> None:
+        """The database was emptied under this process (a cluster rebuilt
+        from the chaos stage). Run the boot's database steps again: starting
+        them marks the schema and the personas not ready, so pages show the
+        getting-ready page meanwhile, as they do on a first boot."""
+        from ..db.regions import clear_region_caches
+        from ..services.seeding import forget_statuses
+        from ..workers.traffic import stop_simulator
+        try:
+            stop_simulator()   # its customers went with the database
+        except Exception:
+            boot_log.warning("rebuild: the load simulator did not stop cleanly", exc_info=True)
+        clear_region_caches()  # what was known about regions and row homes described the old database
+        forget_statuses()
+        persona_counts.clear()
+        start_warmup(readiness, [
+            ("schema", _schema_step),
+            ("personas", _personas_step),
+            ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
+        ], stop=warmup_stop, name="banko-rebuild-db")
+        start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-rebuild-seed")
+        start_warmup(readiness, [("assistant", _checkpoint_tables_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
+                     stop=warmup_stop, name="banko-rebuild-assistant")
+
     # Last, so every closure the steps call already exists.
     # Lane A needs no database. Lane B runs the gate (schema, personas)
     # first; locality conversions are online in CockroachDB, so they come
@@ -1434,4 +1478,16 @@ def create_app() -> Flask:
     readiness.mark_background("checkpoint_ttl")
     start_warmup(readiness, [("assistant", _assistant_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
                  stop=warmup_stop, name="banko-warmup-assistant")
+    # A database emptied under this process is set up again (workers/schema_watch.py).
+    # Not on --no-data runs and in tests, which make and drop tables themselves.
+    if config.schema_watch_seconds > 0 and not config.banko_skip_autosetup:
+        from ..db.engine import watch_missing_tables
+        from ..db.schema import schema_state
+        from ..workers.schema_watch import SchemaWatch
+        watch = SchemaWatch(state=lambda: schema_state(config.database_url), gate_ready=_gate_ready,
+                            rebuild=_set_up_database_again, interval=float(config.schema_watch_seconds),
+                            stop=warmup_stop)
+        app.extensions["banko_schema_watch"] = watch   # holds it: the engine only keeps a weak reference
+        watch_missing_tables(watch)
+        watch.start()
     return app
