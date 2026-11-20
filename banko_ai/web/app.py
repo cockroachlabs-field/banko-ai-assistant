@@ -1376,12 +1376,27 @@ def create_app() -> Flask:
         return render_template("errors/error.html", code=404, brand_name=config.brand_name,
                                message="That page doesn't exist."), 404
 
+    def _being_set_up_again() -> bool:
+        """Whether the database really was emptied: its setup is running, or
+        its schema is gone and the watch is about to start it. One missing
+        table in a database that has its schema is an error like any other,
+        and a page that says "getting ready" for ever would only hide it."""
+        if app.extensions.get("banko_schema_watch") is None:
+            return False
+        if not all(readiness.is_ready(step) for step in ("schema", "personas")):
+            return True
+        try:
+            from ..db.schema import schema_state
+            return schema_state(config.database_url) == "missing"
+        except Exception:
+            return False
+
     @app.errorhandler(500)
     def server_error(error):
         # The request that finds the tables gone: the schema watch has been
         # poked and the setup is about to run again, so this one gets the
         # getting-ready answer the next ones will, not an error page.
-        if app.extensions.get("banko_schema_watch") is not None and missing_table(error):
+        if missing_table(error) and _being_set_up_again():
             detail = "The database was rebuilt and is being set up again. Try again in a moment."
             if request.path.startswith("/api/"):
                 return jsonify({"error": "warming_up", "detail": detail}), 503
@@ -1421,7 +1436,7 @@ def create_app() -> Flask:
 
     def _checkpoint_tables_step() -> str:
         if not readiness.wait_for("schema", timeout=600):
-            raise RuntimeError("the schema is not ready yet; the checkpoint tables are made on the first question")
+            raise RuntimeError("the schema is not ready yet; the first question makes the checkpoint tables")
         from ..assistant import checkpoint
         checkpoint.ensure_tables()
         return "checkpoint tables present"
@@ -1440,7 +1455,10 @@ def create_app() -> Flask:
             boot_log.warning("rebuild: the load simulator did not stop cleanly", exc_info=True)
         clear_region_caches()  # what was known about regions and row homes described the old database
         forget_statuses()
-        persona_counts.clear()
+        with persona_counts_lock:
+            persona_counts.clear()
+        from ..assistant import checkpoint
+        checkpoint.tables_gone()   # before the gate reopens: a question in between makes them itself
         start_warmup(readiness, [
             ("schema", _schema_step),
             ("personas", _personas_step),

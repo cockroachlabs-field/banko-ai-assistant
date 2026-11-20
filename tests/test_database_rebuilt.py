@@ -113,6 +113,78 @@ def test_a_missing_table_is_found_however_the_error_is_wrapped():
 
 
 @pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
+def test_a_schema_this_role_may_not_read_is_not_taken_for_a_missing_one():
+    """"Missing" starts the whole setup again, so it has to mean that the
+    tables are not there. A role that lost its right to read banko_meta got
+    the same answer, and a setup that could never succeed."""
+    from sqlalchemy.exc import ProgrammingError
+
+    from banko_ai.db.engine import get_engine
+    from banko_ai.db.schema import schema_state
+    role = "banko_reads_nothing"
+    with get_engine().connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(text(f"CREATE ROLE IF NOT EXISTS {role} WITH LOGIN"))
+    try:
+        assert schema_state(DB) in ("current", "outdated")
+        as_role = str(make_url(DB).set(username=role, password=None).render_as_string(hide_password=False))
+        with pytest.raises(ProgrammingError, match="privilege"):
+            schema_state(as_role)
+    finally:
+        with get_engine().connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text(f"DROP ROLE IF EXISTS {role}"))
+
+
+def test_what_was_known_about_region_columns_goes_with_the_old_database():
+    """has_region_column remembers a yes per database. A rebuilt database
+    converts its tables again in the background, so an old yes names a
+    column that is not there yet."""
+    from banko_ai.db import regions
+    regions._region_columns_seen.add(("cockroachdb://root@nowhere:1/rebuilt", "accounts"))
+    regions.clear_region_caches()
+    assert regions._region_columns_seen == set()
+
+
+class _Saver:
+    """The checkpointer as this module needs it: something whose tables can be made."""
+
+    def __init__(self, fail: int = 0):
+        self.setups, self._fail = 0, fail
+
+    def setup(self):
+        self.setups += 1
+        if self.setups <= self._fail:
+            raise TimeoutError("couldn't get a connection after 30.00 sec")
+
+
+def test_the_checkpoint_tables_are_made_again_by_whoever_needs_them_first(monkeypatch):
+    """The page gate reopens when the schema and the personas are back, and
+    the checkpoint tables take a little longer. A question asked in between
+    makes them itself, as the first question after a boot does."""
+    from banko_ai.assistant import checkpoint
+    saver = _Saver()
+    monkeypatch.setattr(checkpoint, "_saver", saver)
+    monkeypatch.setattr(checkpoint, "_tables_due", False)
+    assert checkpoint.get_saver() is saver and saver.setups == 0      # nothing to do on a database that has them
+    checkpoint.tables_gone()
+    assert checkpoint.get_saver() is saver and saver.setups == 1
+    assert checkpoint.get_saver() is saver and saver.setups == 1      # once
+
+
+def test_checkpoint_tables_that_could_not_be_made_are_tried_again_on_the_next_question(monkeypatch):
+    """The step after a rebuild failed once (the pool was full) and nothing
+    tried again: the schema was current, so the watch saw nothing to do, and
+    the assistant stayed broken until a restart."""
+    from banko_ai.assistant import checkpoint
+    saver = _Saver(fail=1)
+    monkeypatch.setattr(checkpoint, "_saver", saver)
+    monkeypatch.setattr(checkpoint, "_tables_due", False)
+    checkpoint.tables_gone()
+    with pytest.raises(TimeoutError):
+        checkpoint.ensure_tables()
+    assert checkpoint.get_saver() is saver and saver.setups == 2
+
+
+@pytest.mark.skipif(not DB, reason="DATABASE_URL not set")
 def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
     """End to end, in one process: boot on a scratch database, empty it, and
     watch the app notice, hold pages behind the getting-ready page, and come
@@ -131,20 +203,9 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
             conn.execute(text(f"DROP DATABASE IF EXISTS {name} CASCADE"))
             conn.execute(text(f"CREATE DATABASE {name}"))
 
-    class Saver:                       # the real one is process-wide and would outlive this database
-        built = 0                      # get_saver() makes the tables when it builds the saver
-        setups = 0                     # and they are made again on that saver after a rebuild
-
-        def setup(self):
-            Saver.setups += 1
-
-    saver = Saver()
-
-    def get_saver():
-        Saver.built += 1
-        return saver
-
-    monkeypatch.setattr(checkpoint, "get_saver", get_saver)
+    saver = _Saver()                   # the real one is process-wide and would outlive this database
+    monkeypatch.setattr(checkpoint, "_saver", saver)
+    monkeypatch.setattr(checkpoint, "_tables_due", False)
     monkeypatch.setattr(checkpoint, "keep_ttl", lambda: "left alone by this test")
     for key, value in {"DATABASE_URL": scratch, "BANKO_SKIP_AUTOSETUP": "0", "SEED_HISTORY_MONTHS": "1",
                        "SCHEMA_WATCH_SECONDS": "1", "AI_SERVICE": "ollama", "OLLAMA_HOST": "http://127.0.0.1:9",
@@ -156,12 +217,10 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
     readiness = app.extensions["banko_readiness"]
     try:
         assert readiness.wait_for("schema", 120) and readiness.wait_for("personas", 120)
-        assert readiness.wait_for("assistant", 120) and Saver.built >= 1 and Saver.setups == 0
+        assert readiness.wait_for("assistant", 120) and saver.setups == 0
         client = app.test_client()
         assert client.get("/login").status_code == 200
 
-        # The request that finds the tables gone gets the getting-ready page,
-        # not an error page: the setup is about to run again.
         from sqlalchemy.exc import ProgrammingError
 
         from banko_ai.web import app as app_module
@@ -172,13 +231,20 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
         def gone(*args, **kwargs):
             raise ProgrammingError("SELECT 1 FROM users", {}, Undefined('relation "users" does not exist'))
 
+        # One table missing from a database that has its schema is an error
+        # like any other. Nothing is being set up, and a getting-ready page
+        # that refreshes itself for ever would only hide it.
         with monkeypatch.context() as patch:
             patch.setattr(app_module, "get_profiles", gone)
-            found = client.get("/login")
-        assert found.status_code == 503 and b"set up again" in found.data
+            stray = client.get("/login")
+        assert stray.status_code == 500 and b"getting ready" not in stray.data
 
         recreate()                                                    # the chaos stage rebuilds the cluster
         assert schema_state(scratch) == "missing"
+        # The request that finds the tables gone gets the getting-ready page,
+        # not an error page: the setup is about to run again.
+        found = client.get("/login")
+        assert found.status_code == 503 and b"getting ready" in found.data
         deadline = time.monotonic() + 30
         while readiness.is_ready("schema") and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -188,7 +254,7 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
         assert schema_state(scratch) == "current"
         with create_engine(scratch).connect() as conn:
             assert {r[0] for r in conn.execute(text("SELECT username FROM users"))} == {"maya", "sam", "riley"}
-        assert readiness.wait_for("assistant", 120) and Saver.setups == 1   # the checkpoint tables went too
+        assert readiness.wait_for("assistant", 120) and saver.setups == 1   # the checkpoint tables went too
         assert readiness.wait_for("persona_data", 300)                      # and the personas have their history back
         assert client.get("/login").status_code == 200
     finally:

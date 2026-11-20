@@ -169,6 +169,29 @@ def _wait_state(readiness, name, seconds=60):
 
 
 @pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_a_step_started_again_belongs_to_the_newer_lane():
+    """A rebuilt database starts the boot's database steps again while a
+    first-boot step can still be running on the old one. When that one fails
+    late, it must not mark as failed what the newer lane finished."""
+    from banko_ai.workers.warmup import Readiness, start_warmup
+    r = Readiness()
+    old_may_fail, old_running = threading.Event(), threading.Event()
+
+    def on_the_old_database() -> str:
+        old_running.set()
+        old_may_fail.wait(5)
+        raise RuntimeError("another run took over the seeding lease")
+
+    first = start_warmup(r, [("persona_data", on_the_old_database)], name="first-boot")
+    assert old_running.wait(5)
+    second = start_warmup(r, [("persona_data", lambda: "maya +57, sam +33, riley +31")], name="rebuild")
+    second.join(5)
+    assert r.get("persona_data").state == "ready"
+    old_may_fail.set()
+    first.join(5)
+    assert r.get("persona_data").state == "ready" and "maya +57" in r.get("persona_data").detail
+
+
 def test_a_broken_personas_file_fails_personas_once_and_names_the_file(tmp_path, monkeypatch, make_app):
     bad = tmp_path / "my-personas.yaml"
     bad.write_text("personas:\n  - username: ghost\n", encoding="utf-8")
