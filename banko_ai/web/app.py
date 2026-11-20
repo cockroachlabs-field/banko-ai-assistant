@@ -457,17 +457,16 @@ def create_app() -> Flask:
             boot_log.warning("checkpoint TTL: the run did not finish; the next boot tries again", exc_info=True)
             raise RuntimeError(f"the run did not finish ({e.__class__.__name__}); the next boot tries again") from None
 
-    def _emit_welcome_signal(user: dict, base_url: str) -> None:
-        """Post a welcome signal matched to the user's spending style to this
-        same server at base_url (the signup request's host, read while that
-        request was live: this runs on the seeding thread after it ended).
+    def _emit_welcome_signal(user: dict) -> None:
+        """Hand the coach a welcome signal matched to the user's spending
+        style, in this process, the way the Simulate buttons do.
 
-        The POST runs on a background thread: a synchronous self-call inside
-        the signup request would deadlock a single-threaded server."""
-        secret = get_config().cdc_webhook_hmac_secret
-        if not secret:
-            print("welcome signal skipped: no webhook secret")
-            return
+        It used to be posted to this server's own webhook, at the address the
+        sign-up request came in on. Behind a proxy with a sign-in in front
+        that is the public address: the post never arrived, and the nudge was
+        lost without a word. Called on the seeding thread, after that request
+        is gone."""
+        from ..coach.signals import Signal
         sig_type, severity, payload = {
             "subscriber": ("recurring_drift", "info",
                            {"subscription": "Netflix", "old_amount": 15.99,
@@ -478,28 +477,14 @@ def create_app() -> Flask:
                {"category": "dining", "pct_used": 0.55,
                 "monthly_budget": 400.0, "spent_so_far": 220.0,
                 "days_remaining": 12}))
-        envelope = {"payload": [{"after": {
-            "signal_id": str(uuid.uuid4()), "user_id": user["user_id"],
-            "signal_type": sig_type, "severity": severity,
-            "payload": payload,
-            "idempotency_key": f"welcome:{user['user_id']}"},
-            "updated": f"{time.time():.10f}"}]}
-        body = json.dumps(envelope).encode()
-        mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        url = base_url.rstrip('/') + '/api/cdc/signals'
-
-        def _post() -> None:
-            try:
-                requests.post(
-                    url, data=body, timeout=5,
-                    headers={"Content-Type": "application/json",
-                             "X-Banko-Signature": mac})
-            except Exception as e:
-                print(f"welcome signal skipped: {e}")
-
-        import threading
-        threading.Thread(target=_post, daemon=True,
-                         name="welcome-signal").start()
+        try:
+            app.extensions["banko_coach"]["submit"](Signal.from_dict({
+                "signal_id": str(uuid.uuid4()), "user_id": user["user_id"],
+                "signal_type": sig_type, "severity": severity, "payload": payload,
+                "idempotency_key": f"welcome:{user['user_id']}"}))
+        except Exception:
+            _coach_log.getLogger("banko.coach").warning(
+                "the welcome nudge for %s was not queued", user["username"], exc_info=True)
 
     def _login_page(**context):
         """The sign-in page: the catalog personas that exist, as one-click
@@ -583,15 +568,13 @@ def create_app() -> Flask:
         user = None
         try:
             user = um.create(username, spending_style, home_region, demo_user=True)
-            # Read now: the seeding thread outlives this request.
-            base_url = request.host_url
 
-            def _seed_then_welcome(new_user=user, base_url=base_url):
+            def _seed_then_welcome(new_user=user):
                 from ..services.seeding import SIGNUP_BATCH_SIZE, seed_user
                 try:
                     # Small batches, so the person watching sees the count move.
                     seed_user(new_user["user_id"], on_progress=_emit_seeding, batch_size=SIGNUP_BATCH_SIZE)
-                    _emit_welcome_signal(new_user, base_url)
+                    _emit_welcome_signal(new_user)
                 except Exception as exc:
                     print(f"⚠️  seeding {new_user['username']} failed: {exc}")
             threading.Thread(target=_seed_then_welcome, daemon=True,

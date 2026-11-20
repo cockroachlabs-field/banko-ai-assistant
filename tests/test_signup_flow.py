@@ -143,31 +143,49 @@ def test_load_customer_names_are_reserved(client):
         assert UserManager(DB).get_by_username(name) is None
 
 
-def test_a_new_users_welcome_signal_goes_out_after_seeding(client, monkeypatch):
-    """The welcome nudge is posted from the seeding thread, after the signup
-    request is gone, so it must not need that request."""
+def test_a_new_users_welcome_signal_reaches_the_coach_without_the_webhook(client, monkeypatch):
+    """The welcome nudge is handed to the coach in this process, after
+    seeding. It used to be posted to this server's own webhook at the address
+    the sign-up request came in on: behind a proxy with a sign-in in front
+    that is the public address, the post never arrived, and nothing was
+    logged. It needs neither that request nor the webhook secret now."""
     import time
 
     from banko_ai.config.settings import reset_config
     from banko_ai.web import app as app_module
 
     posts = []
-    monkeypatch.setattr(app_module.requests, "post", lambda url, **kw: posts.append((url, kw.get("data"))))
-    monkeypatch.setenv("CDC_WEBHOOK_HMAC_SECRET", "test-secret")
+    monkeypatch.setattr(app_module.requests, "post", lambda url, **kw: posts.append(url))
+    monkeypatch.delenv("CDC_WEBHOOK_HMAC_SECRET", raising=False)
     reset_config()
+    user = None
     try:
         r = client.post("/signup", data={"username": "flow-welcome-user", "spending_style": "saver"},
-                        follow_redirects=False)
+                        follow_redirects=False, base_url="https://banko.example.com")
         assert r.status_code == 302
         user = UserManager(DB).get_by_username("flow-welcome-user")
         assert _wait_seeded(user["user_id"]) == "done"
-        deadline = time.monotonic() + 10
-        while not posts and time.monotonic() < deadline:
-            time.sleep(0.1)
-        assert len(posts) == 1 and posts[0][0].endswith("/api/cdc/signals")
-        assert user["user_id"].encode() in posts[0][1]
+        engine = create_engine(DB)
+        try:
+            deadline, signal, nudges = time.monotonic() + 30, None, 0
+            while time.monotonic() < deadline and not nudges:
+                with engine.connect() as conn:
+                    signal = conn.execute(text("SELECT signal_type FROM spending_signals WHERE idempotency_key = :k"),
+                                          {"k": f"welcome:{user['user_id']}"}).scalar()
+                    nudges = conn.execute(text("SELECT count(*) FROM coach_nudges WHERE user_id = :u"),
+                                          {"u": user["user_id"]}).scalar()
+                time.sleep(0.2)
+        finally:
+            engine.dispose()
+        assert signal == "budget_threshold"   # a saver's welcome
+        assert nudges == 1                     # and the coach answered it
+        assert posts == []                     # with no call to its own address
     finally:
         reset_config()
-        found = UserManager(DB).get_by_username("flow-welcome-user")
-        if found:
-            drop_user(found["user_id"])
+        if user:
+            engine = create_engine(DB)
+            with engine.begin() as conn:
+                conn.execute(text("DELETE FROM coach_nudges WHERE user_id = :u"), {"u": user["user_id"]})
+                conn.execute(text("DELETE FROM spending_signals WHERE user_id = :u"), {"u": user["user_id"]})
+            engine.dispose()
+            drop_user(user["user_id"])
