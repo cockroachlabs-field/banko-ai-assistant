@@ -11,7 +11,7 @@
       <template x-if="m.role === 'receipt'">
         <div class="b-receipt">
           <div class="top">
-            <img x-show="m.receipt && m.receipt.document_id" :src="m.receipt ? '/api/v1/receipts/' + m.receipt.document_id + '/thumbnail' : ''" alt="" onerror="this.style.display='none'">
+            <img x-show="m.receipt && m.receipt.has_thumbnail" :src="m.receipt && m.receipt.has_thumbnail ? '/api/v1/receipts/' + m.receipt.document_id + '/thumbnail' : ''" alt="" onerror="this.style.display='none'">
             <div style="flex:1;min-width:0">
               <div class="b-name" x-text="m.receipt ? (m.receipt.merchant + ' · ' + Banko.fmt.money(m.receipt.amount)) : 'Reading ' + m.name"></div>
               <div class="b-muted" x-text="m.receipt ? (m.receipt.status === 'duplicate' ? 'Looks like a purchase you already have' : 'Posted · ' + m.receipt.category) : (m.error ? '' : 'Working on it')"></div>

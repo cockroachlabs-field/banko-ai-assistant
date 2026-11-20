@@ -193,8 +193,14 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
     cfg = get_config()
     narration.receipt_uploaded(filename)
     mime = ALLOWED_TYPES.get(Path(filename).suffix.lower(), "application/octet-stream")
-    doc = _insert(user_id, filename, mime, _thumbnail(path), url)
+    thumb = _thumbnail(path)
+    doc = _insert(user_id, filename, mime, thumb, url)
     state = {"step": "ocr", "t0": 0.0, "terminal": None, "posted_data": None}
+
+    def receipt(fields: dict) -> dict:
+        # has_thumbnail: a PDF has none, nor has an image one could not be
+        # made from, and the card must not ask for what is not there.
+        return {"type": "receipt", **fields, "has_thumbnail": thumb is not None}
 
     def start(step: str) -> dict:
         state.update(step=step, t0=time.perf_counter())
@@ -263,7 +269,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             _finish(doc, user_id, url, status="duplicate", extracted=extracted, ocr_text=ocr_text[:20000],
                     expense_id=dupes[0]["expense_id"], embedding=qvec)
             state["terminal"] = "duplicate"
-            yield {"type": "receipt", **(get_receipt(user_id, doc, url=url) or {})}
+            yield receipt(get_receipt(user_id, doc, url=url) or {})
             return
         yield end("done", "no duplicate")
 
@@ -316,15 +322,15 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             yield end("done", result)
 
         try:
-            yield {"type": "receipt", **(get_receipt(user_id, doc, url=url) or {})}
+            yield receipt(get_receipt(user_id, doc, url=url) or {})
         except Exception:
             log.warning("get_receipt failed after posting, building from known fields", exc_info=True)
-            yield {"type": "receipt", **jsonable(state["posted_data"])}
+            yield receipt(jsonable(state["posted_data"]))
     except Exception:
         if state.get("posted_data"):
             log.error("exception after posting, money moved, reporting success", exc_info=True)
             try:
-                yield {"type": "receipt", **jsonable(state["posted_data"])}
+                yield receipt(jsonable(state["posted_data"]))
             except Exception:
                 log.error("failed to yield posted receipt data", exc_info=True)
         else:
