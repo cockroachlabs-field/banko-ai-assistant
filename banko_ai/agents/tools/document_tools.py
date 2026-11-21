@@ -8,6 +8,7 @@ Provides:
 """
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
@@ -27,6 +28,26 @@ try:
 except ImportError:
     OCR_AVAILABLE = False
     print("⚠️  OCR libraries not available. Install: pip install pytesseract pdf2image Pillow pypdf")
+
+
+# An amount of money as a receipt prints it: 9.75, or 46,29 where the point came out as a comma.
+_AMOUNT = re.compile(r"\d[.,]\d{2}\b")
+
+
+def read_text(image: Any) -> str:
+    """Tesseract's reading of one page.
+
+    Left to lay the page out by itself, tesseract can drop whole lines of a
+    faded receipt, the total among them. Told that the page is one block of
+    text, which a receipt is, it keeps them. So a page whose first reading
+    holds no amount is read once more that way, and that reading is used if
+    it found one. The image itself is left alone: sharpening or
+    thresholding a faded print gave totals that were wrong and looked right."""
+    text = pytesseract.image_to_string(image)
+    if _AMOUNT.search(text):
+        return str(text)
+    as_one_block = pytesseract.image_to_string(image, config="--psm 6")
+    return str(as_one_block if _AMOUNT.search(as_one_block) else text)
 
 
 def parse_receipt_fields(text: str, llm: Any, categories: Sequence[str] | None = None) -> dict:
@@ -179,7 +200,7 @@ def create_document_tools(database_url: str, embedding_model) -> list[Tool]:
             image = Image.open(image_path)
             
             # Perform OCR
-            text = pytesseract.image_to_string(image)
+            text = read_text(image)
             
             # Get image info
             width, height = image.size
@@ -245,7 +266,7 @@ def create_document_tools(database_url: str, embedding_model) -> list[Tool]:
             if not text_parts:
                 images = convert_from_path(pdf_path)
                 for i, image in enumerate(images):
-                    text = pytesseract.image_to_string(image)
+                    text = read_text(image)
                     if text.strip():
                         text_parts.append(f"[Page {i+1}]\n{text}")
             
