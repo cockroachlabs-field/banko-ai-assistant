@@ -23,6 +23,8 @@ import numpy as np
 
 from banko_ai.utils.embeddings import load_embedding_model
 
+from . import clock
+
 _model = None
 
 FINANCIAL_ANCHORS = [
@@ -438,7 +440,7 @@ def extract_window(query: str,
                    today: date | None = None) -> tuple[date, date] | None:
     """Public helper: the date window named in a question, or None. Used by
     the RAG path to push a date predicate even for non-aggregation asks."""
-    return _resolve_window(query.lower(), today or date.today())
+    return _resolve_window(query.lower(), today or clock.today())
 
 
 def classify_aggregation(query: str,
@@ -447,7 +449,7 @@ def classify_aggregation(query: str,
     """has_history says the thread already has turns: "the biggest purchase"
     with no window or place of its own then leans on them."""
     q = query.lower().strip()
-    today = today or date.today()
+    today = today or clock.today()
     size = _size_question(q, today, has_history)
     if size is not None:
         return size

@@ -8,6 +8,7 @@ import uuid
 from datetime import date, timedelta
 
 from ..services import budgets, recurring, transactions
+from ..utils import clock
 from .signals import Signal, SignalType
 
 # A budget is near its limit from 80% spent, where the pipeline's warn level starts.
@@ -35,7 +36,7 @@ def _budget_threshold(user_id: str, url: str | None) -> tuple[str, dict]:
 
 
 def _anomaly(user_id: str, url: str | None) -> tuple[str, dict]:
-    since = (date.today() - timedelta(days=60)).isoformat()
+    since = (clock.today() - timedelta(days=60)).isoformat()
     items = [t for t in transactions.list_transactions(user_id, limit=200, kind="purchase",
                                                        date_from=date.fromisoformat(since), url=url)["items"]
              if t.get("expense_id")]

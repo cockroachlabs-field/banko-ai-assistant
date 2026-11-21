@@ -22,6 +22,8 @@ from typing import Any
 
 from sqlalchemy import text
 
+from ..utils import clock
+
 
 def _engine(database_url: str):
     from ..db.engine import get_engine
@@ -90,7 +92,7 @@ def get_spending_velocity(user_id: str, category: str,
     """How fast the user is burning this category's budget this month, and
     a linear projection of end-of-month spend. The Coach uses this to say
     things like 'at this pace you'll hit 110% by month-end.'"""
-    today = date.today()
+    today = clock.today()
     first_day = date(today.year, today.month, 1)
     days_in_month = calendar.monthrange(today.year, today.month)[1]
     days_into_month = (today - first_day).days + 1
@@ -136,7 +138,7 @@ def get_top_merchants(user_id: str, database_url: str,
     """Ranked list of merchants by spend over the last `days`, optionally
     filtered to a single category. Useful for the Coach to identify which
     merchants are driving a category overshoot."""
-    cutoff = date.today() - timedelta(days=days)
+    cutoff = clock.today() - timedelta(days=days)
     eng = _engine(database_url)
     with eng.connect() as conn:
         if category:
@@ -183,7 +185,7 @@ def detect_subscriptions(user_id: str, database_url: str,
     charge differs meaningfully (>10%) from the prior typical amount —
     that's exactly the situation Plan 2-A's RECURRING_DRIFT signal would
     fire on, and the Coach can cite the change."""
-    cutoff = date.today() - timedelta(days=lookback_days)
+    cutoff = clock.today() - timedelta(days=lookback_days)
     eng = _engine(database_url)
     with eng.connect() as conn:
         rows = conn.execute(text("""
