@@ -346,6 +346,12 @@ docker build --no-cache -t banko-ai-assistant:local .
 
 ## Building and Publishing Images
 
+A release is published by the `Docker Hub Publish` workflow (`.github/workflows/docker.yml`), run by hand with the
+version, after the release workflow has created the tag. It builds both architectures, pushes the version and
+`latest`, then publishes the README as the overview on Docker Hub with its links pinned to the release's tag. Run it
+with `overview_only` to refresh the overview of a release that is already out. The Docker Hub token needs the read,
+write and delete scope for the overview.
+
 For maintainers - the repository includes a build script for creating multi-architecture images.
 
 ### Using the Build Script (Recommended)
