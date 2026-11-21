@@ -379,3 +379,23 @@ def test_no_name_tried_for_an_account_is_one_of_the_load_simulators(email):
     for name in staff._usernames(email, "4dc2d22b-7599-5c3a-9d1e-0f6b8a7c5e41"):
         assert not name.lower().startswith("load-"), name
         assert re.fullmatch(r"[A-Za-z0-9._-]{1,32}", name), name
+
+
+def test_a_search_for_coffee_finds_coffee_in_a_new_account():
+    """What the hosted instance showed: the account's nearest purchases to
+    "coffee" were sandwiches, at a distance that means not alike, and the
+    assistant said it knew of no coffee. The search was right. There was
+    none to find."""
+    from datetime import date
+
+    from banko_ai.services import transactions
+    from banko_ai.services.seeding import seed_user
+    from tests._money import drop_user, make_user
+    uid = make_user(staff.DEFAULT_STYLE)
+    try:
+        seed_user(uid, months=2, today=date.today())
+        hits = transactions.semantic_search(uid, "coffee", limit=5)["items"]
+        assert hits and hits[0]["category"] == "Coffee", [(h["merchant"], h["category"]) for h in hits]
+        assert hits[0]["distance"] < 0.6                  # near, where the sandwiches sat at 0.69
+    finally:
+        drop_user(uid)

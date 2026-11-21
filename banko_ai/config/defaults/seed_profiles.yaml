@@ -76,6 +76,9 @@ profiles:
     purchases:
       - {category: Groceries, merchants: [Whole Foods, Local Market, Costco, Target], per_month: 6, amount: [15, 120], account: card}
       - {category: Restaurant, merchants: [Pizza Hut, Italian Bistro, Chipotle, Subway], per_month: 6, amount: [15, 70], account: card}
+      # Coffee: this is the profile an account made by the Google sign-in gets, and the
+      # Transactions page suggests searching "coffee near the office".
+      - {category: Coffee, merchants: [Starbucks, Local Cafe, "Peet's Coffee"], per_month: 5, amount: [4, 11], account: card}
       - {category: Transport, merchants: [Uber, Lyft, Metro Transit], per_month: 5, amount: [5, 45], account: card}
       - {category: Shopping, merchants: [Amazon, Target, Walmart, IKEA], per_month: 4, amount: [15, 150], account: card}
       - {category: Fuel, merchants: [Shell Gas Station, Chevron], per_month: 3, amount: [30, 65], account: card}
@@ -83,6 +86,6 @@ profiles:
       - {merchant: Oak Park Rentals, category: Housing, amount: 1500, day_of_month: 1, account: checking}
       - {merchant: Electric Company, category: Utilities, amount: [80, 105], day_of_month: 3, account: checking}
       - {merchant: Netflix, category: Subscription, amount: 15.99, day_of_month: 12, account: card}
-    budgets: {Groceries: 400, Restaurant: 250, Transport: 150, Shopping: 250, Fuel: 160, Utilities: 150}
+    budgets: {Groceries: 400, Restaurant: 250, Coffee: 60, Transport: 150, Shopping: 250, Fuel: 160, Utilities: 150}
     goals:
       - {name: Vacation, icon: "🏖️", target_amount: 3000, target_months: 12, account: savings, monthly_contribution: 200, from: checking, day_of_month: 2}

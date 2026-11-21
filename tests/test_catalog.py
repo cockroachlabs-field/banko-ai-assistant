@@ -91,3 +91,19 @@ def test_profile_referencing_a_missing_account_is_rejected():
             "accounts": [{"key": "checking", "kind": "checking", "name": "C", "institution": "B"}],
             "income": {"account": "nowhere", "amount": 100},
         })
+
+
+def test_the_account_a_sign_in_makes_can_answer_the_search_the_page_suggests():
+    """The Transactions page suggests searching "coffee near the office" and
+    the README says to search for "coffee". The profile every account made by
+    the Google sign-in gets bought none, so on the hosted instance a person
+    following the page's own suggestion found sandwiches."""
+    from pathlib import Path
+
+    from banko_ai.services.staff import DEFAULT_STYLE
+    root = Path(__file__).resolve().parents[1]
+    assert "like coffee" in (root / "banko_ai" / "templates" / "pages" / "transactions.html").read_text()
+    profile = C.get_catalog().profiles[DEFAULT_STYLE]
+    coffee = [spec for spec in profile.purchases if spec.category == "Coffee"]
+    assert coffee and coffee[0].per_month >= 4            # in any month, not once in a while
+    assert "Coffee" in profile.budgets                    # and a budget, like every category it spends in
