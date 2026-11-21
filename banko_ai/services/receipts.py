@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from ..assistant import narration
@@ -68,6 +69,8 @@ UNREADABLE = "We couldn't read any text on that receipt."
 TEMPLATE_ECHO = ("The selected model returned the prompt template instead of real receipt values. "
                  "Switch to a chat or instruct model (not a code model) and upload again.")
 INVALID = "The receipt fields didn't look right. Try a clearer photo."
+# What a purchase cannot do without, in the words the card uses for it.
+_NEEDED = {"merchant": "the store's name", "amount": "the total"}
 NO_FUNDS = "That account doesn't have enough available for this receipt."
 FAILED = "Something went wrong on our side. Please try again."
 THUMB_MAX = 256 * 1024
@@ -146,6 +149,16 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
                                                       monthly_budget=get_config().monthly_budget_default))
 
     return ReceiptHooks(ocr=ocr, extract=extract, fraud=fraud, budget=budget)
+
+
+def _refusal(fields: dict, failed: set[str]) -> str:
+    """What the card says when the model's fields are refused: what was
+    missing, when that is all that was wrong; the general words otherwise
+    (no receipt at all, or a field that is there and makes no sense)."""
+    if not fields or not failed or not failed <= set(_NEEDED):
+        return INVALID
+    missing = " and ".join(words for name, words in _NEEDED.items() if name in failed)
+    return f"We couldn't find {missing} on that receipt. Try a clearer photo or scan."
 
 
 def _thumbnail(path: str) -> bytes | None:
@@ -262,6 +275,13 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             return
         try:
             valid = ReceiptExtraction(**fields)
+        except ValidationError as exc:
+            # Which fields, and in what way: never what the receipt said.
+            problems = sorted({(str(e["loc"][0]) if e.get("loc") else "?", str(e.get("type"))) for e in exc.errors()})
+            log.warning("receipt %s: the fields the model returned did not pass (%s)", doc,
+                        ", ".join(f"{name}: {kind}" for name, kind in problems))
+            yield from fail(_refusal(fields, {name for name, _ in problems}), ocr_text)
+            return
         except Exception:
             yield from fail(INVALID, ocr_text)
             return

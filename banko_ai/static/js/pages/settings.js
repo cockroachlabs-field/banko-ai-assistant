@@ -11,6 +11,7 @@ document.addEventListener("alpine:init", () => {
     autoRead: localStorage.getItem("banko.autoread") === "1",
     theme: localStorage.getItem("banko.theme") || Banko.shell.theme || "system",
     genUsers: 5, genMonths: 3, genBusy: false, genDone: 0, genTotal: 0, genSeen: new Set(), dataText: "", dataError: false,
+    region: "", moving: false, homeText: "", homeError: false,
 
     init() {
       // Count new users as their seeding finishes; persona resets report too, so skip those.
@@ -28,6 +29,10 @@ document.addEventListener("alpine:init", () => {
       const [me, ai, mem, health, cache] = await Promise.all(
         [get("/api/v1/me"), get("/api/v1/ai"), get("/api/v1/memories"), get("/api/health"), get("/cache-stats")]);
       this.me = me; this.ai = ai; this.model = ai ? ai.model : "";
+      this.region = me ? (me.home_region || (me.regions || [])[0] || "") : "";
+      // What the move said, kept across the reload that follows it.
+      const moved = sessionStorage.getItem("banko.moved");
+      if (moved) { sessionStorage.removeItem("banko.moved"); this.homeText = moved; }
       this.memories = mem ? mem.memories : [];
       this.health = health; this.cache = cache;
     },
@@ -38,6 +43,18 @@ document.addEventListener("alpine:init", () => {
     schemaText() {
       const c = this.health && this.health.components && this.health.components.schema;
       return c && c.detail ? "Schema " + c.detail : "";
+    },
+    // A database with regions, and one's own account: a persona keeps the region its file gives it.
+    canMove() { return !!(this.me && (this.me.regions || []).length && !Banko.shell.user.persona); },
+    async moveHome() {
+      this.moving = true; this.homeText = ""; this.homeError = false;
+      try {
+        const out = await Banko.api("/api/v1/me/home-region", { method: "POST", body: { region: this.region } });
+        // The header's region and every page's reads come from the server: load again.
+        sessionStorage.setItem("banko.moved", "You live in " + out.home_region + " now. " +
+          Number(out.rows).toLocaleString("en-US") + (out.rows === 1 ? " row" : " rows") + " moved.");
+        window.location.reload();
+      } catch (e) { this.homeText = Banko.explain(e); this.homeError = true; this.moving = false; }
     },
     async switchModel() {
       this.aiText = ""; this.aiError = false;

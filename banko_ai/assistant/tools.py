@@ -169,9 +169,11 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
     agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant, top=3)
     # rows are the most recent purchases; largest says which were the biggest,
     # so a model asked about the largest one never picks it from recent rows.
+    # The breakdowns cover the whole window, so it never adds rows up either.
     return {"total": agg.total, "count": agg.count, "average": agg.average, "category": agg.category,
             "merchant": agg.merchant, "from": str(start), "to": str(end - timedelta(days=1)),
-            "rows": agg.rows[:10], "largest": agg.largest}
+            "rows": agg.rows[:10], "largest": agg.largest,
+            "top_merchants": agg.top_merchants, "top_categories": agg.top_categories}
 
 
 def _receipt(ctx: ToolContext, a: ReceiptArgs) -> dict | None:

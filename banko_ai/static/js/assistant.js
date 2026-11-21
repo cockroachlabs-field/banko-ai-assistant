@@ -458,7 +458,14 @@ document.addEventListener("alpine:init", () => {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); this.send(); }
       else if (e.key === "Escape") this.hide();
     },
-    scroll() { this.$nextTick(() => { const box = this.$refs.chat; if (box) box.scrollTop = box.scrollHeight; }); },
+    // To the newest line. Alpine shows an element a frame after its condition
+    // turns true, so when the tick runs the answer, its meta line and its
+    // plan are not part of the list's height yet: go again after that frame.
+    scroll() {
+      const bottom = () => { const box = this.$refs.chat; if (box) box.scrollTop = box.scrollHeight; };
+      const frame = document.visibilityState === "visible" ? requestAnimationFrame : setTimeout;
+      this.$nextTick(() => { bottom(); frame(() => { bottom(); frame(bottom); }); });
+    },
   };
   });
 });

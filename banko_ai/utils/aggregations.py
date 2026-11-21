@@ -22,6 +22,8 @@ SIZE_ORDER = {"largest": "DESC", "smallest": "ASC"}
 # The most purchases one size answer lists. More can be asked for: the card
 # then says how many it shows.
 MOST_LISTED = 10
+LATEST_LISTED = 10   # the purchases a total lists under its figure
+BROKEN_DOWN = 5      # the merchants or categories a total is broken down into
 
 
 def _to_pyformat(sql: str) -> str:
@@ -48,6 +50,11 @@ class AggregationResult:
     merchant: str | None = None
     largest: list[dict] = field(default_factory=list)
     limit: int = 1
+    # A total, broken down over every purchase in the window (never over rows):
+    # by merchant unless one merchant was asked about, and by category when
+    # no category was.
+    top_merchants: list[dict] = field(default_factory=list)
+    top_categories: list[dict] = field(default_factory=list)
 
 
 @lru_cache(maxsize=4)
@@ -154,6 +161,23 @@ def _by_amount(conn, where: str, params: dict, order: str, n: int) -> list[dict]
             for r in conn.execute(text(_by_amount_sql(where, order)), {**params, "n": n}).fetchall()]
 
 
+def _grouped(conn, column: str, where: str, params: dict, name: str | None = None) -> list[dict]:
+    """The window's spending by merchant or by category, biggest first.
+    column is one of this module's two names, never input. A merchant comes
+    with its category when all its purchases share one, so nobody has to
+    guess which merchant belongs to which category."""
+    found = conn.execute(text(f"""
+        SELECT {column}, SUM(expense_amount), COUNT(*),
+               CASE WHEN count(DISTINCT shopping_type) = 1 THEN max(shopping_type) END
+        FROM expenses {where}
+        GROUP BY {column}
+        ORDER BY 2 DESC, {column}
+        LIMIT {BROKEN_DOWN}
+    """), params).fetchall()
+    return [{name or column: r[0], "total": round(float(r[1]), 2), "count": int(r[2]),
+             **({"category": r[3]} if column == "merchant" else {})} for r in found]
+
+
 def _listed(intent: AggregationIntent) -> int:
     """How many rows a size question reads. One was asked for: the two after
     it come too, so the answer can show what the largest is the largest of."""
@@ -165,10 +189,12 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
                     region: str | None = None,
                     merchant: str | None = None,
                     top: int = 0) -> AggregationResult:
-    """rows are the 25 most recent purchases in the window, or, for a
-    question about the largest or smallest, those purchases in order of
-    amount. With top, largest also carries that many biggest purchases:
-    recent rows say nothing about which purchase was the largest."""
+    """rows are the most recent purchases in the window, or, for a question
+    about the largest or smallest, those purchases in order of amount. With
+    top, largest also carries that many biggest purchases: recent rows say
+    nothing about which purchase was the largest. A total also carries its
+    breakdown by merchant and by category, summed by SQL over the whole
+    window: what the latest rows add up to says nothing about the window."""
     from ..db.engine import get_engine, routed
     category = None if merchant else resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region, merchant)
@@ -181,15 +207,21 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
                    MIN(expense_date), MAX(expense_date)
             FROM expenses {where}
         """), params).fetchone()
+        top_merchants: list[dict] = []
+        top_categories: list[dict] = []
         if intent.operation in SIZE_ORDER:
             rows = _by_amount(c, where, params, SIZE_ORDER[intent.operation], _listed(intent))
         else:
             rows = [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
                 SELECT expense_date, merchant, expense_amount
                 FROM expenses {where}
-                ORDER BY expense_date DESC
-                LIMIT 25
+                ORDER BY expense_date DESC, expense_id
+                LIMIT {LATEST_LISTED}
             """), params).fetchall()]
+            if not merchant:
+                top_merchants = _grouped(c, "merchant", where, params)
+            if not merchant and not category:
+                top_categories = _grouped(c, "shopping_type", where, params, name="category")
         largest = _by_amount(c, where, params, "DESC", top) if top else []
 
     total = float(agg[0] or 0)
@@ -208,6 +240,8 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
         merchant=merchant,
         largest=largest,
         limit=intent.limit,
+        top_merchants=top_merchants,
+        top_categories=top_categories,
     )
 
 

@@ -12,8 +12,20 @@
         <div class="b-row"><span>Name</span><b x-text="me.display_name"></b></div>
         <div class="b-row"><span>Username</span><span class="b-muted" x-text="me.username"></span></div>
         <div class="b-row"><span>Spending style</span><span class="b-muted" x-text="me.spending_style"></span></div>
-        <div class="b-row" x-show="me.home_region"><span>Home region</span><span class="b-muted" x-text="me.home_region"></span></div>
-        <div class="b-muted" x-show="me.home_region">Your rows live in your home region of the cluster.</div>
+        <div class="b-row" x-show="me.home_region && !canMove()"><span>Home region</span><span class="b-muted" x-text="me.home_region"></span></div>
+        <div class="b-muted" x-show="me.home_region && !canMove()">Your rows live in your home region of the cluster.</div>
+        {# On a multi-region database an account can be moved: its rows go along. Not a persona's. #}
+        <template x-if="canMove()"><div style="display:flex;flex-direction:column;gap:6px">
+          <div class="b-row"><span>Home region</span>
+            <span style="display:flex;gap:8px;align-items:center">
+              <select class="b-select" style="width:auto;padding:5px 8px" x-model="region" :disabled="moving" aria-label="Home region">
+                <template x-for="r in me.regions" :key="r"><option :value="r" x-text="r" :selected="r === region"></option></template>
+              </select>
+              <button class="b-btn sm" type="button" :disabled="moving || region === me.home_region" @click="moveHome()" x-text="moving ? 'Moving…' : 'Move my data'"></button>
+            </span></div>
+          <div class="b-muted" x-text="me.home_region ? 'Your rows live in ' + me.home_region + '. Moving takes them along.' : 'No home region yet: your rows are spread over the regions, and every read looks in all of them.'"></div>
+          <div class="b-tag" :class="homeError ? 'bad' : 'ok'" x-show="homeText" x-text="homeText"></div>
+        </div></template>
       </div></template>
     </div>
 

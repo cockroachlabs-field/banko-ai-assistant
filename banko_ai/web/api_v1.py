@@ -15,7 +15,19 @@ from sqlalchemy import text
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine
-from ..services import accounts, agent_feed, budgets, goals, ledger, receipts, recurring, reports, seeding, transactions
+from ..services import (
+    accounts,
+    agent_feed,
+    budgets,
+    goals,
+    home_region,
+    ledger,
+    receipts,
+    recurring,
+    reports,
+    seeding,
+    transactions,
+)
 from ..services._sql import jsonable, valid_uuid
 from ..services.profile import get_profile
 
@@ -104,7 +116,26 @@ def me():
     profile = get_profile(uid)
     if profile is None:
         return jsonify({"error": "not_found"}), 404
-    return jsonify({**profile, "seeding": seeding.seeding_status(uid)})
+    # regions: where this account can live. Empty on a database with one region.
+    return jsonify({**profile, "seeding": seeding.seeding_status(uid), "regions": home_region.regions_of()})
+
+
+@api_v1.post("/me/home-region")
+def move_home():
+    """Move the signed-in account to another region of the database: its
+    rows go along. Its own account only, and never a persona's."""
+    uid = _uid()
+    region = str((request.get_json(silent=True) or {}).get("region") or "").strip()
+    if not region:
+        return jsonify({"error": "Say which region."}), 400
+    try:
+        return jsonify(home_region.set_home_region(uid, region))
+    except home_region.NotRegional:
+        return jsonify({"error": "This database has one region, so there is no home region to choose."}), 409
+    except home_region.UnknownRegion:
+        return jsonify({"error": "This database has no such region."}), 400
+    except home_region.NotTheirs:
+        return jsonify({"error": "A persona keeps the region its file gives it."}), 403
 
 
 @api_v1.get("/ai")

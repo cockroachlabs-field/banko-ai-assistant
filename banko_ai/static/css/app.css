@@ -312,8 +312,11 @@ button { font: inherit; color: inherit; }
 .b-comp-tools { display: flex; align-items: center; gap: 6px; }
 .b-comp-tools .sp { flex: 1; }
 .b-mem { font-size: 11px; color: var(--ac); background: var(--acsoft); border-radius: 8px; padding: 3px 9px; align-self: flex-start; }
-.b-assist-page { display: grid; grid-template-columns: 240px minmax(0, 1fr) 320px; height: calc(100vh - 110px); border: 1px solid var(--bd);
-  border-radius: var(--r); overflow: hidden; background: var(--card); }
+/* One row that cannot grow: left to size itself, the row takes the height of
+   the whole conversation, the pane cuts it off, and the message box under
+   the conversation is gone with nothing left to scroll. */
+.b-assist-page { display: grid; grid-template-columns: 240px minmax(0, 1fr) 320px; grid-template-rows: minmax(0, 1fr);
+  height: calc(100vh - 110px); border: 1px solid var(--bd); border-radius: var(--r); overflow: hidden; background: var(--card); }
 .b-threads { background: var(--side); border-right: 1px solid var(--bd); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .b-th { padding: 7px 9px; border-radius: 9px; color: var(--mu); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   background: none; border: 0; text-align: left; cursor: pointer; width: 100%; }
@@ -360,7 +363,7 @@ button { font: inherit; color: inherit; }
   .b-tx { grid-template-columns: 30px minmax(0, 1fr) 90px; }
   .b-tx .b-chip { display: none; }
   .b-panel { width: 100vw; }
-  .b-assist-page { grid-template-columns: 1fr; height: auto; }
+  .b-assist-page { grid-template-columns: 1fr; grid-template-rows: auto; height: auto; }
   .b-threads, .b-trace { display: none; }
   .b-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

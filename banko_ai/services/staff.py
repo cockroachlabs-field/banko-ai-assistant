@@ -124,13 +124,19 @@ def _insert(user_id: str, username: str, url: str | None) -> dict | None:
     signing in by name does not tell Bob from bob), or the account exists
     already. The note of its first visit is written with it, which is what
     marks an account as one this sign-in made."""
+    # On a multi-region database the account starts in the primary region.
+    # With no home region its rows land wherever the load balancer sends
+    # each write, and every read looks in all regions. Settings moves it.
+    from .home_region import default_region
+    region = default_region(url)
+
     def fn(conn):
         row = conn.execute(text(f"""
             INSERT INTO users (user_id, username, spending_style, home_region, demo_user)
-            SELECT CAST(:u AS UUID), :n, :s, NULL, true
+            SELECT CAST(:u AS UUID), :n, :s, :r, true
             WHERE NOT EXISTS (SELECT 1 FROM users WHERE lower(username) = lower(:n))
             RETURNING {_COLUMNS}
-        """), {"u": user_id, "n": username, "s": _style()}).fetchone()
+        """), {"u": user_id, "n": username, "s": _style(), "r": region}).fetchone()
         if row is not None:
             conn.execute(text("UPSERT INTO banko_meta (key, value, updated_at) VALUES (:k, 'seen', now())"),
                          {"k": f"seen:{user_id}"})
