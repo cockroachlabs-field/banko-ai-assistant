@@ -199,6 +199,19 @@ class Smoke:
             raise AssertionError(f"no dollar figure: {a['answer'][:120]!r}")
         return a["answer"].splitlines()[0][:100]
 
+    def largest(self) -> str:
+        """The biggest purchase is a fact SQL has: the card comes from code,
+        and no model call picks a purchase."""
+        a = self.ask(self.thread(), "What was my biggest purchase last month?")
+        self.expect_route(a, "aggregate")
+        first = a["answer"].splitlines()[0]
+        if not first.startswith("Your biggest purchase") or "$" not in first:
+            raise AssertionError(f"not the SQL card: {first[:120]!r}")
+        calls = (a.get("meta") or {}).get("model_calls")
+        if calls:
+            raise AssertionError(f"{calls} model call(s) behind an answer that SQL alone gives")
+        return first[:100]
+
     def cache(self) -> str:
         a = self.ask(self.thread(), "How much did I spend on groceries last month?")
         trace = (a.get("meta") or {}).get("trace") or []
@@ -317,6 +330,7 @@ class Smoke:
         self.check("receipt and follow-ups", self.receipt)
         self.check("dining from SQL", dining)
         self.check("totals from SQL", self.totals)
+        self.check("largest from SQL", self.largest)
         self.check("cache on a repeat", self.cache)
         self.check("visits from SQL", self.visits)
         self.check("search and show more", self.search_and_more)

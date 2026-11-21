@@ -30,13 +30,57 @@ def _window(agg) -> str:
     return f"from {agg.window_start} to {agg.window_end - timedelta(days=1)}"
 
 
+_SIZE_WORDS = {"largest": ("biggest", "largest"), "smallest": ("smallest", "smallest")}
+
+
+def _render_by_size(agg, window: str) -> str:
+    """The largest or smallest purchases, as SQL ordered them. One was asked
+    for: it is named, with how many it is the largest of, and the two after
+    it are listed so the next in line can be seen (a month's rent is often
+    the largest purchase, and rarely the one the question was about)."""
+    word, next_word = _SIZE_WORDS[agg.operation]
+    merchant = getattr(agg, "merchant", None)
+    what = f"{agg.category} purchase" if agg.category and not merchant else "purchase"
+    where = f" at {merchant}" if merchant else ""
+    table = ["| Date | Merchant | Category | Amount |", "|---|---|---|---|"]
+
+    def rows(found: list[dict]) -> list[str]:
+        return [f"| {r['date']} | {r['merchant']} | {r['category']} | ${r['amount']:,.2f} |" for r in found]
+
+    first, asked = agg.rows[0], getattr(agg, "limit", 1)
+    named = "" if merchant else f" at **{first['merchant']}**"
+    category = "" if agg.category and not merchant else f" ({first['category']})"
+    one = f"{what}{where} {window} was **${first['amount']:,.2f}**{named}{category} on {first['date']}"
+    if asked > 1 and agg.count == 1:
+        return f"Your only {one}."      # several were asked for: there is one, and no list of one
+    if asked > 1:
+        listed = [f"Your {len(agg.rows)} {word} {what}s{where} {window}, out of {agg.count}:", "",
+                  *table, *rows(agg.rows)]
+        if len(agg.rows) < min(asked, agg.count):
+            # More were asked for than one answer lists, and more exist.
+            listed += ["", f"You asked for {asked}; {len(agg.rows)} is the most I list."]
+        return "\n".join(listed)
+    ending = ". It was the only one." if agg.count == 1 else f", out of {agg.count} purchases."
+    headline = f"Your {word} {one}{ending}"
+    if len(agg.rows) < 2:
+        return headline
+    return "\n".join([headline, "", f"The next {next_word}:", "", *table, *rows(agg.rows[1:])])
+
+
 def render_aggregation_markdown(agg) -> str:
     window = _window(agg)
     merchant = getattr(agg, "merchant", None)
     scope = f"at {merchant}" if merchant else f"on {agg.category or 'all categories'}"
+    if not agg.count and agg.operation in _SIZE_WORDS and not (merchant or agg.category):
+        # Nothing was bought in the window: there is no largest, and no
+        # other category to try.
+        one_day = agg.window_end - agg.window_start == timedelta(days=1)
+        return f"You have no purchases {f'on {agg.window_start}' if one_day else window}."
     if not agg.count:
         return (f"No matching transactions {scope} {window}. "
                 f"Try a wider window or a different category.")
+    if agg.operation in _SIZE_WORDS:
+        return _render_by_size(agg, window)
     if agg.operation == "count":
         headline = f"You made **{agg.count} transactions** {scope} {window}."
     elif agg.operation == "average":

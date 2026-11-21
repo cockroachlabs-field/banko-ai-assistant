@@ -141,6 +141,26 @@ def test_proposals_are_pending_until_confirmed(ctx):
     assert "Groceries" in out["result"]["summary"]
 
 
+def test_spend_summary_says_which_purchases_were_the_largest(ctx, member):
+    """Its rows are the most recent purchases. A model asked about the
+    biggest one picked the largest of those, and the month's rent, paid on
+    the first, was never among them."""
+    start = date.today() - timedelta(days=45)
+    out = T.run_tool("spend_summary", {"date_from": str(start)}, ctx)["result"]
+    with get_engine().connect() as c:
+        top = c.execute(text("SELECT expense_amount, merchant FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                             "AND expense_date >= :s ORDER BY expense_amount DESC, expense_date DESC, expense_id "
+                             "LIMIT 3"), {"u": member, "s": start}).fetchall()
+    assert [(row["amount"], row["merchant"]) for row in out["largest"]] == [(float(a), m) for a, m in top]
+    assert out["largest"][0]["amount"] >= max(row["amount"] for row in out["rows"])
+
+
+def test_the_planner_is_told_what_largest_is():
+    """A key nobody described is a key the model has to guess at."""
+    described = T.TOOLS["spend_summary"].description
+    assert "largest" in described and "most recent" in described
+
+
 def test_a_budget_proposal_names_a_real_spending_category(ctx, member):
     """"set my dining out budget to 300" used to store a proposal no Confirm could run."""
     from banko_ai.services import actions, budgets

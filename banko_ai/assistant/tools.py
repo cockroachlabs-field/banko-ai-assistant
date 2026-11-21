@@ -164,10 +164,12 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
         if resolve_category(a.category, url) is None:
             raise ToolError(f"No category called '{a.category}'")
     intent = AggregationIntent("sum", a.category if not merchant else None, start, end)
-    agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant)
+    agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant, top=3)
+    # rows are the most recent purchases; largest says which were the biggest,
+    # so a model asked about the largest one never picks it from recent rows.
     return {"total": agg.total, "count": agg.count, "average": agg.average, "category": agg.category,
             "merchant": agg.merchant, "from": str(start), "to": str(end - timedelta(days=1)),
-            "rows": agg.rows[:10]}
+            "rows": agg.rows[:10], "largest": agg.largest}
 
 
 def _receipt(ctx: ToolContext, a: ReceiptArgs) -> dict | None:
@@ -217,7 +219,8 @@ def _propose_budget(ctx: ToolContext, a: BudgetArgs) -> dict:
 
 TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("search_transactions", "find purchases by meaning (e.g. 'late night food', 'pizza')", SearchArgs, _search),
-    Tool("spend_summary", "exact totals from SQL for a window, optionally one category or merchant", SpendArgs, _spend),
+    Tool("spend_summary", "exact totals from SQL for a window, optionally one category or merchant; rows are the "
+         "most recent purchases and largest the three biggest, so name the biggest from largest", SpendArgs, _spend),
     Tool("receipt_details", "the active receipt (or one by document_id): merchant, total, items, linked expense",
          ReceiptArgs, _receipt),
     Tool("similar_transactions", "purchases most like one expense", ExpenseArgs,
