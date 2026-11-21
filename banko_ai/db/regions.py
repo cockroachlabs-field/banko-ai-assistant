@@ -377,6 +377,17 @@ def prime_rows_home(user_ids: list[str], url: str | None = None) -> None:
         _rows_home[(db, str(uid))] = (str(uid) not in away, now)
 
 
+def home_region_changed(user_id: str) -> None:
+    """Forget where this process believes a user lives and whether their
+    rows are all there: their home region was just set, or their rows were
+    just moved. The next write and the next read look again."""
+    uid = str(user_id)
+    for remembered in (_home_regions, _rows_home):
+        for key in [k for k in remembered if k[1] == uid]:
+            remembered.pop(key, None)
+    resolve_user_region_cache_clear()
+
+
 def read_region(user_id: str, url: str | None) -> str | None:
     """The region this user's reads may name (region_pin), or None. Only
     with routing by home region on, on a connection without row-level

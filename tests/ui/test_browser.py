@@ -1496,6 +1496,97 @@ def test_transactions_survive_a_failed_category_fetch(server, browser):
         ctx.close()
 
 
+def _sign_up(page, base) -> None:
+    """A new account of one's own, signed in."""
+    page.goto(base + "/login")
+    page.fill('#name-form input[name="username"]', f"ui-{time.time_ns() % 10**10}")
+    page.locator("#name-form button[type=submit]").click()
+    page.wait_for_selector("#signup-section", state="visible")
+    page.locator("#name-form button[type=submit]").click()
+    page.wait_for_url(base + "/")
+
+
+_REGIONS = ["us-east-1", "eu-west-1", "us-west-2"]
+
+
+def test_settings_moves_ones_own_account_to_another_region(server, browser):
+    """On a database with regions, Settings says where the account lives and
+    moves it: the rows go along. An account the Google sign-in made had no
+    home region and nowhere to choose one."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        sent, home = [], {"at": "us-east-1"}
+
+        def me(route):
+            route.fulfill(json={**route.fetch().json(), "home_region": home["at"], "regions": _REGIONS})
+
+        def move(route):
+            sent.append(route.request.post_data_json)
+            home["at"] = sent[-1]["region"]
+            route.fulfill(json={"home_region": home["at"], "rows": 1352})
+
+        page.route("**/api/v1/me", me)
+        page.route("**/api/v1/me/home-region", move)
+        _sign_up(page, server)
+        page.goto(server + "/settings")
+        page.wait_for_load_state("networkidle")
+        region = page.get_by_label("Home region")
+        expect(region).to_have_value("us-east-1")
+        button = page.get_by_role("button", name="Move my data")
+        expect(button).to_be_disabled()                               # it lives there already
+        region.select_option("us-west-2")
+        button.click()
+        # The page loads again, because the header and every read take the region from the server, and says what happened.
+        expect(page.get_by_text("You live in us-west-2 now. 1,352 rows moved.")).to_be_visible()
+        expect(page.get_by_label("Home region")).to_have_value("us-west-2")
+        assert sent == [{"region": "us-west-2"}]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_settings_says_why_a_move_did_not_happen(server, browser):
+    ctx, page, errors = _page(browser, "light")
+    try:
+        page.route("**/api/v1/me", lambda route: route.fulfill(
+            json={**route.fetch().json(), "home_region": None, "regions": _REGIONS}))
+        page.route("**/api/v1/me/home-region", lambda route: route.fulfill(
+            status=400, json={"error": "This database has no such region."}))
+        _sign_up(page, server)
+        page.goto(server + "/settings")
+        page.wait_for_load_state("networkidle")
+        # No home region yet, as the sign-in used to leave it: the page says what that costs.
+        expect(page.get_by_text("No home region yet")).to_be_visible()
+        page.get_by_role("button", name="Move my data").click()
+        expect(page.get_by_text("This database has no such region.")).to_be_visible()
+        expect(page.get_by_role("button", name="Move my data")).to_be_enabled()      # and it can be tried again
+        assert [e for e in errors if "400" not in e] == [], errors                    # the refused request is the only noise
+    finally:
+        ctx.close()
+
+
+def test_settings_offers_no_move_to_a_persona_or_on_one_region(server, browser):
+    """A persona's region belongs to the personas file, and a database with one region has nothing to choose."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        page.route("**/api/v1/me", lambda route: route.fulfill(
+            json={**route.fetch().json(), "home_region": "us-east-1", "regions": _REGIONS}))
+        _login(page, server, "sam")
+        page.goto(server + "/settings")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("Your rows live in your home region of the cluster.")).to_be_visible()
+        expect(page.get_by_role("button", name="Move my data")).to_have_count(0)
+        page.unroute("**/api/v1/me")
+        _sign_up(page, server)                                        # one's own account, on the suite's one region
+        page.goto(server + "/settings")
+        page.wait_for_load_state("networkidle")
+        expect(page.get_by_text("Spending style")).to_be_visible()
+        expect(page.get_by_role("button", name="Move my data")).to_have_count(0)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_resetting_a_persona_asks_first(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:

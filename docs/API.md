@@ -95,7 +95,8 @@ the personas are ready.
 
 | Method | Path | Purpose | Success | Errors |
 |--------|------|---------|---------|--------|
-| GET | `/api/v1/me` | The current persona: name, avatar color, spending style, home region and seeding progress | 200 | 404 |
+| GET | `/api/v1/me` | The current persona: name, avatar color, spending style, home region and seeding progress, and `regions`: where the account can live (empty on a database with one region) | 200 | 404 |
+| POST | `/api/v1/me/home-region` | Move the signed-in account to another region of the database, `{"region": "us-west-2"}`: its rows go along. Answers `{"home_region": ..., "rows": <rows moved>}`. Not for a persona | 200 | 400, 403, 409 |
 | GET | `/api/v1/ai` | Provider, name, model, icon and model list as shown on screen (follows `AI_DISPLAY_PROVIDER`) | 200 | |
 | POST | `/api/v1/ai/model` | Switch model, `{"model": "..."}`; the same switch as `POST /api/models` | 200 | 400, 500 |
 | GET | `/api/v1/dashboard` | Net worth and its history, spending pace, budgets, bills due in the next 14 days, six recent transactions, latest coach insight | 200 | |

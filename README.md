@@ -43,7 +43,8 @@ Every page also has a dark theme ([dashboard](https://github.com/cockroachlabs-f
   the Coach page.
 - **Survive a region going down.** On a multi-region cluster each user's
   rows live in their home region (REGIONAL BY ROW) and are served from
-  there. The Platform page runs simulated customers through the same
+  there, and Settings moves an account to another region with its rows.
+  The Platform page runs simulated customers through the same
   services, shows throughput, latency and money integrity live, and with
   the chaos control plane connected takes a region down from the same page.
 
