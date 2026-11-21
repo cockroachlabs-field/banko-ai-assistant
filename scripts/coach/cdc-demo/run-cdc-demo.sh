@@ -13,6 +13,9 @@
 #   CHANGEFEED_KAFKA_URI  default kafka://localhost:29092 (URI the CRDB
 #                         process itself pushes the changefeed to;
 #                         kafka://kafka:9092 when CRDB runs in containers)
+#   DEBEZIUM_VERSION      default 3.7.1.Final: the Connect image and the
+#                         connector plugin it loads, one version for both
+#                         (CONNECTOR_VERSION moves the plugin alone)
 #   CRDB_CONTAINERS       the CockroachDB containers the changefeed runs on.
 #                         Default: every running cockroachdb/cockroach
 #                         container. Name them (space separated) on a
@@ -24,10 +27,12 @@
 # (docker compose -f docker-compose.cdc.yml down): a network cannot be
 # removed while one of these two is still on it.
 #
-# Connector plugin resolution order:
-#   1. ./connect-plugins already populated
-#   2. copy from ~/idea_workspace/debezium-cockroachdb-examples (local dev)
-#   3. download from Maven Central
+# The connector plugin is the version asked for, from the first of:
+#   1. ./connect-plugins, when it already holds that version
+#   2. ~/idea_workspace/debezium-cockroachdb-examples, when it holds that
+#      version (local dev)
+#   3. Maven Central
+# A plugin of any other version is replaced, never used as it is.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -81,12 +86,16 @@ CRDB_PORT="${CRDB_PORT:-26257}"
 CRDB_USER="${CRDB_USER:-root}"
 CRDB_DB="${CRDB_DB:-defaultdb}"
 CHANGEFEED_KAFKA_URI="${CHANGEFEED_KAFKA_URI:-$KAFKA_URI_DEFAULT}"
-CONNECTOR_VERSION="${CONNECTOR_VERSION:-3.6.0.Final}"
+DEBEZIUM_VERSION="${DEBEZIUM_VERSION:-3.7.1.Final}"
+CONNECTOR_VERSION="${CONNECTOR_VERSION:-$DEBEZIUM_VERSION}"
+export DEBEZIUM_VERSION   # docker-compose.cdc.yml takes the Connect image's tag from it
 # gvproxy keeps forwards for other stacks (a 5-node cluster's admin UIs
 # occupy 8080-8084, for example). If the port is held by anything that is
 # not our own connect container, hop to the next free one.
 CONNECT_PORT="${CONNECT_PORT:-8084}"
+CONNECT_WAS_RUNNING=""
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^banko-cdc-connect$'; then
+    CONNECT_WAS_RUNNING=1
     # Reuse whatever port the running container already publishes;
     # recreating it on the default collides with whoever took 8084.
     EXISTING_PORT="$(docker port banko-cdc-connect 8083/tcp 2>/dev/null \
@@ -101,20 +110,43 @@ fi
 export CONNECT_PORT
 EXAMPLES_REPO="${EXAMPLES_REPO:-$HOME/idea_workspace/debezium-cockroachdb-examples}"
 
-echo "== 1/5 connector plugin"
-if ls connect-plugins/debezium-connector-cockroachdb/*.jar >/dev/null 2>&1; then
+echo "== 1/5 connector plugin (${CONNECTOR_VERSION})"
+# The version asked for, and no other: whatever sat in connect-plugins used
+# to be taken as it was, and so was whatever the examples repository held, so
+# a snapshot build could run where a release was meant to.
+PLUGIN_DIR="connect-plugins/debezium-connector-cockroachdb"
+WANTED_JAR="debezium-connector-cockroachdb-${CONNECTOR_VERSION}.jar"
+EXAMPLES_PLUGIN="$EXAMPLES_REPO/crdb-to-crdb/connect-plugins/debezium-connector-cockroachdb"
+PLUGIN_CHANGED=""
+if [ -f "$PLUGIN_DIR/$WANTED_JAR" ]; then
     echo "   already present"
-elif ls "$EXAMPLES_REPO"/crdb-to-crdb/connect-plugins/debezium-connector-cockroachdb/*.jar >/dev/null 2>&1; then
-    mkdir -p connect-plugins
-    cp -R "$EXAMPLES_REPO/crdb-to-crdb/connect-plugins/debezium-connector-cockroachdb" connect-plugins/
-    echo "   copied from $EXAMPLES_REPO"
 else
-    ZIP="debezium-connector-cockroachdb-${CONNECTOR_VERSION}-plugin.zip"
-    URL="https://repo1.maven.org/maven2/io/debezium/debezium-connector-cockroachdb/${CONNECTOR_VERSION}/${ZIP}"
+    for jar in "$PLUGIN_DIR"/debezium-connector-cockroachdb-*.jar; do
+        if [ -f "$jar" ]; then
+            found="$(basename "$jar" .jar)"
+            echo "   replacing ${found#debezium-connector-cockroachdb-}, which is not the version asked for"
+        fi
+    done
+    rm -rf "$PLUGIN_DIR"
     mkdir -p connect-plugins
-    curl -fsSL -o "/tmp/${ZIP}" "$URL"
-    unzip -q -o "/tmp/${ZIP}" -d connect-plugins/
-    echo "   downloaded ${CONNECTOR_VERSION} from Maven Central"
+    if [ -f "$EXAMPLES_PLUGIN/$WANTED_JAR" ]; then
+        cp -R "$EXAMPLES_PLUGIN" connect-plugins/
+        echo "   copied from $EXAMPLES_REPO"
+    else
+        ZIP="debezium-connector-cockroachdb-${CONNECTOR_VERSION}-plugin.zip"
+        URL="https://repo1.maven.org/maven2/io/debezium/debezium-connector-cockroachdb/${CONNECTOR_VERSION}/${ZIP}"
+        if ! curl -fsSL -o "/tmp/${ZIP}" "$URL"; then
+            echo "   could not download ${CONNECTOR_VERSION} from Maven Central: $URL"
+            exit 1
+        fi
+        unzip -q -o "/tmp/${ZIP}" -d connect-plugins/
+        echo "   downloaded ${CONNECTOR_VERSION} from Maven Central"
+    fi
+    if [ ! -f "$PLUGIN_DIR/$WANTED_JAR" ]; then
+        echo "   $WANTED_JAR is not in what was fetched; check CONNECTOR_VERSION"
+        exit 1
+    fi
+    PLUGIN_CHANGED=1
 fi
 
 echo "== 2/5 kafka + connect"
@@ -128,6 +160,12 @@ forwarder is stuck (it happens after sleep or reboot). Recover with:
 Databases live on named volumes; nothing is lost by the restart.
 HINT
     exit 1
+fi
+if [ -n "$PLUGIN_CHANGED" ] && [ -n "$CONNECT_WAS_RUNNING" ]; then
+    # Connect loads its plugins when it starts. Swapped under a running one,
+    # the new connector would sit on disk and the old one keep running.
+    docker restart banko-cdc-connect >/dev/null
+    echo "   connect restarted to load the ${CONNECTOR_VERSION} connector"
 fi
 if [ -n "$CRDB_CONTAINERS" ]; then
     # The changefeed runs on the CockroachDB nodes, so each of them has to
