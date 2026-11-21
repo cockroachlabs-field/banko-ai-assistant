@@ -1245,9 +1245,13 @@ def create_app() -> Flask:
 
         from ..config.settings import get_config
         cfg = get_config()
-        user_id = (request.args.get("user_id") or session.get("user_id")
-                   or cfg.coach_default_user_id)
-        limit = min(int(request.args.get("limit", "20")), 100)
+        # Never a user id from the query: /api/ enforces no sign-in, so that
+        # would list anyone's nudges.
+        user_id = session.get("user_id") or cfg.coach_default_user_id
+        try:
+            limit = max(1, min(int(request.args.get("limit", "20")), 100))
+        except ValueError:
+            limit = 20
         db_url = get_database_url()
         from ..db.engine import get_engine
         eng = get_engine(db_url)
@@ -1271,8 +1275,8 @@ def create_app() -> Flask:
     @app.route("/api/coach/nudges/<nudge_id>", methods=["GET"])
     def coach_get_nudge(nudge_id: str):
         from ..coach.tools import explain_nudge
-        result = explain_nudge(nudge_id=nudge_id,
-                               database_url=get_database_url())
+        result = explain_nudge(user_id=session.get("user_id") or config.coach_default_user_id,
+                               nudge_id=nudge_id, database_url=get_database_url())
         if not result:
             return jsonify({"error": "not found"}), 404
         result["provider_used"] = display_label(config, result.get("provider_used"))
