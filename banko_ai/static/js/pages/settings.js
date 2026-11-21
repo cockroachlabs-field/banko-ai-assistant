@@ -12,6 +12,8 @@ document.addEventListener("alpine:init", () => {
     theme: localStorage.getItem("banko.theme") || Banko.shell.theme || "system",
     genUsers: 5, genMonths: 3, genBusy: false, genDone: 0, genTotal: 0, genSeen: new Set(), dataText: "", dataError: false,
     region: "", moving: false, homeText: "", homeError: false,
+    // The person's own assistant settings: what the server lists, and what the controls hold until Save.
+    prefs: [], prefGroups: [], prefValues: {}, prefText: "", prefError: false, prefSaving: false,
 
     init() {
       // Count new users as their seeding finishes; persona resets report too, so skip those.
@@ -26,8 +28,10 @@ document.addEventListener("alpine:init", () => {
     },
     async load() {
       const get = async (path) => { try { return await Banko.api(path); } catch (e) { return null; } };
-      const [me, ai, mem, health, cache] = await Promise.all(
-        [get("/api/v1/me"), get("/api/v1/ai"), get("/api/v1/memories"), get("/api/health"), get("/cache-stats")]);
+      const [me, ai, mem, health, cache, mine] = await Promise.all(
+        [get("/api/v1/me"), get("/api/v1/ai"), get("/api/v1/memories"), get("/api/health"), get("/cache-stats"),
+         get("/api/v1/me/settings")]);
+      if (mine) this.showPrefs(mine);
       this.me = me; this.ai = ai; this.model = ai ? ai.model : "";
       this.region = me ? (me.home_region || (me.regions || [])[0] || "") : "";
       // What the move said, kept across the reload that follows it.
@@ -55,6 +59,36 @@ document.addEventListener("alpine:init", () => {
           Number(out.rows).toLocaleString("en-US") + (out.rows === 1 ? " row" : " rows") + " moved.");
         window.location.reload();
       } catch (e) { this.homeText = Banko.explain(e); this.homeError = true; this.moving = false; }
+    },
+    showPrefs(mine) {
+      this.prefs = mine.settings; this.prefGroups = mine.groups;
+      this.prefValues = Object.fromEntries(mine.settings.map((s) => [s.key, s.value]));
+    },
+    prefsIn(group) { return this.prefs.filter((s) => s.group === group); },
+    // A setting that matters only beside another one's value (how similar, for a similar question).
+    prefOff(s) { return !!(s.only_with && this.prefValues[s.only_with.key] !== s.only_with.value); },
+    prefsEdited() { return this.prefs.some((s) => this.prefValues[s.key] !== s.value); },
+    prefsOwn() { return this.prefs.some((s) => s.changed); },
+    // What the choice on screen means, in the words the server gave for it.
+    prefMeans(s) {
+      if (s.kind !== "choice") return "";
+      return ((s.choices.find((c) => c.value === this.prefValues[s.key]) || {}).help) || "";
+    },
+    prefShown(s, value) {
+      if (s.kind === "flag") return value ? "on" : "off";
+      if (s.kind === "choice") return ((s.choices.find((c) => c.value === value) || {}).label) || String(value);
+      if (s.percent) return Math.round(Number(value) * 100) + "%";
+      return String(value);
+    },
+    async savePrefs() { await this.sendPrefs({ ...this.prefValues }, "Saved. Your next question uses these."); },
+    async resetPrefs() { await this.sendPrefs({}, "Back to the defaults."); },
+    async sendPrefs(values, said) {
+      this.prefSaving = true; this.prefText = ""; this.prefError = false;
+      try {
+        this.showPrefs(await Banko.api("/api/v1/me/settings", { method: "POST", body: { values } }));
+        this.prefText = said;
+      } catch (e) { this.prefText = Banko.explain(e); this.prefError = true; }
+      finally { this.prefSaving = false; }
     },
     async switchModel() {
       this.aiText = ""; this.aiError = false;

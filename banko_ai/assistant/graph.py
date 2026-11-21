@@ -22,8 +22,9 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta, timezone
+from datetime import time as datetime_time
 from typing import Annotated, Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -34,9 +35,12 @@ from ..ai_providers.streaming import Chat, ProviderChat
 from ..config.settings import get_config
 from ..db.engine import get_engine, routed
 from ..db.regions import money_region, read_region
-from ..services import caches, ledger, memories, receipts, reports, threads
+from ..services import caches, ledger, memories, preferences, receipts, reports, threads
 from ..services import transactions as txns
+from ..services.preferences import Preferences
+from ..utils import clock
 from ..utils.embeddings import note_skipped
+from ..utils.intent_classifier import extract_window
 from ..utils.request_trace import serving_regions, trace_step
 from . import answers, background, narration
 from .planner import first_object, parse_plan, plan_and_act
@@ -82,6 +86,11 @@ class TurnState(TypedDict, total=False):
 class TurnDeps:
     chat: Chat
     url: str | None = None
+    # The asker's own settings (services/preferences.py); the deployment's when the caller has none.
+    prefs: Preferences = field(default_factory=preferences.defaults)
+    # The day the question was asked. Cache writes run behind the answer, and "this month" asked at
+    # 23:59 on the 31st is that month's question whenever its answer is written.
+    day: date = field(default_factory=lambda: clock.today())
 
 
 def _emit(event: dict) -> None:
@@ -156,7 +165,7 @@ class _Planning:
 
 def _ctx(state: TurnState, deps: TurnDeps) -> ToolContext:
     return ToolContext(user_id=state["user_id"], thread_id=state.get("thread_id"), url=deps.url,
-                       active_receipt=state.get("active_receipt"))
+                       active_receipt=state.get("active_receipt"), prefs=deps.prefs)
 
 
 # ── nodes ────────────────────────────────────────────────────────────────
@@ -168,7 +177,8 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     _running("ingest", "Recalling what you told me")
     t0 = time.perf_counter()
     try:
-        recalled = memories.recall(user_id, message, url=deps.url)
+        recalled = memories.recall(user_id, message, k=deps.prefs.assistant_memory_recall_k,
+                                   max_distance=deps.prefs.assistant_memory_max_distance, url=deps.url)
     except Exception as exc:
         note_skipped(log, "memory recall", exc)
     if recalled:
@@ -490,42 +500,123 @@ def _receipt_scope(state: TurnState, receipt: dict | None = None) -> str | None:
     return str(doc)
 
 
-def _receipt_key(user_id: str, scope: str, question: str, route: str | None, language: str, url: str | None) -> str:
-    """One answer per question, receipt, route, language and state of the
-    user's money: a new purchase gives the user a new data version."""
+def _receipt_key(user_id: str, scope: str, question: str, route: str | None, language: str, url: str | None,
+                 shape: str | None = None, words: bool = False, day: date | None = None) -> str:
+    """One answer per question, receipt, route, language, state of the
+    user's money (a new purchase gives the user a new data version) and
+    settings that shaped it. The question is taken word for word, with the
+    dates it names as of the day it was asked ("this month" kept in October
+    is not November's); with words, as caches.ask_words reads it, under a
+    key of its own."""
+    dates = extract_window(question, today=day)
+    asked = caches.ask_words(question, day) if words else caches.normalize_question(question)
     return caches.search_key(user_id, ledger.data_version(user_id, url),
-                             {"answer": caches.normalize_question(question), "receipt": scope, "route": route,
-                              "lang": language})
+                             {"answer": asked, "receipt": scope, "route": route, "lang": language, "shape": shape,
+                              "dates": [d.isoformat() for d in dates] if dates else None,
+                              **({"as": "words"} if words else {})})
+
+
+def _just_asked(state: TurnState) -> str | None:
+    """The question this conversation asked right before this one."""
+    return next((str(m.get("content") or "") for m in reversed(state.get("messages") or [])
+                 if m.get("role") == "user"), None)
+
+
+def _whose_answer(question: str | None, asked: str, match: str = "words", distance: float | None = None) -> dict | None:
+    """What the chat says under a cached answer that was written for other
+    words than the ones just typed: the question it answered and, for a
+    similar one, how similar. None when it is the same question."""
+    if not question or caches.normalize_question(question) == caches.normalize_question(asked):
+        return None
+    found: dict[str, Any] = {"question": question[:300], "match": match}
+    if match == "similar" and distance is not None:
+        found["similarity"] = round(1.0 - distance, 2)
+    return found
+
+
+def _hit_line(tokens: int, found: dict | None) -> str:
+    saved = f"about {tokens:,} tokens saved"
+    if not found:
+        return f"hit, {saved}"
+    how = (f"{round(found['similarity'] * 100)}% similar" if found.get("similarity") is not None
+           else "the same question in other words")
+    return f"hit: the answer to “{found['question']}”, {how}, {saved}"
+
+
+def _miss_line(refused: list[dict]) -> str:
+    """A miss right beside a similar question says why that one did not count."""
+    if not refused:
+        return "miss"
+    near = refused[0]
+    return f"miss: “{near['question'][:120]}” is {round(near['similarity'] * 100)}% similar, but {near['why']}"
 
 
 def _cached_beside_receipt(state: TurnState, deps: TurnDeps, scope: str, language: str) -> dict | None:
     """The answer kept for this question beside this receipt, as the node's
-    output, or None. The trace says which."""
-    user_id, hit = state["user_id"], None
+    output, or None. The trace says which.
+
+    A question about the receipt itself is matched word for word: about one
+    document every verb counts ("what did I purchase" is the items, "what
+    did I spend" the total). An open question the planner answers is also
+    matched as a category in other words ("coffee", then "coffee expenses"),
+    by the rules of caches.get_answer, unless the asker matches the same
+    question only."""
+    user_id, route, prefs = state["user_id"], (state.get("route") or {}).get("kind"), deps.prefs
+    hit, found = None, None
     _running("answer_cache", "Checking the answer cache")
     t0 = time.perf_counter()
+
+    def kept(words: bool) -> dict | None:
+        got = caches.get_search(user_id, _receipt_key(user_id, scope, state["message"], route, language, deps.url,
+                                                      prefs.shape, words, deps.day), url=deps.url, stat=None)
+        return got[0] if isinstance(got, list) and got and got[0].get("answer") else None
+
     try:
-        key = _receipt_key(user_id, scope, state["message"], (state.get("route") or {}).get("kind"), language,
-                           deps.url)
-        hit = caches.get_search(user_id, key, url=deps.url, stat="answer")
+        hit = kept(False)
+        asked_for = (caches.category_ask(state["message"], deps.day)
+                     if route == "plan" and prefs.cache_match != "exact" else None)
+        if hit is None and asked_for is not None:
+            other, before = kept(True), _just_asked(state)
+            # The answer cache's own test: a bare category counts where it opened its conversation,
+            # or as the question this conversation asked right before.
+            neighbours = bool(other and before is not None and other.get("thread") == state.get("thread_id")
+                              and caches.normalize_question(before)
+                              == caches.normalize_question(other.get("question") or ""))
+            if other and caches.same_category(asked_for, not state.get("messages"),
+                                              (str(other.get("what")), bool(other.get("bare"))),
+                                              bool(other.get("opened")), neighbours):
+                hit, found = other, _whose_answer(other.get("question"), state["message"])
+        caches.record_stat("answer", "hit" if hit else "miss")
     except Exception as exc:  # a cache outage is a miss, never a broken answer
         note_skipped(log, "answer cache read", exc)
-    if isinstance(hit, list) and hit and hit[0].get("answer"):
-        tokens = int(hit[0].get("tokens") or caches.estimate_tokens(hit[0]["answer"]))
+    if hit:
+        tokens = int(hit.get("tokens") or caches.estimate_tokens(hit["answer"]))
         narration.answer_cache(True, tokens)
-        _step("Answer cache", f"hit, about {tokens:,} tokens saved", ms=_since(t0), status="hit", key="answer_cache")
-        return {"answer": hit[0]["answer"], "cached": True, "saved_tokens": tokens}
+        _step("Answer cache", _hit_line(tokens, found), ms=_since(t0), status="hit", key="answer_cache")
+        return {"answer": hit["answer"], "cached": True, "saved_tokens": tokens,
+                **({"meta": {"cache": found}} if found else {})}
     narration.answer_cache(False)
     _step("Answer cache", "miss", ms=_since(t0), status="miss", key="answer_cache")
     return None
 
 
 def _keep_beside_receipt(user_id: str, scope: str, question: str, route: str | None, language: str, answer: str,
-                         url: str | None) -> None:
-    """The write for _cached_beside_receipt, after the answer went out."""
-    caches.put_search(user_id, _receipt_key(user_id, scope, question, route, language, url),
-                      [{"answer": answer, "tokens": caches.estimate_tokens(answer)}], url=url, stat="answer",
-                      minutes=get_config().cache_ttl_hours * 60)
+                         url: str | None, shape: str | None = None, opened: bool = False,
+                         thread_id: str | None = None, day: date | None = None) -> None:
+    """The write for _cached_beside_receipt, after the answer went out: word
+    for word, and for a category the planner answered once more under what
+    its wordings share, with what get_answer keeps beside an answer: the
+    question, whether it is bare, whether it opened the conversation, and
+    which conversation. day: the day the question was asked."""
+    minutes = get_config().cache_ttl_hours * 60
+    entry = {"answer": answer, "tokens": caches.estimate_tokens(answer)}
+    caches.put_search(user_id, _receipt_key(user_id, scope, question, route, language, url, shape, day=day), [entry],
+                      url=url, stat="answer", minutes=minutes)
+    category = caches.category_ask(question, day) if route == "plan" else None
+    if category is not None:
+        caches.put_search(user_id, _receipt_key(user_id, scope, question, route, language, url, shape, True, day),
+                          [{**entry, "question": question[:2000], "what": category[0], "bare": category[1],
+                            "opened": opened, "thread": thread_id}], url=url, stat=None, minutes=minutes)
 
 
 def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -536,22 +627,30 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         if hit:
             return hit
     if _cacheable(state):
-        hit = None
+        hit, refused = None, []
         _running("answer_cache", "Checking the answer cache")
         t0 = time.perf_counter()
         try:
             from ..services._vector import embed
             hit = caches.get_answer(user_id, version=ledger.data_version(user_id, deps.url), language=language,
-                                    query=state["message"], qvec=embed(state["message"]), url=deps.url)
+                                    query=state["message"], qvec=embed(state["message"]),
+                                    match=deps.prefs.cache_match, similarity=deps.prefs.cache_similarity_threshold,
+                                    shape=deps.prefs.shape, standalone=not state.get("messages"),
+                                    previous=_just_asked(state), thread_id=state.get("thread_id"),
+                                    refused=refused, url=deps.url)
         except Exception as exc:  # a cache outage is a miss, never a broken answer
             note_skipped(log, "answer cache read", exc)
         if hit:
+            # Written for other words than these: the chat says whose answer it is.
+            found = _whose_answer(hit.get("question"), state["message"], hit.get("match") or "words",
+                                  hit.get("distance"))
             narration.answer_cache(True, hit["tokens"])
-            _step("Answer cache", f"hit, about {hit['tokens']:,} tokens saved", ms=_since(t0), status="hit",
+            _step("Answer cache", _hit_line(int(hit["tokens"]), found), ms=_since(t0), status="hit",
                   key="answer_cache")
-            return {"answer": hit["answer"], "cached": True, "saved_tokens": int(hit["tokens"])}
+            return {"answer": hit["answer"], "cached": True, "saved_tokens": int(hit["tokens"]),
+                    **({"meta": {"cache": found}} if found else {})}
         narration.answer_cache(False)
-        _step("Answer cache", "miss", ms=_since(t0), status="miss", key="answer_cache")
+        _step("Answer cache", _miss_line(refused), ms=_since(t0), status="miss", key="answer_cache")
 
     tools_run = 0
 
@@ -571,21 +670,23 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     # Kept in event shape, so the streamed proposal and the returned one match.
     proposals = [{"type": "proposal", **r["result"]} for r in results
                  if r["ok"] and r["tool"].startswith("propose_")]
-    meta, page = _search_meta(state, deps, results), _page(results)
+    meta, page = _search_meta(state, deps, results), _page(results, deps.prefs.search_page_size)
     if page and page["next"]:
         meta["search"] = page  # the chat's Show more pages it
     return {"results": results, "proposals": proposals, "meta": meta, "page": page}
 
 
-def _page(results: list[dict]) -> dict | None:
+def _page(results: list[dict], size: int) -> dict | None:
     """The turn's semantic search as "show more" continues it: the same
-    search _search_meta explains, with the cursor of its next page."""
+    search _search_meta explains, with the cursor of its next page and the
+    size of a page as the asker has it."""
     found = next((r for r in results if r["tool"] == "search_transactions" and r["ok"]), None)
     if found is None:
         return None
     a = SearchArgs.model_validate(found.get("args") or {})
     return {"q": a.query, "category": a.category, "from": a.date_from.isoformat() if a.date_from else None,
-            "to": a.date_to.isoformat() if a.date_to else None, "next": (found.get("result") or {}).get("next_cursor")}
+            "to": a.date_to.isoformat() if a.date_to else None, "next": (found.get("result") or {}).get("next_cursor"),
+            "size": size}
 
 
 MORE_LINE = "Here are {n} more matches for “{q}”."
@@ -603,7 +704,8 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                 "page": last}
     _running("tool:1", _TOOL_PHASES["search_transactions"])
     t0 = time.perf_counter()
-    found = txns.semantic_search(state["user_id"], last["q"], limit=txns.search_page_size(), cursor=last["next"],
+    size = deps.prefs.search_page_size
+    found = txns.semantic_search(state["user_id"], last["q"], limit=size, cursor=last["next"],
                                  category=last.get("category"),
                                  date_from=date.fromisoformat(last["from"]) if last.get("from") else None,
                                  date_to=date.fromisoformat(last["to"]) if last.get("to") else None, url=deps.url)
@@ -611,7 +713,7 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     items = [{"expense_id": i["expense_id"], "merchant": i["merchant"], "amount": _positive(i["amount"]),
               "date": i["posted_at"]} for i in found["items"]]
     _step("Next page", f"{len(items)} more for '{last['q']}'", ms=db_ms, status="success", key="tool:1")
-    page = {**last, "next": found["next_cursor"]}
+    page = {**last, "next": found["next_cursor"], "size": size}
     home = home_region_of(state["user_id"], deps.url)
     line = MORE_LINE.format(n=len(items), q=last["q"]) if items else ALL_SHOWN.format(q=last["q"])
     return {"answer": answers.translate(line, language, deps.chat), "page": page,
@@ -775,12 +877,14 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     elif (generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer
           and results and all(r.get("ok") for r in results)):
         background.submit("answer cache write", _keep_answer, state["user_id"], language, state["message"],
-                          answer, deps.url)
+                          answer, deps.url, deps.prefs.shape, not state.get("messages"), state.get("thread_id"),
+                          deps.day)
     elif (generated and state["route"].get("kind") in ("plan", "receipt") and answer and results
           and all(r.get("ok") for r in results) and (scope := _receipt_scope(state))):
         # Beside a receipt: the same rule, with the receipt in the key.
         background.submit("answer cache write", _keep_beside_receipt, state["user_id"], scope, state["message"],
-                          state["route"].get("kind"), language, answer, deps.url)
+                          state["route"].get("kind"), language, answer, deps.url, deps.prefs.shape,
+                          not state.get("messages"), state.get("thread_id"), deps.day)
     for c in citations:
         _emit({"type": "citation", **c})
     for p in proposals:
@@ -796,12 +900,25 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
 
 
-def _keep_answer(user_id: str, language: str, query: str, answer: str, url: str | None) -> None:
+def _keep_answer(user_id: str, language: str, query: str, answer: str, url: str | None,
+                 shape: str | None = None, standalone: bool = False, thread_id: str | None = None,
+                 day: date | None = None) -> None:
     """The answer cache write, after the answer went out. The data version
-    is read here, after the turn, as the inline write always did."""
+    is read here, after the turn, as the inline write always did. shape:
+    the asker's settings that shaped the answer; standalone: the question
+    opened its conversation (thread_id); day: the day it was asked (see
+    caches.get_answer)."""
     from ..services._vector import embed
     caches.put_answer(user_id, version=ledger.data_version(user_id, url), language=language, query=query,
-                      qvec=embed(query), answer=answer, tokens=caches.estimate_tokens(answer), url=url)
+                      qvec=embed(query), answer=answer, tokens=caches.estimate_tokens(answer), shape=shape,
+                      standalone=standalone, thread_id=thread_id, asked_at=_asked_at(day) if day else None, url=url)
+
+
+def _asked_at(day: date) -> datetime:
+    """Now, while it is still the day the question was asked; that day's
+    last moment once it is not."""
+    now = datetime.now(timezone.utc)
+    return now if now.date() == day else datetime.combine(day, datetime_time.max, tzinfo=timezone.utc)
 
 
 def learn(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -812,7 +929,7 @@ def learn(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                              title=threads.title_from(state["message"]) if first_turn else None, url=deps.url)
     except Exception:
         log.warning("thread bookkeeping skipped", exc_info=True)
-    if (get_config().assistant_implicit_memory and state["route"].get("kind") not in ("remember", "forget")
+    if (deps.prefs.assistant_implicit_memory and state["route"].get("kind") not in ("remember", "forget")
             and _IMPLICIT.search(state["message"])):
         # One more model call; the answer is already out, so it runs behind it.
         background.submit("implicit memory", _extract_memory, deps.chat, user_id, state["message"],
@@ -874,9 +991,12 @@ def _config(thread_id: str) -> dict:
 
 
 def run_turn(user_id: str, thread_id: str, message: str, *, language_code: str | None = None,
-             context: dict | None = None, chat=None, url: str | None = None, on_event=None, graph=None) -> dict:
+             context: dict | None = None, chat=None, url: str | None = None, on_event=None, graph=None,
+             prefs: Preferences | None = None) -> dict:
+    """prefs: the asker's own settings (services/preferences.py). Without
+    them the turn runs on the deployment's."""
     graph = graph or get_graph()
-    deps = TurnDeps(chat=chat or ProviderChat(), url=url)
+    deps = TurnDeps(chat=chat or ProviderChat(), url=url, prefs=prefs or preferences.defaults())
     inputs: dict[str, Any] = {"user_id": user_id, "thread_id": thread_id, "message": message[:4000],
                               "language": answers.language_name(language_code)}
     if context is not None:  # otherwise the thread keeps the context it was opened with

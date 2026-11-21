@@ -984,7 +984,9 @@ def create_app() -> Flask:
             from ..assistant import answers
             from ..assistant.graph import run_turn
             from .assistant_api import _chat
-            out = run_turn(current_demo_user(), _turn_thread(), query, language_code=code, chat=_chat())
+            from .shell import person_settings
+            out = run_turn(current_demo_user(), _turn_thread(), query, language_code=code, chat=_chat(),
+                           prefs=person_settings())
             # The identity the persona shows, as this endpoint always reported it.
             shown = _shown()
             return jsonify({'success': True, 'response': answers.strip_citations(out['answer']),

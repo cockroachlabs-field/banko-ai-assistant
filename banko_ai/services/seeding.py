@@ -83,7 +83,10 @@ def ensure_personas(url: str | None = None) -> list[str]:
     """Upsert the catalog's personas: display fields and the spending style
     refresh (a new style shapes the history from the next reset), a home
     region someone already chose is kept, and an ordinary user who took a
-    persona's username keeps it (the persona waits)."""
+    persona's username keeps it (the persona waits). A persona's assistant
+    settings go back to the deployment's: with no sign-in in front, whoever
+    picks a persona is that persona, and what one visitor set must not shape
+    the next demo."""
     url = url or get_config().database_url  # seeding always writes as the admin role
     cfg = get_config()
     personas = get_catalog().personas
@@ -111,7 +114,8 @@ def ensure_personas(url: str | None = None) -> list[str]:
         conn.execute(text("""
             UPDATE users AS u SET display_name = t.display, avatar_color = t.color,
                                   spending_style = t.style,
-                                  home_region = COALESCE(u.home_region, t.region)
+                                  home_region = COALESCE(u.home_region, t.region),
+                                  preferences = NULL
             FROM unnest(CAST(:ids AS UUID[]), CAST(:displays AS STRING[]), CAST(:colors AS STRING[]),
                         CAST(:styles AS STRING[]), CAST(:regions AS STRING[]))
                  AS t(id, display, color, style, region)
@@ -535,6 +539,9 @@ def reset_user(user_id: str, *, url: str | None = None, on_progress: ProgressFn 
     try:
         with _LeaseHeartbeat(user_id, owner, url):
             _delete_money_rows(user_id, url)
+            # Back as new: how the account's assistant was set goes with its history.
+            run_transaction(lambda conn: conn.execute(text(
+                "UPDATE users SET preferences = NULL WHERE user_id = CAST(:u AS UUID)"), {"u": user_id}), url=url)
             return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
                                today, on_progress, url, owner)
     finally:

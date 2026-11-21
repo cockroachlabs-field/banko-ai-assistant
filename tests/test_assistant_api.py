@@ -383,3 +383,33 @@ def test_the_release_smoke_reads_the_answers_this_api_really_sends(client, chat,
     broke = ask("show me every dinner out")
     assert smoke.failed_tools(broke) == ["search_transactions"]
     assert smoke.tool_steps(broke, "success") == [] and broke["answer"] == G.LOOKUP_FAILED
+
+
+def test_a_persons_settings_shape_the_answers_they_get(client, chat, member):
+    """Asked the way the page asks. "coffee", then "coffee expenses": the
+    same question in other words, so the second comes from the cache with no
+    model call and says whose answer it is. Whoever sets the cache to the
+    same question only is asked for again."""
+    from banko_ai.assistant import background
+    with get_engine().begin() as c:
+        c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
+
+    def ask(question):
+        chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
+                                    '{"steps": []}', "Your coffee purchases.")
+        resp = client.post(f"/api/v1/assistant/threads/{_thread(client)}/messages", json={"message": question})
+        answer = next(data for event, data in events(resp) if event == "answer")
+        assert background.drain()
+        return answer
+
+    try:
+        first = ask("coffee")
+        assert not first["cached"] and first["meta"]["model_calls"] == 3
+        again = ask("coffee expenses")
+        assert again["cached"] and again["answer"] == first["answer"] and again["meta"]["model_calls"] == 0
+        assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}
+        assert client.post("/api/v1/me/settings", json={"values": {"cache_match": "exact"}}).status_code == 200
+        exact = ask("show my coffee expenses")
+        assert not exact["cached"] and exact["meta"]["model_calls"] == 3
+    finally:
+        client.post("/api/v1/me/settings", json={"values": {}})

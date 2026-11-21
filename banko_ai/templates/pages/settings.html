@@ -59,6 +59,54 @@
       <div class="b-tag" style="margin-top:8px" :class="aiError ? 'bad' : 'ok'" x-show="aiText" x-text="aiText"></div>
     </div>
 
+    {# A person's own settings for the assistant. The list, the ranges and the words come from /api/v1/me/settings. #}
+    <div class="b-card b-s3" id="assistant-settings" x-show="prefs.length">
+      <div class="b-row">
+        <div class="b-lbl">Your assistant</div>
+        {# Behind the Google sign-in they are the person's and follow them to a persona; otherwise the account's. #}
+        <span class="b-muted">{% if shell.staff %}Yours alone: these go with you to whichever account you view, and change nobody else's answers.{% elif shell.user.persona %}Kept with this persona until Banko restarts or the persona is reset.{% else %}Kept with this account. Other accounts keep their own.{% endif %}</span>
+      </div>
+      <div class="b-prefs">
+        <template x-for="group in prefGroups" :key="group">
+          <div class="b-prefgroup">
+            <div class="b-prefgroup-h" x-text="group"></div>
+            <template x-for="s in prefsIn(group)" :key="s.key">
+              <div class="b-pref" :class="{ off: prefOff(s) }">
+                <template x-if="s.kind === 'flag'">
+                  <label class="b-pref-l b-pref-flag"><input type="checkbox" :id="'pref-' + s.key" x-model="prefValues[s.key]"><span x-text="s.label"></span></label>
+                </template>
+                <template x-if="s.kind !== 'flag'">
+                  <label class="b-pref-l" :for="'pref-' + s.key" x-text="s.label"></label>
+                </template>
+                <template x-if="s.kind === 'choice'">
+                  <select class="b-select" :id="'pref-' + s.key" x-model="prefValues[s.key]">
+                    <template x-for="c in s.choices" :key="c.value"><option :value="c.value" x-text="c.label" :selected="c.value === prefValues[s.key]"></option></template>
+                  </select>
+                </template>
+                <template x-if="s.kind === 'number'">
+                  <span class="b-pref-range">
+                    <input type="range" :id="'pref-' + s.key" :min="s.min" :max="s.max" :step="s.step" x-model.number="prefValues[s.key]" :disabled="prefOff(s)">
+                    <b x-text="prefShown(s, prefValues[s.key])"></b>
+                  </span>
+                </template>
+                <template x-if="s.kind === 'whole'">
+                  <input class="b-input" type="number" :id="'pref-' + s.key" :min="s.min" :max="s.max" step="1" x-model.number="prefValues[s.key]" style="width:96px">
+                </template>
+                <div class="b-pref-means" x-show="prefMeans(s)" x-text="prefMeans(s)"></div>
+                <div class="b-muted" x-text="s.help"></div>
+                <div class="b-muted" x-show="s.changed" x-text="'Default: ' + prefShown(s, s.default)"></div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+      <div class="b-pref-foot">
+        <button class="b-btn primary sm" type="button" :disabled="prefSaving || !prefsEdited()" @click="savePrefs()">Save</button>
+        <button class="b-btn sm" type="button" :disabled="prefSaving || !prefsOwn()" @click="resetPrefs()">Back to the defaults</button>
+        <span class="b-tag" :class="prefError ? 'bad' : 'ok'" x-show="prefText" x-text="prefText"></span>
+      </div>
+    </div>
+
     <div class="b-card" id="data">
       <div class="b-lbl">Demo data</div>
       <form style="display:flex;gap:8px;align-items:flex-end;margin-top:8px" @submit.prevent="generate()">

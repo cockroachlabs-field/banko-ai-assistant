@@ -26,8 +26,10 @@ from ..db.regions import agent_home_region
 from ..services import actions, memories, receipts, threads
 from ..services._sql import jsonable, valid_uuid
 from ..services.ledger import NotFound
+from ..services.preferences import Preferences
 from ..utils.embeddings import ModelWarmingUp
 from ..utils.request_trace import current_trace, reset_trace, start_trace, trace_elapsed_ms, trace_step
+from .shell import person_settings
 
 assistant_api = Blueprint("assistant_api", __name__, url_prefix="/api/v1")
 log = logging.getLogger("banko.assistant")
@@ -258,10 +260,12 @@ def _answer_event(thread_id: str, final: dict, chat: TimedChat, shown) -> dict:
             "route": (final.get("route") or {}).get("kind"), "meta": meta}
 
 
-def _turn_stream(user_id: str, thread_id: str, message: str, language: str | None) -> Iterator[str]:
+def _turn_stream(user_id: str, thread_id: str, message: str, language: str | None,
+                 prefs: Preferences | None = None) -> Iterator[str]:
     """Run the turn on a worker thread and relay its events as they happen.
     The answer goes out the moment respond is done; learn and the checkpoint
-    write finish after it, and done closes the stream."""
+    write finish after it, and done closes the stream. prefs are the asker's
+    own settings, read by the caller: the worker thread has no request."""
     events: queue.Queue = queue.Queue()
     chat = TimedChat(_chat())
     # The persona as shown, read here: the worker thread has no app context.
@@ -283,7 +287,7 @@ def _turn_stream(user_id: str, thread_id: str, message: str, language: str | Non
 
         try:
             out = _graph().run_turn(user_id, thread_id, message, language_code=language, chat=chat,
-                                    on_event=relay)
+                                    on_event=relay, prefs=prefs)
             relay({"type": "final", **out})  # a no-op once respond's final event went out
         except Exception as exc:
             if answered:
@@ -318,10 +322,12 @@ def post_message(thread_id: str):
         return jsonify({"error": "Type a message"}), 400
     user_id = _uid()
     language = body.get("language") if isinstance(body.get("language"), str) else None
+    # The asker's own settings, which follow them to whichever account is on screen.
+    prefs = person_settings()
     _activity("assistant", "processing", "Thinking about a question", user_id)
 
     def relay() -> Iterator[str]:
-        for chunk in _turn_stream(user_id, thread_id, message, language):
+        for chunk in _turn_stream(user_id, thread_id, message, language, prefs):
             if chunk.startswith("event: answer"):
                 _activity("assistant", "completed", "Answered a question", user_id)
             elif chunk.startswith("event: error"):

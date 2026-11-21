@@ -110,6 +110,53 @@ def test_the_search_check_fails_when_the_search_found_nothing(monkeypatch):
         s.search_and_more()
 
 
+class _Json:
+    def __init__(self, data):
+        self.data = data
+
+    def json(self):
+        return self.data
+
+
+def _in_other_words(monkeypatch, searched, replay=None, match="words"):
+    """A Smoke after its search check, asked for that question in other words."""
+    s = _smoke_answering(monkeypatch, *([replay] if replay else []))
+    s.searched = searched
+    monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"settings": [{"key": "cache_match",
+                                                                              "value": match}]}))
+    monkeypatch.setattr(smoke.time, "sleep", lambda seconds: None)
+    return s
+
+
+def _replayed(question=smoke.SEARCH_QUESTION, calls=0, cached=True):
+    answer = _answer([], cached=cached)
+    answer["meta"].update({"model_calls": calls, **({"cache": {"question": question, "match": "words"}}
+                                                    if question else {})})
+    return answer
+
+
+def test_the_search_question_in_other_words_must_come_from_the_cache(monkeypatch):
+    """ "show me my coffee purchases", then "my coffee purchases": the same
+    question, so no model call, and the answer says whose it is."""
+    ok = _in_other_words(monkeypatch, _answer([_WORKED]), _replayed())
+    assert "replayed, no model call" in ok.other_words()
+    asked_again = _in_other_words(monkeypatch, _answer([_WORKED]), _replayed(question=None, calls=3, cached=False))
+    with pytest.raises(AssertionError, match="asked again instead"):
+        asked_again.other_words()
+    unnamed = _in_other_words(monkeypatch, _answer([_WORKED]), _replayed(question=None))
+    with pytest.raises(AssertionError, match="does not say whose"):
+        unnamed.other_words()
+
+
+def test_the_other_words_check_is_skipped_when_there_is_nothing_it_could_replay(monkeypatch):
+    """Skipped, never failed and never a model call: no search answer, an
+    account that matches the same question only, or a search answer that was
+    not kept because a tool declined behind it."""
+    assert _in_other_words(monkeypatch, None).other_words().startswith("skipped")
+    assert _in_other_words(monkeypatch, _answer([_WORKED]), match="exact").other_words().startswith("skipped")
+    assert _in_other_words(monkeypatch, _answer([_WORKED, _DECLINED])).other_words().startswith("skipped")
+
+
 def _smoke_uploading(monkeypatch, *statuses):
     """A Smoke whose receipt uploads end with these statuses, in order; every question is answered."""
     s = smoke.Smoke("http://banko.test", "maya", None)

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
@@ -17,9 +17,22 @@ from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, Valid
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..services import accounts, actions, budgets, caches, goals, ledger, memories, receipts, recurring, reports
+from ..services import (
+    accounts,
+    actions,
+    budgets,
+    caches,
+    goals,
+    ledger,
+    memories,
+    preferences,
+    receipts,
+    recurring,
+    reports,
+)
 from ..services import transactions as txns
 from ..services._sql import jsonable
+from ..services.preferences import Preferences
 from ..utils import clock
 from ..utils.embeddings import ModelWarmingUp, note_skipped
 from ..utils.request_trace import trace_step
@@ -39,6 +52,7 @@ class ToolContext:
     thread_id: str | None = None
     url: str | None = None
     active_receipt: dict | None = None
+    prefs: Preferences = field(default_factory=preferences.defaults)  # the asker's own settings
 
 
 @dataclass(frozen=True)
@@ -69,7 +83,8 @@ class SearchArgs(BaseModel):
     category: str | None = None
     date_from: date | None = None
     date_to: date | None = None
-    limit: Annotated[int, _clamped(1, txns.SEARCH_PAGE_MAX)] = Field(default_factory=txns.search_page_size)
+    # Left out, a page is as long as the asker set (or SEARCH_PAGE_SIZE).
+    limit: Annotated[int | None, _clamped(1, txns.SEARCH_PAGE_MAX)] = None
 
 
 class SpendArgs(BaseModel):
@@ -115,8 +130,9 @@ class BudgetArgs(BaseModel):
 
 
 def _search(ctx: ToolContext, a: SearchArgs) -> dict:
-    narration.vector_search(a.query, a.limit)
-    payload = a.model_dump(mode="json")
+    limit = a.limit or ctx.prefs.search_page_size
+    narration.vector_search(a.query, limit)
+    payload = {**a.model_dump(mode="json"), "limit": limit}
     key, cached = None, None
     try:
         key = caches.search_key(ctx.user_id, ledger.data_version(ctx.user_id, ctx.url), payload)
@@ -132,7 +148,7 @@ def _search(ctx: ToolContext, a: SearchArgs) -> dict:
     narration.vector_cache(None)
     trace_step("cache", "Search cache", f"miss for '{a.query}'", status="miss")
     t0 = time.perf_counter()
-    found = txns.semantic_search(ctx.user_id, a.query, limit=a.limit, category=a.category,
+    found = txns.semantic_search(ctx.user_id, a.query, limit=limit, category=a.category,
                                  date_from=a.date_from, date_to=a.date_to, url=ctx.url)
     narration.vector_rows(len(found["items"]), (time.perf_counter() - t0) * 1000)
     # next_cursor is the chat's Show more; the answer model never sees it.
@@ -244,7 +260,8 @@ TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("cash_flow", "income and spending by month", MonthsArgs,
          lambda c, a: reports.cashflow(c.user_id, months=a.months, url=c.url)),
     Tool("recall", "the user's saved memories relevant to a question", QueryArgs,
-         lambda c, a: memories.recall(c.user_id, a.query, url=c.url)),
+         lambda c, a: memories.recall(c.user_id, a.query, k=c.prefs.assistant_memory_recall_k,
+                                      max_distance=c.prefs.assistant_memory_max_distance, url=c.url)),
     Tool("remember", "save a durable fact the user stated about themselves", RememberArgs,
          lambda c, a: memories.remember(c.user_id, a.content, source_thread_id=c.thread_id, url=c.url)),
     Tool("propose_recategorize", "propose moving an expense to another category (runs only after Confirm)",

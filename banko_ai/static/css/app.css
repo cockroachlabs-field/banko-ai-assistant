@@ -354,6 +354,27 @@ button { font: inherit; color: inherit; }
 .b-scroll { max-height: 220px; overflow-y: auto; margin-top: 6px; }
 .b-card.stale { opacity: .62; }
 
+/* Settings: a person's own assistant settings, one column per group. */
+.b-prefs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 22px; margin-top: 10px; }
+.b-prefgroup-h { font-size: 13px; font-weight: 600; padding-bottom: 6px; border-bottom: 1px solid var(--bd2); }
+.b-pref { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 12px 0;
+  border-bottom: 1px solid var(--bd2); }
+.b-pref:last-child { border-bottom: 0; }
+.b-pref.off > :not(.b-muted) { opacity: .5; }
+.b-pref-l { font-size: 13px; font-weight: 600; }
+.b-pref-flag { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.b-pref-flag input, .b-pref-range input { accent-color: var(--ac); }
+.b-pref-range { display: flex; align-items: center; gap: 10px; width: 100%; }
+.b-pref-range input { flex: 1; min-width: 0; }
+.b-pref-range b { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; }
+.b-pref .b-select { width: 100%; }
+.b-pref-means { font-size: 12px; }
+.b-pref-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+@media (max-width: 900px) {
+  .b-prefs { grid-template-columns: 1fr; gap: 0; }
+  .b-prefgroup + .b-prefgroup { margin-top: 14px; }
+}
+
 /* Small screens */
 .b-menu-btn { display: none; }
 @media (max-width: 900px) {

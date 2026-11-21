@@ -70,18 +70,22 @@ def remember(user_id: str, content: str, *, kind: str | None = None, source_thre
     return run_transaction(fn, url=url, user_id=user_id, idempotent=False)
 
 
-def recall(user_id: str, query: str, *, k: int | None = None, url: str | None = None) -> list[dict]:
+def recall(user_id: str, query: str, *, k: int | None = None, max_distance: float | None = None,
+           url: str | None = None) -> list[dict]:
+    """k and max_distance default to ASSISTANT_MEMORY_RECALL_K and
+    ASSISTANT_MEMORY_MAX_DISTANCE; a turn passes the asker's own."""
     query = (query or "").strip()
     if not query:
         return []
     cfg = get_config()
     url = request_url(url)
     qvec = embed(query)
+    farthest = cfg.assistant_memory_max_distance if max_distance is None else max_distance
 
     def fn(conn) -> list[dict]:
         near = [(m, d) for m, d in nearest(conn, user_id=user_id, qvec=qvec,
                                            k=k or cfg.assistant_memory_recall_k, **_SEARCH)
-                if d <= cfg.assistant_memory_max_distance]
+                if d <= farthest]
         if not near:
             return []
         ids = [m for m, _ in near]

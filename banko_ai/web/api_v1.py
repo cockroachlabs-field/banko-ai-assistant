@@ -22,6 +22,7 @@ from ..services import (
     goals,
     home_region,
     ledger,
+    preferences,
     receipts,
     recurring,
     reports,
@@ -30,6 +31,7 @@ from ..services import (
 )
 from ..services._sql import jsonable, valid_uuid
 from ..services.profile import get_profile
+from .shell import person_id
 
 api_v1 = Blueprint("api_v1", __name__, url_prefix="/api/v1")
 log = logging.getLogger("banko.api")
@@ -118,6 +120,29 @@ def me():
         return jsonify({"error": "not_found"}), 404
     # regions: where this account can live. Empty on a database with one region.
     return jsonify({**profile, "seeding": seeding.seeding_status(uid), "regions": home_region.regions_of()})
+
+
+@api_v1.get("/me/settings")
+def my_settings():
+    """The settings the signed-in person may set for themselves, with the
+    value in effect and the deployment's beside it. They are the person's,
+    whichever account is on screen."""
+    return jsonify(preferences.describe(preferences.of(person_id())))
+
+
+@api_v1.post("/me/settings")
+def save_my_settings():
+    """Make the posted values the person's settings, all of them: a setting
+    left out goes back to following the deployment, so {} resets everything."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or "values" not in body:
+        return jsonify({"error": "Send the settings as values by name."}), 400
+    try:
+        return jsonify(preferences.describe(preferences.save(person_id(), body["values"])))
+    except preferences.Invalid as exc:
+        return jsonify({"error": str(exc), "key": exc.key}), 400
+    except LookupError:
+        return jsonify({"error": "not_found"}), 404
 
 
 @api_v1.post("/me/home-region")

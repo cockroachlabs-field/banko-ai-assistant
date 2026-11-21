@@ -377,7 +377,10 @@ def _find_window(q: str, today: date) -> tuple[date, date, tuple[int, int]] | No
         m = rx.search(q)
         if not m:
             continue
-        window = _window_of(kind, m, today)
+        try:
+            window = _window_of(kind, m, today)
+        except (OverflowError, ValueError):  # "the last 1,000,000 days": further back than dates go
+            window = None
         if window is not None:
             return window[0], window[1], m.span()
     return None
@@ -441,6 +444,13 @@ def extract_window(query: str,
     """Public helper: the date window named in a question, or None. Used by
     the RAG path to push a date predicate even for non-aggregation asks."""
     return _resolve_window(query.lower(), today or clock.today())
+
+
+def find_window(query: str, today: date | None = None) -> tuple[date, date, tuple[int, int]] | None:
+    """Public helper: the date window a question names (end exclusive) and
+    where in the lowercased text it names it, or None. The answer cache cuts
+    the dates out of a question with it and compares what is left."""
+    return _find_window(query.lower(), today or clock.today())
 
 
 def classify_aggregation(query: str,
