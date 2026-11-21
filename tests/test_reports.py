@@ -1,12 +1,14 @@
 """Derived views: recurring bills, goals, cash flow and the dashboard."""
 
 import os
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
 
 from banko_ai.config.settings import reset_config
+from banko_ai.db.engine import get_engine
 from banko_ai.services import goals as G
 from banko_ai.services import recurring as R
 from banko_ai.services import reports as P
@@ -24,10 +26,23 @@ def _current_reads(monkeypatch):
     reset_config()
 
 
+# A shop visited on no schedule and for no steady amount. The seed draws each
+# user's groceries at random, and now and then the draw looks weekly: the
+# test that said "Whole Foods is no subscription" failed for that user.
+BODEGA = "Corner Bodega"
+_VISITS = ((97, "12.10"), (94, "87.40"), (75, "5.25"), (73, "44.00"), (32, "23.80"))   # days before TODAY, amount
+
+
 @pytest.fixture(scope="module")
 def subscriber():
     uid = make_user("subscriber")
     seed_user(uid, months=4, today=TODAY)
+    with get_engine().begin() as c:
+        for days_ago, amount in _VISITS:
+            c.execute(text("INSERT INTO expenses (expense_id, user_id, expense_date, expense_amount, shopping_type, "
+                           "description, merchant, payment_method) "
+                           "VALUES (gen_random_uuid(), CAST(:u AS UUID), :d, :a, 'Groceries', '', :m, 'Credit Card')"),
+                      {"u": uid, "d": TODAY - timedelta(days=days_ago), "a": amount, "m": BODEGA})
     yield uid
     drop_user(uid)
 
@@ -40,7 +55,7 @@ def test_recurring_finds_monthly_bills_and_the_price_change(subscriber):
     assert found["Netflix"].previous_amount == Decimal("15.99")
     assert found["Spotify"].price_change_pct is None
     assert found["Electric Company"].price_change_pct is None  # variable bill, not a price change
-    assert "Whole Foods" not in found  # irregular groceries are not a subscription
+    assert BODEGA not in found  # five visits on no schedule are not a subscription
 
 
 def test_upcoming_bills_are_in_the_window(subscriber):
