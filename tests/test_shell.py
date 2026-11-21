@@ -239,3 +239,23 @@ def test_the_tab_icon_is_the_cockroach_labs_brandmark(monkeypatch, member):
         assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
         assert "roach-logo" not in html
     assert client.get("/static/roach-logo.svg").status_code == 404
+
+
+def test_the_tab_icon_fills_its_canvas():
+    """A browser tab gives the icon 16 pixels. Drawn in the middle half of
+    its canvas, the mark got 8 of them: a speck beside the other tabs. It
+    takes the whole canvas now, less a margin, and nothing of it is cut off."""
+    import re
+    from pathlib import Path
+
+    import banko_ai
+    svg = (Path(banko_ai.__file__).parent / "static" / "favicon.svg").read_text()
+    x0, y0, width, height = (float(n) for n in re.search(r'viewBox="([^"]+)"', svg).group(1).split())
+    tx, ty = (float(n) for n in re.search(r"translate\(([^)]+)\)", svg).group(1).split())
+    points = [float(n) for n in re.findall(r"-?\d+\.?\d*", re.search(r' d="([^"]+)"', svg).group(1))]
+    xs, ys = [n + tx for n in points[0::2]], [n + ty for n in points[1::2]]
+    assert width == height                                                  # a tab icon is square
+    assert x0 <= min(xs) and max(xs) <= x0 + width and y0 <= min(ys) and max(ys) <= y0 + height
+    assert max(max(xs) - min(xs), max(ys) - min(ys)) / width >= 0.85        # it was 0.50
+    assert abs((min(xs) + max(xs)) / 2 - (x0 + width / 2)) < 1              # and it sits in the middle
+    assert abs((min(ys) + max(ys)) / 2 - (y0 + height / 2)) < 1
