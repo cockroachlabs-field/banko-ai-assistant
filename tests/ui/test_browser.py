@@ -939,6 +939,71 @@ def test_the_trace_panel_follows_the_conversation_on_screen(server, browser):
         ctx.close()
 
 
+def test_a_receipt_dropped_on_a_new_conversation_and_a_question_asked_meanwhile_share_one_thread(server, browser):
+    """A receipt takes seconds to read. Uploaded where no conversation
+    existed yet, it got its thread from the server at the end, while a
+    question asked in the meantime had already made another: the page then
+    showed one conversation and held two. The upload makes the thread first."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page, thread_ids=[NEW_THREAD])
+        uploads, asked_in = [], []
+        # The server answers with the thread it was given.
+        read = RECEIPT.replace(OLD_THREAD, NEW_THREAD)
+        page.route("**/api/v1/receipts", lambda r: (uploads.append(r.request.post_data or ""),
+                                                   r.fulfill(status=200, content_type="text/event-stream", body=read)))
+        page.on("request", lambda r: asked_in.append(r.url) if r.method == "POST" and r.url.endswith("/messages") else None)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        page.locator('.b-assist-page .b-comp input[type="file"]').set_input_files(
+            {"name": "coffee.png", "mimeType": "image/png", "buffer": PIXEL})
+        expect(page.locator(".b-assist-page .b-receipt")).to_contain_text("Blue Bottle")
+        assert len(uploads) == 1 and 'name="thread_id"' in uploads[0] and NEW_THREAD in uploads[0]
+        page.locator(".b-assist-page .b-comp textarea").fill("coffee expenses")
+        page.keyboard.press("Enter")
+        expect(page.locator(".b-assist-page .b-chat")).to_contain_text("You spent $42.10 on dining.")
+        assert asked_in and all(f"/threads/{NEW_THREAD}/messages" in url for url in asked_in), asked_in
+        assert api.asked == ["coffee expenses"]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_how_this_was_answered_says_which_answer_it_is_about(server, browser):
+    """Two answers to the same question have the same steps, so a click on
+    "How this was answered" under one of them changed nothing a person could
+    see and looked dead. The panel names the question now, and the answer it
+    is about is marked."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TRACED)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        box = page.locator(".b-assist-page .b-comp textarea")
+        for n, question in enumerate(("coffee expenses", "my dining total"), start=1):
+            box.fill(question)
+            page.keyboard.press("Enter")
+            expect(page.locator(".b-assist-page .b-meta")).to_have_count(n)
+            # The turn has ended: a question sent while one is still streaming is ignored.
+            page.wait_for_function("() => !Alpine.$data(document.querySelector('.b-assist-page')).streaming")
+        answers = page.locator(".b-assist-page .b-msg-bot")
+        aside = page.locator("aside.b-trace")
+        marked = re.compile(r"(^|\s)traced(\s|$)")
+        expect(aside).to_contain_text("my dining total")              # the newest answer, until another is asked for
+        expect(answers.nth(1)).to_have_class(marked)
+        expect(answers.nth(0)).not_to_have_class(marked)
+        answers.nth(0).get_by_role("button", name="How this was answered").click()
+        expect(aside).to_contain_text("coffee expenses")
+        expect(aside).not_to_contain_text("my dining total")
+        expect(answers.nth(0)).to_have_class(marked)
+        expect(answers.nth(1)).not_to_have_class(marked)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def _paged_answer(text, route, search):
     return _sse(("token", {"text": text}),
                 ("answer", {"answer": text, "citations": [], "proposals": [], "cached": False, "route": route,

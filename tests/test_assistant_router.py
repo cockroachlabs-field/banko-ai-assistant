@@ -185,3 +185,25 @@ def test_a_size_question_and_the_active_receipt():
     later = route("what was the biggest charge on it?", active_receipt=RECEIPT, last_route="plan", has_history=True,
                   today=TODAY)
     assert later.kind == "plan"
+
+
+COFFEE_RECEIPT = {"document_id": "d-coffee", "merchant": "BLUE BOTTLE COFFEE", "amount": 9.75, "category": "Coffee",
+                  "items": ["Latte", "Croissant"]}
+
+
+def test_a_category_word_in_the_merchants_name_is_not_a_question_about_the_receipt():
+    """With a Blue Bottle Coffee receipt on the table, "coffee expenses" was
+    answered from that one receipt: the merchant's name holds the word
+    coffee. The question is about every coffee purchase there is."""
+    assert route("coffee expenses", active_receipt=COFFEE_RECEIPT, today=TODAY).kind == "plan"
+    assert route("my coffee spending", active_receipt=COFFEE_RECEIPT, today=TODAY).kind != "receipt"
+    assert route("anything from a cafe lately", active_receipt={**COFFEE_RECEIPT, "merchant": "Local Cafe"},
+                 today=TODAY).kind != "receipt"
+    # What only this merchant is called still means its receipt.
+    assert route("anything odd about blue bottle", active_receipt=COFFEE_RECEIPT, today=TODAY).kind == "receipt"
+    assert route("what did I get at Blue Bottle Coffee", active_receipt=COFFEE_RECEIPT, today=TODAY).kind == "receipt"
+    assert route("is the local one cheaper", active_receipt={**COFFEE_RECEIPT, "merchant": "Local Cafe"},
+                 today=TODAY).kind == "receipt"
+    # And so does everything that pointed at the receipt before.
+    assert route("how much was this receipt?", active_receipt=COFFEE_RECEIPT, today=TODAY).kind == "receipt"
+    assert route("was the latte on it?", active_receipt=COFFEE_RECEIPT, last_route="receipt").kind == "receipt"
