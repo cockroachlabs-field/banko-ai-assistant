@@ -28,7 +28,7 @@
       </template>
 
       <template x-if="m.role === 'bot'">
-        <div class="b-msg-bot">
+        <div class="b-msg-bot" :class="{ traced: mode === 'page' && traced === m }">
           <div class="b-steps" x-show="m.steps.length">
             <template x-for="s in m.steps" :key="s.uid"><span class="b-step" :class="stepClass(s)"><b x-text="s.label"></b><span x-show="stepNote(s)" x-text="stepNote(s)"></span></span></template>
           </div>
