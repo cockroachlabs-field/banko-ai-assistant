@@ -105,6 +105,7 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 ### Receipt OCR
 
 - Tesseract MUST be in PATH or receipt upload silently returns "Unknown" for all fields. This bit us — see `scripts/setup_system_deps.sh` for installer.
+- Every page is read through `document_tools.read_text`. Left to lay a page out by itself, tesseract can drop whole lines of a faded receipt, the total among them; as one block of text (`--psm 6`) it keeps them. So a page whose first reading holds no amount is read once more that way. Do not "improve" the image first: on a faded thermal print, thresholding, thickening and sharpening each produced totals that were wrong and looked right.
 
 ### Caching
 
