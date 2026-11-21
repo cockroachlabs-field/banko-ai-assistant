@@ -938,6 +938,39 @@ def _write_fingerprint(conn: Connection, fp: str, topo: Topology, *, rls_on: boo
                  {"k": FINGERPRINT_KEY, "v": value})
 
 
+# A read in the past cannot see what was made after the moment it reads at.
+# Reports read a few seconds back (services/_sql.read_session), so for the
+# first seconds after this process made or changed a database's schema they
+# asked for tables, columns and grants that did not exist yet: "relation
+# accounts does not exist" on the dashboard of a brand-new database, and of
+# one rebuilt under a running Banko, where pages come back within seconds.
+# For this long after a change, reports on that database read the present.
+SETTLE_SECONDS = 15.0
+_now = time.monotonic
+_changed_at: dict[tuple, float] = {}      # (host, port, database) -> when this process last changed its schema
+
+
+def _database(url: str | None) -> tuple:
+    """Which database a URL means, whoever connects: the schema is made as
+    the admin and reports read as the app role."""
+    from sqlalchemy.engine import make_url
+
+    from ..utils.db_retry import normalize_db_url
+    found = make_url(normalize_db_url(url or get_config().database_url))
+    return found.host, found.port, found.database
+
+
+def note_changed(url: str | None = None) -> None:
+    _changed_at[_database(url)] = _now()
+
+
+def settling(url: str | None = None) -> bool:
+    """Whether this process changed that database's schema so recently that
+    a read in the past could land before the change."""
+    changed = _changed_at.get(_database(url))
+    return changed is not None and _now() - changed < SETTLE_SECONDS
+
+
 def schema_state(url: str | None = None) -> str:
     """"current", "outdated" or "missing", from the stored fingerprint: the
     same one SELECT as ensure_schema's fast path, and nothing written."""
@@ -1025,6 +1058,7 @@ def ensure_schema(url: str | None = None, *, force: bool = False,
             _write_fingerprint(conn, want, topo, rls_on=rls_on)
             log.info("schema: fingerprint phase %.1fs", time.monotonic() - fp_started)
 
+            note_changed(url)
             return SchemaResult(changed=True, fingerprint=want, statements=count,
                                 pending_conversions=conversions, seconds=time.monotonic() - started)
         finally:
