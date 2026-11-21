@@ -1,11 +1,16 @@
 {# What a user sees when seeding their demo data failed: the shell banner and
-   the dashboard card share this copy. Personas can be reset from Settings;
-   anyone else starts over with a new user. #}
+   the dashboard card share this copy. Personas can be reset from Settings.
+   Someone signed in from their Google identity has the one account, and a
+   page load starts its history again. Anyone else starts over with a new
+   user. #}
 {% macro setup_failed(shell) %}
 <strong>Your demo data didn't finish loading</strong>
 {% if shell.user.persona %}
 <span>Reset {{ shell.user.display_name }} in Settings to load it again.</span>
 <a class="b-btn primary" href="/settings#data">Open Settings</a>
+{% elif shell.staff %}
+<span>Loading it again starts when you reload this page.</span>
+<a class="b-btn primary" href="">Try again</a>
 {% else %}
 <span>Switch user and create a new one to start over.</span>
 <a class="b-btn primary" href="/logout">Switch user</a>

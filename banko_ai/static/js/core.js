@@ -32,7 +32,13 @@
     const text = await res.text();
     let data = null;
     if (text) { try { data = JSON.parse(text); } catch (e) { data = null; } }
-    if (!res.ok) throw new ApiError(res.status, (data && (data.error || data.message)) || FALLBACK);
+    if (!res.ok) {
+      const said = (data && (data.error || data.message)) || FALLBACK;
+      // Behind a sign-in proxy the sign-in can end under an open page. A
+      // reload goes through the proxy again, which signs the person back in.
+      if (res.status === 401 && said === "not_signed_in") window.location.reload();
+      throw new ApiError(res.status, said);
+    }
     return data;
   }
 
@@ -155,6 +161,8 @@
     insufficient_funds: "There isn't enough available in that account.",
     key_conflict: "That request was already used with a different amount.",
     not_found: "That item no longer exists.",
+    not_signed_in: "Your sign-in ended. Reload the page to sign in again.",
+    unavailable: "The database is out of reach right now. Try again in a moment.",
     warming_up: "Still warming up. Try again in a few seconds.",
   };
   // What a person sees for an error. Only the API's own message is shown,

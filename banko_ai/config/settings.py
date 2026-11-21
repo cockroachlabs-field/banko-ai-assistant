@@ -134,6 +134,10 @@ class Settings(BaseSettings):
     port: int = _field(5000, group="server", env="PORT", description="Port `banko-ai run` and the Docker image listen on.")
     socketio_cors_origins: str = _field("", group="server", env="SOCKETIO_CORS_ORIGINS", description="Comma-separated origins allowed to open Socket.IO connections. Empty means same origin only.")
     max_upload_mb: int = _field(10, group="server", env="MAX_UPLOAD_MB", description="Largest request body accepted, in megabytes. It caps every request, receipt uploads included.")
+    iap_audience: str = _field("", group="server", env="IAP_AUDIENCE",
+        description="Turns on sign-in from Google's Identity-Aware Proxy: the audience of the assertion this deployment receives, like /projects/<project number>/locations/<region>/services/<service>. Everyone is then signed in as themselves, with an account made on their first visit, and a typed username is never an identity. Empty keeps the username page.")
+    iap_user_idle_days: int = _field(30, group="server", env="IAP_USER_IDLE_DAYS",
+        description="With IAP_AUDIENCE set: remove an account that sign-in made, and its rows, when nobody has used it for this many days. Checked at boot and once a day. Personas, usernames made at the sign-in page and seeded demo users are never touched. 0 keeps them.")
     session_cookie_secure: bool = _field(False, group="server", env="SESSION_COOKIE_SECURE", description="Mark the session cookie Secure. Turn it on when serving over HTTPS.")
     warmup_wait_seconds: int = _field(20, group="server", env="WARMUP_WAIT_SECONDS", description="How long a request waits for background warm-up (schema, embedding model) before getting a friendly still-warming-up reply.")
 
@@ -202,7 +206,7 @@ class Settings(BaseSettings):
 
     # Demo data
     banko_skip_autosetup: bool = _field(False, group="data", env="BANKO_SKIP_AUTOSETUP", description="Start without seeding the personas, the integrity checker or the checkpointer warm-up, its TTL upkeep included (`banko-ai run --no-data`).")
-    demo_user_ttl_days: int = _field(0, group="data", env="DEMO_USER_TTL_DAYS", description="Delete signed-up demo users older than this many days at boot. 0 keeps them.")
+    demo_user_ttl_days: int = _field(0, group="data", env="DEMO_USER_TTL_DAYS", description="Delete signed-up demo users older than this many days at boot. 0 keeps them. Accounts made by the IAP sign-in follow IAP_USER_IDLE_DAYS instead.")
     monthly_budget_default: float = _field(10000.0, group="data", env="MONTHLY_BUDGET_DEFAULT", description="Monthly budget the budget agent assumes when a user has none.")
     fraud_duplicate_window_days: int = _field(60, group="data", env="FRAUD_DUPLICATE_WINDOW_DAYS", description="Days the fraud agent looks back for duplicate charges.")
     categories_file: str = _field("", group="data", env="CATEGORIES_FILE",
