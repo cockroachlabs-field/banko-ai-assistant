@@ -20,6 +20,7 @@ from ..config.settings import get_config
 from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
+from ..utils import clock
 from . import accounts as accounts_service
 from . import ledger
 from . import transactions as txns
@@ -244,7 +245,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
 
         yield start("category")
         category = get_catalog().category_for(valid.category).label
-        day = valid.date if valid.date <= datetime.now(timezone.utc).date() else date.today()
+        day = valid.date if valid.date <= clock.today() else clock.today()
         extracted = {"merchant": valid.merchant, "amount": round(valid.amount, 2), "date": str(day),
                      "category": category, "items": valid.items, "payment_method": valid.payment_method}
         yield end("done", category)

@@ -20,6 +20,7 @@ from ..config.settings import get_config
 from ..services import accounts, actions, budgets, caches, goals, ledger, memories, receipts, recurring, reports
 from ..services import transactions as txns
 from ..services._sql import jsonable
+from ..utils import clock
 from ..utils.request_trace import trace_step
 from . import narration
 
@@ -152,7 +153,7 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
     url = ctx.url or get_config().database_url
     if a.date_from and a.date_to and a.date_from > a.date_to:
         raise ToolError("date_from must be on or before date_to")
-    end = (a.date_to or date.today()) + timedelta(days=1)
+    end = (a.date_to or clock.today()) + timedelta(days=1)
     start = a.date_from or (end - timedelta(days=31))
     if a.merchant:
         merchant = resolve_merchant(a.merchant, ctx.user_id, url)

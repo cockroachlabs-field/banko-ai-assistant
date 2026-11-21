@@ -8,6 +8,7 @@ from datetime import date
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
+from ..utils import clock
 
 
 def _memories(memories: list[dict]) -> str:
@@ -21,7 +22,7 @@ def planner_messages(message: str, *, history: list[dict], memories: list[dict],
     labels = ", ".join(get_catalog().spending_labels())
     system = (
         f"You plan tool calls for {cfg.brand_name}, a banking assistant. Today is "
-        f"{(today or date.today()).isoformat()}. Reply with JSON only, shaped like "
+        f"{(today or clock.today()).isoformat()}. Reply with JSON only, shaped like "
         '{"steps": [{"tool": "<name>", "args": {...}}]}. Use only these tools, and always pass every '
         "argument marked (required):\n"
         f"{tools}\n"

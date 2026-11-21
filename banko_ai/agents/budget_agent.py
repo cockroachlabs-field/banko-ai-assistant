@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from ..utils import clock
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
 
@@ -114,8 +115,8 @@ Be helpful and non-judgmental. Focus on solutions, not problems."""
         }
         
         try:
-            # Get current month dates
-            now = datetime.now()
+            # Get current month dates (UTC, like every stored date)
+            now = clock.now().replace(tzinfo=None)
             month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             
             # Calculate days into month and days remaining
@@ -365,7 +366,7 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
         
         try:
             # Get last 90 days of spending to establish baseline
-            now = datetime.now()
+            now = clock.now().replace(tzinfo=None)
             start_date = (now - timedelta(days=90)).isoformat()
             
             stats_result = self.execute_tool(
