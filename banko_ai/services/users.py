@@ -82,6 +82,21 @@ def delete_users(ids: Sequence[str], *, url: str | None = None, batch: int = 100
                 _forget_conversations(chunk, url)
             except Exception:  # their checkpoints expire on their own; never block the delete
                 log.warning("could not delete checkpoints while removing users", exc_info=True)
+        if "agent_decisions" in present:
+            # No user column here: a decision names its user, or the purchase
+            # it was about, in its context, and the reasoning beside it names
+            # the merchant and the amount. Before the purchases go.
+            about = "context->>'user_id' = ANY(CAST(:ids AS STRING[]))"
+            if "expenses" in present:
+                about += (" OR context->>'expense_id' IN (SELECT expense_id::STRING FROM expenses "
+                          "WHERE user_id = ANY(CAST(:ids AS UUID[])))")
+            decisions = text(f"DELETE FROM agent_decisions WHERE {about} LIMIT {batch}")
+
+            def delete_decisions(conn, chunk=chunk) -> int:
+                return int(conn.execute(decisions, {"ids": chunk}).rowcount)
+
+            while run_transaction(delete_decisions, url=url) >= batch:
+                pass
         for table, kind in _user_id_types().items():
             if table not in present:
                 continue
