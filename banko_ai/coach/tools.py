@@ -11,6 +11,7 @@ inside so tests can pin to a known DB and the MCP layer can override.
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -167,18 +168,23 @@ def get_recent_transactions(user_id: str, database_url: str,
     } for r in rows]
 
 
-def explain_nudge(nudge_id: str, database_url: str) -> dict[str, Any]:
-    """Return the full record for a nudge: message, tool trace, provider,
-    correlation IDs. Used by the UI's 'show evidence' panel and the MCP
-    tool of the same name."""
+def explain_nudge(user_id: str, nudge_id: str, database_url: str) -> dict[str, Any]:
+    """Return the full record for one of this user's nudges: message, tool
+    trace, provider, correlation IDs. Empty for a nudge that is someone
+    else's or does not exist: the trace holds budgets, merchants and
+    purchases, and an id is not a secret."""
+    try:
+        nudge_id = str(uuid.UUID(str(nudge_id)))
+    except ValueError:
+        return {}
     eng = _engine(database_url)
     with eng.connect() as conn:
         row = conn.execute(text("""
             SELECT nudge_id, signal_id, user_id, message, tool_trace,
                    provider_used, trace_id, created_at
             FROM coach_nudges
-            WHERE nudge_id = :n
-        """), {"n": nudge_id}).fetchone()
+            WHERE nudge_id = :n AND user_id = :u
+        """), {"n": nudge_id, "u": user_id}).fetchone()
     if row is None:
         return {}
     return {

@@ -516,3 +516,16 @@ def test_seeding_writes_survive_a_serialization_failure(saver, flaky, monkeypatc
         for uid in ids:
             drop_user(uid)
     assert sum(e.failed for e in flaky.values()) == 1
+
+
+def test_a_history_that_fails_before_it_starts_says_it_failed():
+    """Only a failure in the middle of the batches was reported. One before
+    them (the account not found, the lease, the first read) left no status at
+    all, so nothing knew there was something to try again."""
+    import uuid
+
+    from banko_ai.services.seeding import seed_user, seeding_status
+    nobody = str(uuid.uuid4())
+    with pytest.raises(LookupError):
+        seed_user(nobody)
+    assert (seeding_status(nobody) or {}).get("state") == "failed"

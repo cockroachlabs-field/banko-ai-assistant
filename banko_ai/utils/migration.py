@@ -95,9 +95,10 @@ class DatabaseMigration:
         try:
             with self.engine.connect() as conn:
                 rows = conn.execute(text("""
-                    SELECT user_id FROM users
+                    SELECT user_id FROM users AS u
                     WHERE demo_user AND created_at < :cutoff
                       AND user_id <> ALL(CAST(:personas AS UUID[]))
+                      AND NOT EXISTS (SELECT 1 FROM banko_meta WHERE key = 'seen:' || u.user_id::STRING)
                 """), {"cutoff": cutoff, "personas": personas}).fetchall()
             ids = [str(r[0]) for r in rows]
             if not ids:

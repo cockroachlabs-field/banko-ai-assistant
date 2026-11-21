@@ -36,14 +36,20 @@
       <button class="b-ask" type="button" @click="openPalette()"><span class="spark">✦</span>Ask {{ shell.brand.name }} about your money...<kbd x-text="shortcut()"></kbd></button>
       <div class="b-pills">
         {% if shell.user.region %}<span class="b-pill hide-sm" title="Home region: where your rows live"><span class="b-dot"></span>{{ shell.user.region }}</span>{% endif %}
+        {% if shell.staff and shell.staff.viewing %}<span class="b-pill hide-sm" title="You are signed in as {{ shell.staff.username }}">Viewing as {{ shell.user.display_name }}</span>{% endif %}
         <span class="b-pill hide-sm" id="persona-pill"><img src="{{ shell.provider.icon_url }}" alt="">{{ shell.provider.name }} · {{ shell.provider.model }}</span>
         <button class="b-iconbtn" type="button" @click="cycleTheme()" :aria-label="'Theme: ' + theme" :title="'Theme: ' + theme"><svg class="b-i" aria-hidden="true"><use :href="themeIcon()"></use></svg></button>
         <div style="position:relative">
           <button class="b-ava" type="button" style="background: {{ shell.user.avatar_color }}" @click="menuOpen = !menuOpen" aria-label="Account menu">{{ shell.user.initial }}</button>
           <div class="b-menu" x-show="menuOpen" x-cloak @click.outside="menuOpen = false">
+            {% if shell.staff and shell.staff.viewing %}
+            <div class="b-muted" style="padding:6px 10px">Viewing as <b>{{ shell.user.username }}</b><br>You are <b>{{ shell.staff.username }}</b></div>
+            <form method="post" action="/view-as" style="margin:0"><input type="hidden" name="who" value="me"><button type="submit">{{ icon('log-out') }}Back to my account</button></form>
+            {% else %}
             <div class="b-muted" style="padding:6px 10px">Signed in as <b>{{ shell.user.username }}</b></div>
+            {% endif %}
             {% for group in shell.nav %}{% for item in group['items'] %}{% if item.key == 'settings' %}<a href="{{ item.href }}">{{ icon('settings') }}Settings</a>{% endif %}{% endfor %}{% endfor %}
-            <a href="/logout">{{ icon('log-out') }}Switch user</a>
+            <a href="/logout">{{ icon('log-out') }}{{ 'View as a persona' if shell.staff else 'Switch user' }}</a>
           </div>
         </div>
       </div>

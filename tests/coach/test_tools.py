@@ -141,7 +141,7 @@ def test_explain_nudge_returns_record(db_url):
         nudge_id = str(nudge[0])
     eng.dispose()
 
-    result = explain_nudge(nudge_id=nudge_id, database_url=db_url)
+    result = explain_nudge(user_id=TEST_USER, nudge_id=nudge_id, database_url=db_url)
     assert result["message"] == "You are at 82% of dining budget"
     assert result["tool_trace"][0]["tool"] == "get_user_budget"
     assert result["provider_used"] == "watsonx"

@@ -164,6 +164,22 @@ no session). The UI checks this on every response and redirects to `/login`
 when it differs from the signed-in persona, which is how expired sessions are
 detected.
 
+With `IAP_AUDIENCE` set (a deployment behind Google's Identity-Aware Proxy), identity comes only from the signed
+`x-goog-iap-jwt-assertion` header: its signature is checked against Google's keys, along with its issuer, audience and
+expiry. The Google account it names decides the Banko account, made on the first visit, and
+`x-goog-authenticated-user-email` is never read. `/login` and `/signup` ignore a posted username. `POST /view-as` with
+`who=<persona username>` puts one of the personas on screen, and `who=me` goes back to your own account; `/login` is
+the page that offers both.
+
+In this mode no request is answered for the default persona. Without a valid assertion `/api/` answers `401`
+`{"error": "not_signed_in"}` and a page goes to `/login`, which says that sign-in comes from the Google account. When
+the account cannot be read (the database is away) the answer is `503` `{"error": "unavailable"}` and nobody is signed
+out. Neither carries `X-Banko-User`. A request that changes something has to come from Banko's own pages: one whose
+`Sec-Fetch-Site` (or, without it, `Origin`) names another site gets `403`. Clients that send neither header, such as
+curl, are not affected. Every response carries `X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors
+'none'`: Banko cannot be put in a frame on another site in this mode. Health checks, static files and the signed CDC webhook need no assertion, and the 1.x
+`/api/agents/*` feed is not served.
+
 Socket.IO events about one user go only to that user's browsers: on connect
 the page sends `coach.join`, which joins the room of the signed-in user (from
 the session, never from the client).

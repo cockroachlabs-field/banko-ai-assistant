@@ -98,6 +98,13 @@ def _is_persona(user_id: str) -> bool:
         return False
 
 
+def _staff(on_screen: str) -> dict | None:
+    me = g.get("_banko_staff")
+    if not me:
+        return None
+    return {"username": me["username"], "viewing": me["user_id"] != on_screen}
+
+
 def _shell(profile: dict) -> dict:
     cfg = get_config()
     shown = current_app.extensions["banko_ai"]["shown"]()
@@ -113,6 +120,9 @@ def _shell(profile: dict) -> dict:
                  "display_name": profile["display_name"], "avatar_color": profile["avatar_color"],
                  "initial": (profile["display_name"] or "?")[0].upper(), "region": _region(profile),
                  "persona": _is_persona(profile["user_id"])},
+        # Behind IAP: the member of staff the assertion named. With a persona
+        # on screen it is somebody else than `user`, and the page says so.
+        "staff": _staff(profile["user_id"]),
         "nav": nav_groups(current_app),
         "page": {"assistant_thread": "assistant"}.get(page_raw, page_raw),
         "section": {"assistant_thread": "assistant", "account": "accounts"}.get(page_raw, page_raw),
