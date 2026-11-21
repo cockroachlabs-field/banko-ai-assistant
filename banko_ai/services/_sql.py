@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 
 from ..config.settings import get_config
 from ..db.engine import _sqlstate, get_engine, routed
+from ..db.schema import settling
 
 log = logging.getLogger("banko.services")
 _FOLLOWER = "SET TRANSACTION AS OF SYSTEM TIME follower_read_timestamp()"
@@ -65,8 +66,10 @@ def follower_snapshot(conn: Connection) -> None:
 def read_session(user_id: str, *, url: str | None = None, follower: bool = False) -> Iterator[Connection]:
     """A read transaction with banko.user_id set (row-level security reads
     it). follower=True reads a few seconds in the past from the nearest
-    replica, for reports only."""
-    use_follower = follower and get_config().reporting_follower_reads and follower_available(url)
+    replica, for reports only, and not while the schema is so new that the
+    past does not have it yet (db.schema.settling)."""
+    use_follower = (follower and get_config().reporting_follower_reads and not settling(url)
+                    and follower_available(url))
     with get_engine(routed(url, user_id)).begin() as conn:
         if use_follower:
             follower_snapshot(conn)
