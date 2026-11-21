@@ -45,5 +45,11 @@ document.addEventListener("alpine:init", () => {
       const m = this.message;
       return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps;
     },
+    // The question this answer was given to: the one asked before it.
+    asked() {
+      const at = this.messages.indexOf(this.message);
+      const question = at < 0 ? null : this.messages.slice(0, at).reverse().find((m) => m.role === "user");
+      return question ? question.text : "";
+    },
   }));
 });

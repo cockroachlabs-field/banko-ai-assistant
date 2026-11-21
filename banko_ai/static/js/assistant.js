@@ -80,6 +80,9 @@ document.addEventListener("alpine:init", () => {
   return {
     mode, open: mode === "page", threadId: null, threadTitle: "", messages: [], draft: "",
     streaming: false, controller: null, current: null,
+    // The answer "How this was answered" is about on the full page: the
+    // newest one, until the link under another is clicked.
+    traced: null,
     language: localStorage.getItem("banko.language") || (Banko.shell.languages[0] || { code: "en-US" }).code,
     languages: Banko.shell.languages,
     voiceSupported: !!(window.SpeechRecognition || window.webkitSpeechRecognition),
@@ -296,6 +299,7 @@ document.addEventListener("alpine:init", () => {
       // A turn that ended with no answer and no error still failed.
       if (!bot.answer && !bot.error && !bot.stopped) bot.error = Banko.FALLBACK;
       bot.answered = true;
+      this.traced = bot;
       this.scroll();
       Banko.emit("banko:answered", { thread: tid, bot });
     },
@@ -375,7 +379,13 @@ document.addEventListener("alpine:init", () => {
       this.scroll();
       const form = new FormData();
       form.append("receipt", file, file.name || "receipt.jpg");
-      if (this.threadId) form.append("thread_id", this.threadId);
+      // The receipt's thread, made now where there is none yet. Left to the
+      // server it comes at the end of the read, and a question asked in
+      // the meantime has opened another by then: one conversation on
+      // screen, two underneath.
+      let tid = this.threadId;
+      if (!tid) { try { tid = await this.threadFor(); } catch (e) { tid = null; } }
+      if (tid) form.append("thread_id", tid);
       try {
         await Banko.stream("/api/v1/receipts", { form, onEvent: (event, data) => {
           if (event === "step") card.pipeline[data.step] = data;
@@ -422,7 +432,7 @@ document.addEventListener("alpine:init", () => {
       return m.role === "user" ? this.copyText(m.text, "The question is")
                                : this.copyText(Banko.stripCitations(m.answer), "The answer is");
     },
-    toggleTrace(m) { m.showTrace = !m.showTrace; Banko.emit("banko:trace", { message: m }); },
+    toggleTrace(m) { m.showTrace = !m.showTrace; this.traced = m; Banko.emit("banko:trace", { message: m }); },
     togglePlans() { this.plansOpen = !this.plansOpen; localStorage.setItem("banko.plans", this.plansOpen ? "open" : "closed"); },
     traceSteps(m) { return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps; },
     stepClass(s) {

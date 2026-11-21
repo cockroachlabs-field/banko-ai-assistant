@@ -297,6 +297,10 @@ button { font: inherit; color: inherit; }
 .b-meta { display: flex; gap: 12px; align-items: center; font-size: 11px; color: var(--mu); flex-wrap: wrap; }
 .b-meta button { background: none; border: 0; padding: 0; color: var(--mu); cursor: pointer; display: inline-flex; gap: 4px; align-items: center; }
 .b-meta button.link { color: var(--ac); font-weight: 600; }
+/* The answer the "How this was answered" panel is about. */
+.b-msg-bot.traced .b-ans { border-color: var(--ac); box-shadow: inset 3px 0 0 var(--ac); }
+.b-msg-bot.traced .b-meta button.link { text-decoration: underline; }
+.b-asked { font-size: 12px; overflow-wrap: anywhere; }
 .b-proposal { border: 1px solid color-mix(in srgb, var(--ac) 30%, var(--bd)); border-radius: 12px; padding: 10px 12px; display: flex;
   flex-direction: column; gap: 8px; background: var(--acsoft); }
 .b-receipt { border: 1px solid var(--bd); border-radius: 14px; overflow: hidden; background: var(--card); }

@@ -432,6 +432,10 @@ def receipt(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             return {"answer": answers.translate(NO_RECEIPT, state.get("language") or "English", deps.chat)}
         adopted, which = {k: latest.get(k) for k in RECEIPT_KEYS}, "your latest receipt"
         ctx = replace(ctx, active_receipt=adopted)
+    if (scope := _receipt_scope(state, ctx.active_receipt)):
+        hit = _cached_beside_receipt(state, deps, scope, state.get("language") or "English")
+        if hit:
+            return {**hit, **({"active_receipt": adopted} if adopted else {})}
     result = run_tool("receipt_details", {}, ctx)
     _step("Receipt details", which if result["ok"] and result.get("result") else "not found",
           ms=result["ms"], status="success" if result["ok"] else "warning")
@@ -471,9 +475,66 @@ def _cacheable(state: TurnState) -> bool:
     return not (reads_as_follow_up(state["message"]) or (state.get("route") or {}).get("follow_up"))
 
 
+def _receipt_scope(state: TurnState, receipt: dict | None = None) -> str | None:
+    """The receipt this turn's answer may be cached beside, or None. A
+    conversation with a receipt on the table stays away from the answer
+    cache (_cacheable): there the same words about another receipt would be
+    answered from this one. Keyed with the receipt they are safe, unless the
+    conversation was opened with a context or the words lean on the turn
+    before, which no key can hold."""
+    doc = (receipt or state.get("active_receipt") or {}).get("document_id")
+    if not doc or state.get("context"):
+        return None
+    if reads_as_follow_up(state["message"]) or (state.get("route") or {}).get("follow_up"):
+        return None
+    return str(doc)
+
+
+def _receipt_key(user_id: str, scope: str, question: str, route: str | None, language: str, url: str | None) -> str:
+    """One answer per question, receipt, route, language and state of the
+    user's money: a new purchase gives the user a new data version."""
+    return caches.search_key(user_id, ledger.data_version(user_id, url),
+                             {"answer": caches.normalize_question(question), "receipt": scope, "route": route,
+                              "lang": language})
+
+
+def _cached_beside_receipt(state: TurnState, deps: TurnDeps, scope: str, language: str) -> dict | None:
+    """The answer kept for this question beside this receipt, as the node's
+    output, or None. The trace says which."""
+    user_id, hit = state["user_id"], None
+    _running("answer_cache", "Checking the answer cache")
+    t0 = time.perf_counter()
+    try:
+        key = _receipt_key(user_id, scope, state["message"], (state.get("route") or {}).get("kind"), language,
+                           deps.url)
+        hit = caches.get_search(user_id, key, url=deps.url, stat="answer")
+    except Exception as exc:  # a cache outage is a miss, never a broken answer
+        note_skipped(log, "answer cache read", exc)
+    if isinstance(hit, list) and hit and hit[0].get("answer"):
+        tokens = int(hit[0].get("tokens") or caches.estimate_tokens(hit[0]["answer"]))
+        narration.answer_cache(True, tokens)
+        _step("Answer cache", f"hit, about {tokens:,} tokens saved", ms=_since(t0), status="hit", key="answer_cache")
+        return {"answer": hit[0]["answer"], "cached": True, "saved_tokens": tokens}
+    narration.answer_cache(False)
+    _step("Answer cache", "miss", ms=_since(t0), status="miss", key="answer_cache")
+    return None
+
+
+def _keep_beside_receipt(user_id: str, scope: str, question: str, route: str | None, language: str, answer: str,
+                         url: str | None) -> None:
+    """The write for _cached_beside_receipt, after the answer went out."""
+    caches.put_search(user_id, _receipt_key(user_id, scope, question, route, language, url),
+                      [{"answer": answer, "tokens": caches.estimate_tokens(answer)}], url=url, stat="answer",
+                      minutes=get_config().cache_ttl_hours * 60)
+
+
 def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     deps, user_id = runtime.context, state["user_id"]
     language = state.get("language") or "English"
+    if (scope := None if _cacheable(state) else _receipt_scope(state)):
+        hit = _cached_beside_receipt(state, deps, scope, language)
+        if hit:
+            return hit
     if _cacheable(state):
         hit = None
         _running("answer_cache", "Checking the answer cache")
@@ -715,6 +776,11 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
           and results and all(r.get("ok") for r in results)):
         background.submit("answer cache write", _keep_answer, state["user_id"], language, state["message"],
                           answer, deps.url)
+    elif (generated and state["route"].get("kind") in ("plan", "receipt") and answer and results
+          and all(r.get("ok") for r in results) and (scope := _receipt_scope(state))):
+        # Beside a receipt: the same rule, with the receipt in the key.
+        background.submit("answer cache write", _keep_beside_receipt, state["user_id"], scope, state["message"],
+                          state["route"].get("kind"), language, answer, deps.url)
     for c in citations:
         _emit({"type": "citation", **c})
     for p in proposals:
