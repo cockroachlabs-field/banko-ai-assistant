@@ -262,17 +262,9 @@ Be concise but thorough in your responses."""
         
         return decision
     
-    def think(self, user_input: str, context: dict | None = None) -> str:
-        """
-        Agent's thinking process using the LLM.
-        
-        Args:
-            user_input: User's message or task
-            context: Additional context (e.g., retrieved memories, data)
-        
-        Returns:
-            Agent's response
-        """
+    def ask(self, user_input: str, context: dict | None = None) -> str:
+        """Ask the model and return its answer. A model that cannot answer
+        raises, so the caller decides what a person sees instead."""
         self.update_status("thinking", {"input": user_input})
         
         # Build messages
@@ -289,20 +281,34 @@ Be concise but thorough in your responses."""
         
         messages.append(HumanMessage(content=user_message))
         
-        # Get LLM response
         try:
             response = self.llm.invoke(messages)
-            response_text = response.content if hasattr(response, 'content') else str(response)
-            
-            # Update conversation history
-            self.conversation_history.append(HumanMessage(content=user_input))
-            self.conversation_history.append(AIMessage(content=response_text))
-            
+        finally:
             self.update_status("idle")
-            return response_text
+        # Gemini and Bedrock answer in content parts; chunk_text joins them.
+        from ..ai_providers.streaming import chunk_text
+        response_text = chunk_text(response)
         
+        # Update conversation history
+        self.conversation_history.append(HumanMessage(content=user_input))
+        self.conversation_history.append(AIMessage(content=response_text))
+        return response_text
+    
+    def think(self, user_input: str, context: dict | None = None) -> str:
+        """
+        Agent's thinking process using the LLM.
+        
+        Args:
+            user_input: User's message or task
+            context: Additional context (e.g., retrieved memories, data)
+        
+        Returns:
+            Agent's response, or the error as text when the model fails.
+            Anything a person will read should call ask() and handle the failure.
+        """
+        try:
+            return self.ask(user_input, context)
         except Exception as e:
-            self.update_status("idle")
             return f"Error in thinking: {str(e)}"
     
     def execute_tool(self, tool_name: str, **kwargs) -> Any:

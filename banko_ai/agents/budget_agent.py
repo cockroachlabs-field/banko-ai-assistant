@@ -13,6 +13,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any
 
+from ..utils import clock
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
 
@@ -103,19 +104,20 @@ Be helpful and non-judgmental. Focus on solutions, not problems."""
         
         from sqlalchemy import text
                 
+        advice: list[str] = []  # the same list as result['recommendation']
         result = {
             'user_id': user_id,
             'budget': monthly_budget,
             'category': category,
             'alert': False,
             'alert_level': 'none',  # none, warning, critical
-            'recommendation': [],
+            'recommendation': advice,
             'status': 'ok'
         }
         
         try:
-            # Get current month dates
-            now = datetime.now()
+            # Get current month dates (UTC, like every stored date)
+            now = clock.now().replace(tzinfo=None)
             month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             
             # Calculate days into month and days remaining
@@ -199,26 +201,6 @@ Be helpful and non-judgmental. Focus on solutions, not problems."""
             # Get spending breakdown
             result['breakdown'] = stats_data.get('by_category', [])
             
-            # Generate AI-powered insights
-            insight_prompt = f"""Analyze this budget situation and provide specific recommendations:
-
-Budget: ${monthly_budget:.2f}/month
-Current Spend: ${current_spend:.2f} ({percent_of_budget:.1f}%)
-Days Elapsed: {days_elapsed}/{days_in_month}
-Daily Average: ${daily_average:.2f}
-Projected Month-End: ${projected_month_end:.2f}
-
-Status: {result['status']}
-Alert Level: {result['alert_level']}
-
-Top Categories:
-{json.dumps(result['breakdown'][:3], indent=2)}
-
-Provide 2-3 specific, actionable recommendations. Be concise and practical."""
-            
-            insights = self.think(insight_prompt)
-            result['ai_insights'] = insights
-            
             # Store decision
             self.store_decision(
                 decision_type='budget_check',
@@ -238,7 +220,7 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
             )
             
             # Store in agent memory
-            memory_content = f"Budget check for {user_id}: ${current_spend:.2f}/${monthly_budget:.2f} ({percent_of_budget:.1f}%). Status: {result['status']}. {insights[:200]}"
+            memory_content = f"Budget check for {user_id}: ${current_spend:.2f}/${monthly_budget:.2f} ({percent_of_budget:.1f}%). Status: {result['status']}. {' '.join(advice)[:200]}"
             self.store_memory(
                 user_id=user_id,
                 memory_type='decision',
@@ -365,7 +347,7 @@ Provide 2-3 specific, actionable recommendations. Be concise and practical."""
         
         try:
             # Get last 90 days of spending to establish baseline
-            now = datetime.now()
+            now = clock.now().replace(tzinfo=None)
             start_date = (now - timedelta(days=90)).isoformat()
             
             stats_result = self.execute_tool(

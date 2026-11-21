@@ -252,6 +252,21 @@ def test_receipt_type_is_checked(client):
     assert resp.status_code == 400
 
 
+def test_a_refused_upload_says_why_in_the_log(client, caplog):
+    """The access log has only the 400. An upload that arrives with no file
+    part was lost before Banko (a proxy, a retry without its body), and
+    nothing said so."""
+    with caplog.at_level("INFO", logger="banko.assistant"):
+        empty = client.post("/api/v1/receipts", data={"thread_id": "not-a-file"}, content_type="multipart/form-data")
+        wrong = client.post("/api/v1/receipts", data={"receipt": (io.BytesIO(b"MZ"), "x.exe")},
+                            content_type="multipart/form-data")
+    assert empty.status_code == 400 and wrong.status_code == 400
+    said = [r.getMessage() for r in caplog.records if "receipt upload refused" in r.getMessage()]
+    assert len(said) == 2
+    assert "no file part" in said[0] and "multipart/form-data" in said[0] and "thread_id" in said[0]
+    assert ".exe" in said[1]
+
+
 def test_thread_opened_from_a_nudge_keeps_its_context(client):
     resp = client.post("/api/v1/assistant/threads",
                        json={"context": {"kind": "nudge", "id": "00000000-0000-0000-0000-000000000001"}})

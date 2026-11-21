@@ -2,6 +2,8 @@
 residency, vectors and CDC answer, and a serving-region sample never raises."""
 
 import os
+import time
+import uuid
 
 import pytest
 
@@ -48,7 +50,76 @@ def test_vector_stats_count_vectors():
 
 def test_cdc_status_never_raises():
     c = P.cdc_status()
-    assert isinstance(c["changefeeds"], list) and c["signals_per_min"] >= 0 and c["nudges_per_min"] >= 0
+    # A list, or None where this role may not list the jobs.
+    assert c["changefeeds"] is None or isinstance(c["changefeeds"], list)
+    assert c["signals_per_min"] >= 0 and c["nudges_per_min"] >= 0
+
+
+def test_a_listing_that_fails_without_a_word_still_reads_as_not_listed(monkeypatch):
+    """The reason is the first line of the error. An error with no text had
+    no first line, and the whole card failed over it."""
+    def fails(conn):
+        raise RuntimeError()
+
+    monkeypatch.setattr(P, "changefeeds", fails)
+    assert P.cdc_status()["changefeeds"] is None
+
+
+def test_the_changefeed_statement_runs_on_this_cluster():
+    """It subtracted a DECIMAL from a FLOAT, which fails when the statement
+    is planned, with or without a changefeed. The card swallowed that and
+    said there were none."""
+    with P._session(None) as conn:
+        assert isinstance(P.changefeeds(conn), list)
+
+
+def test_a_running_changefeed_is_listed_with_its_lag():
+    from sqlalchemy import text
+
+    from banko_ai.db.engine import get_engine
+    table = f"cdc_probe_{uuid.uuid4().hex[:8]}"
+    job = None
+    with get_engine().connect() as conn:
+        conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+        was = conn.execute(text("SHOW CLUSTER SETTING kv.rangefeed.enabled")).scalar()
+        try:
+            conn.execute(text("SET CLUSTER SETTING kv.rangefeed.enabled = true"))
+            conn.execute(text(f"CREATE TABLE {table} (id INT PRIMARY KEY)"))
+            try:
+                job = conn.execute(text(f"CREATE CHANGEFEED FOR TABLE {table} INTO 'null://' "
+                                        "WITH resolved = '1s', min_checkpoint_frequency = '1s'")).scalar()
+            except Exception as exc:
+                pytest.skip(f"this cluster will not start a changefeed ({exc.__class__.__name__})")
+            deadline, mine = time.monotonic() + 60, None
+            while time.monotonic() < deadline:
+                mine = next((f for f in P.cdc_status()["changefeeds"] if f["job_id"] == str(job)), None)
+                if mine and mine["lag_s"] is not None:
+                    break
+                time.sleep(0.5)
+            assert mine is not None, "the changefeed is running and the card does not list it"
+            assert mine["status"] == "running" and mine["sink"] == "null"
+            assert mine["lag_s"] is not None and 0 <= mine["lag_s"] < 120
+        finally:
+            if job is not None:
+                conn.execute(text(f"CANCEL JOB {int(job)}"))
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+            conn.execute(text(f"SET CLUSTER SETTING kv.rangefeed.enabled = {'true' if was else 'false'}"))
+
+
+def test_changefeeds_that_cannot_be_listed_are_not_reported_as_none(monkeypatch, caplog):
+    """Listing can fail for a real reason (a role that may not see jobs). The
+    card then says so, and the log says why, once."""
+    def refused(conn):
+        raise RuntimeError("user banko_app does not have VIEWJOB privilege")
+
+    monkeypatch.setattr(P, "changefeeds", refused)
+    monkeypatch.setattr(P, "_unlisted", set())
+    with caplog.at_level("WARNING", logger="banko.platform"):
+        first, second = P.cdc_status(), P.cdc_status()
+    assert first["changefeeds"] is None and second["changefeeds"] is None
+    assert first["signals_per_min"] >= 0  # the rest of the card still answers
+    said = [r.getMessage() for r in caplog.records if "changefeed" in r.getMessage()]
+    assert len(said) == 1 and "VIEWJOB" in said[0]
 
 
 def test_sample_serving_runs_an_explain():

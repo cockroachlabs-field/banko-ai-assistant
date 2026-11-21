@@ -1,5 +1,7 @@
+[![CI](https://github.com/cockroachlabs-field/banko-ai-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/cockroachlabs-field/banko-ai-assistant/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/banko-ai-assistant)](https://pypi.org/project/banko-ai-assistant/)
 [![Python versions](https://img.shields.io/pypi/pyversions/banko-ai-assistant)](https://pypi.org/project/banko-ai-assistant/)
+[![Downloads](https://static.pepy.tech/badge/banko-ai-assistant)](https://pepy.tech/projects/banko-ai-assistant?timeRange=threeMonths&category=version&includeCIDownloads=true&granularity=weekly&viewType=line&versions=Total%2C2.*%2C1.*)
 [![License](https://img.shields.io/pypi/l/banko-ai-assistant)](https://pypi.org/project/banko-ai-assistant/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/virag/banko-ai-assistant)](https://hub.docker.com/r/virag/banko-ai-assistant)
 
@@ -157,6 +159,7 @@ the real provider under `actual`.
 | `AI_SERVICE` | `watsonx`, `openai`, `aws`, `gemini` or `ollama` | `watsonx` |
 | `RLS_MODE` | `auto` serves requests as the `banko_app` role under row-level security when it can; `off` does not | `auto` |
 | `SECRET_KEY` | Session key; set it so restarts keep people signed in | random per boot |
+| `IAP_AUDIENCE` | Behind Google's Identity-Aware Proxy: sign everyone in as themselves from their Google identity, with the personas a click away. The value is the audience of the assertion the deployment receives | unset: the username page |
 | `CDC_WEBHOOK_HMAC_SECRET` | Signs Coach webhook posts; unset turns the webhook off | unset |
 | `BRAND_NAME`, `BRAND_ACCENT` | The assistant's name and the UI accent color | `Banko`, `#6933FF` |
 | `UI_THEME`, `UI_LANGUAGES` | Default theme and the assistant's languages | `system`, ten languages |

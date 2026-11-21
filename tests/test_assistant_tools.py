@@ -141,6 +141,26 @@ def test_proposals_are_pending_until_confirmed(ctx):
     assert "Groceries" in out["result"]["summary"]
 
 
+def test_spend_summary_says_which_purchases_were_the_largest(ctx, member):
+    """Its rows are the most recent purchases. A model asked about the
+    biggest one picked the largest of those, and the month's rent, paid on
+    the first, was never among them."""
+    start = date.today() - timedelta(days=45)
+    out = T.run_tool("spend_summary", {"date_from": str(start)}, ctx)["result"]
+    with get_engine().connect() as c:
+        top = c.execute(text("SELECT expense_amount, merchant FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                             "AND expense_date >= :s ORDER BY expense_amount DESC, expense_date DESC, expense_id "
+                             "LIMIT 3"), {"u": member, "s": start}).fetchall()
+    assert [(row["amount"], row["merchant"]) for row in out["largest"]] == [(float(a), m) for a, m in top]
+    assert out["largest"][0]["amount"] >= max(row["amount"] for row in out["rows"])
+
+
+def test_the_planner_is_told_what_largest_is():
+    """A key nobody described is a key the model has to guess at."""
+    described = T.TOOLS["spend_summary"].description
+    assert "largest" in described and "most recent" in described
+
+
 def test_a_budget_proposal_names_a_real_spending_category(ctx, member):
     """"set my dining out budget to 300" used to store a proposal no Confirm could run."""
     from banko_ai.services import actions, budgets
@@ -228,6 +248,26 @@ def test_a_made_up_expense_id_is_not_a_lookup_that_broke(ctx):
 def test_remembering_nothing_is_bad_arguments(ctx):
     out = T.run_tool("remember", {"content": "   "}, ctx)
     assert out["ok"] is False and out["error"] == "bad arguments"
+
+
+def test_a_search_while_the_model_loads_fails_in_one_log_line(ctx, monkeypatch, caplog):
+    """The search cannot run until the embedding model has loaded. That is a
+    failed lookup for the answer, and a line in the log, not a traceback."""
+    import logging
+
+    from banko_ai.services import caches
+    from banko_ai.utils.embeddings import ModelWarmingUp
+
+    def loading(*args, **kwargs):
+        raise ModelWarmingUp("embedding model all-MiniLM-L6-v2 is still loading")
+    monkeypatch.setattr(T.txns, "semantic_search", loading)
+    monkeypatch.setattr(caches, "get_search", lambda *args, **kwargs: None)
+    caplog.set_level(logging.INFO, logger="banko.assistant")
+    out = T.run_tool("search_transactions", {"query": "coffee while loading"}, ctx)
+    assert out["ok"] is False and out["error"] == "failed"
+    about = [r for r in caplog.records if "search_transactions" in r.getMessage()]
+    assert [r.getMessage() for r in about] == ["tool search_transactions skipped: the embedding model is still loading"]
+    assert about[0].exc_info is None
 
 
 def test_library_value_error_becomes_failed(ctx, monkeypatch):

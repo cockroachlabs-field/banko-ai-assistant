@@ -39,6 +39,13 @@ _status: dict[str, dict] = {}
 _status_lock = threading.Lock()
 
 
+def forget_statuses() -> None:
+    """Drop every remembered seeding status: the database they describe was
+    emptied, and "done" would be a claim about history that is gone."""
+    with _status_lock:
+        _status.clear()
+
+
 def seeding_status(user_id: str) -> dict | None:
     with _status_lock:
         found = _status.get(str(user_id))
@@ -325,20 +332,29 @@ def seed_user(user_id: str, style: str | None = None, *, months: int | None = No
     SEED_BATCH_SIZE for this run (signup uses SIGNUP_BATCH_SIZE)."""
     url = url or get_config().database_url  # seeding always writes as the admin role
     today = today or datetime.now(timezone.utc).date()
-    style, profile = _profile_for(user_id, style, url)
-    owner = secrets.token_hex(8)
-    if not _claim_lease(user_id, owner, url):
-        # Wait for the other run to finish, or for its lease to lapse if it
-        # died, then take the lease. A finished history makes this run a no-op.
-        _wait_for_lease(user_id, url)
-        if not _claim_lease(user_id, owner, url):
-            return _report_other_owner(user_id, today, on_progress, url)
     try:
-        with _LeaseHeartbeat(user_id, owner, url):
-            return _seed_owned(user_id, style, profile, months or profile.months or get_config().seed_history_months,
-                               today, on_progress, url, owner, batch_size=batch_size)
-    finally:
-        _release_lease(user_id, owner, url)
+        style, profile = _profile_for(user_id, style, url)
+        owner = secrets.token_hex(8)
+        if not _claim_lease(user_id, owner, url):
+            # Wait for the other run to finish, or for its lease to lapse if it
+            # died, then take the lease. A finished history makes this run a no-op.
+            _wait_for_lease(user_id, url)
+            if not _claim_lease(user_id, owner, url):
+                return _report_other_owner(user_id, today, on_progress, url)
+        try:
+            with _LeaseHeartbeat(user_id, owner, url):
+                return _seed_owned(user_id, style, profile,
+                                   months or profile.months or get_config().seed_history_months,
+                                   today, on_progress, url, owner, batch_size=batch_size)
+        finally:
+            _release_lease(user_id, owner, url)
+    except Exception:
+        # A failure in the batches has said so, with how far it got. One
+        # before them (the user not found, the lease, the first read) had
+        # said nothing, and whoever watches the status saw no failure.
+        if (seeding_status(user_id) or {}).get("state") != "failed":
+            _report(user_id, 0, 0, "failed", on_progress)
+        raise
 
 
 def _profile_for(user_id: str, style: str | None, url: str | None):

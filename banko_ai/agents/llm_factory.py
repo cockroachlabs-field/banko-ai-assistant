@@ -29,13 +29,15 @@ def get_llm_for_agent(temperature: float = 0.7, model_override: str | None = Non
     
     if config.ai_service == 'openai':
         try:
-            from langchain_openai import ChatOpenAI
+            from ..ai_providers.openai_temperature import chat_model
             api_key = config.openai_api_key
             if api_key:
                 api_key = api_key.strip().replace('\n', '').replace(' ', '')
             else:
                 print("⚠️ LLM Factory: OPENAI_API_KEY not found in environment")
-            return ChatOpenAI(
+            # Some models take only their default temperature; chat_model
+            # sends a refused request again without one and remembers.
+            return chat_model(
                 model=model_override or config.openai_model,
                 api_key=api_key,
                 base_url=config.openai_base_url or None,

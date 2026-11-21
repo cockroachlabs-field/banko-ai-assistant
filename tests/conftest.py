@@ -1,4 +1,5 @@
 import os
+import time
 from urllib.parse import urlsplit
 
 import pytest
@@ -25,6 +26,14 @@ def _guard_database_url() -> None:
 
 _guard_database_url()
 
+# One clock for the suite, and it is the app's: UTC. Tests say date.today()
+# all over, and west of UTC that is yesterday's date every evening: a test
+# that seeded "through today" and then asked the app about today failed
+# after 7 pm in New York. CI already runs in UTC.
+os.environ["TZ"] = "UTC"
+if hasattr(time, "tzset"):
+    time.tzset()
+
 # The app no longer sniffs PYTEST_CURRENT_TEST; tests opt out of sample data explicitly.
 os.environ.setdefault("BANKO_SKIP_AUTOSETUP", "1")
 # No background integrity sweeps; tests call check_integrity directly.
@@ -32,6 +41,11 @@ os.environ.setdefault("INTEGRITY_INTERVAL_SECONDS", "0")
 # The shell profile turns Kafka on for the live demo, and any app a test
 # builds would join that consumer group. A test that wants it sets it itself.
 os.environ["COACH_KAFKA_ENABLED"] = "false"
+# Nor does the shell's AI provider reach a test: with one configured and its
+# key exported, apps that tests build called it. The suite sees what CI sees.
+from tests._env import without_providers
+
+without_providers(os.environ)
 
 # Normalize the scheme once for every test module: postgresql:// works for
 # the app (it normalizes internally), so it should work for the suite too.
@@ -63,6 +77,29 @@ def _fresh_settings():
     yield
     reset_config()
     reset_catalog()
+
+
+@pytest.fixture(autouse=True)
+def _requests_stay_on_the_suite_database():
+    """Row-level security remembers one app URL per process, and every
+    request-path read that names no URL uses it. A test that boots an app
+    on a database of its own has to put the suite's back: left behind, the
+    next test to read that way reaches a database that may be gone, and
+    fails far from the test that caused it. So that test fails instead."""
+    yield
+    from sqlalchemy.engine import make_url
+
+    from banko_ai.db import rls
+
+    left, suite = rls.app_url(), os.environ.get("DATABASE_URL")
+    if left and suite:
+        def place(url: str) -> tuple:
+            found = make_url(url)
+            return found.host, found.port, found.database
+
+        assert place(left) == place(suite), (
+            f"this test left requests pointed at the database {make_url(left).database!r}, "
+            f"not the suite's {make_url(suite).database!r}")
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -20,6 +20,7 @@ from ..config.settings import get_config
 from ..db.engine import get_engine, routed, run_transaction
 from ..db.regions import money_region, region_columns
 from ..db.rls import request_url
+from ..utils import clock
 from . import accounts as accounts_service
 from . import ledger
 from . import transactions as txns
@@ -81,6 +82,28 @@ class ReceiptHooks:
     budget: Callable[[str], str]
 
 
+def fraud_words(check: dict) -> str:
+    """What the receipt card says about the fraud check. The agent catches
+    its own failures and hands back a result with an error in it; one that
+    reached no verdict raises here, so the card says the check failed
+    instead of guessing that nothing is wrong."""
+    if not check.get("reasoning"):
+        raise RuntimeError(f"the fraud analysis reached no verdict: {check.get('error')}")
+    if check.get("fraud_detected"):
+        return f"Suspicious transaction (confidence {check.get('confidence', 0):.0%})"
+    return "No issues in the checks that ran" if check.get("unchecked") else "No issues detected"
+
+
+def budget_words(status: dict) -> str:
+    """What the receipt card says about the budget check. "ok" is the
+    agent's placeholder until it has the month's spending: a check that got
+    no further raises, as above."""
+    found = str(status.get("status") or "ok")
+    if found == "ok":
+        raise RuntimeError(f"the budget check computed no status: {status.get('error')}")
+    return {"over_budget": "Over budget", "on_pace_to_exceed": "On pace to exceed"}.get(found, "Within budget")
+
+
 def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHooks:
     """The real agents: tesseract OCR, LLM field extraction, fraud and budget checks."""
     import json as _json
@@ -113,18 +136,14 @@ def default_hooks(model: str | None = None, url: str | None = None) -> ReceiptHo
         agent = FraudAgent(region=region, llm=get_llm_for_agent(0.2, model_override=model), database_url=db_url,
                            embedding_model=get_embedding_model(), fraud_threshold=0.7,
                            duplicate_window_days=get_config().fraud_duplicate_window_days)
-        check = agent.analyze_expense(expense_id)
-        if not check.get("fraud_detected"):
-            return "No issues detected"
-        return f"Suspicious transaction (confidence {check.get('confidence', 0):.0%})"
+        return fraud_words(agent.analyze_expense(expense_id))
 
     def budget(user_id: str) -> str:
         from ..agents.budget_agent import BudgetAgent
         agent = BudgetAgent(region=region, llm=get_llm_for_agent(0.2, model_override=model), database_url=db_url,
                             alert_threshold=0.8)
-        status = agent.check_budget_status(user_id=user_id,
-                                           monthly_budget=get_config().monthly_budget_default).get("status")
-        return {"over_budget": "Over budget", "on_pace_to_exceed": "On pace to exceed"}.get(str(status or ""), "Within budget")
+        return budget_words(agent.check_budget_status(user_id=user_id,
+                                                      monthly_budget=get_config().monthly_budget_default))
 
     return ReceiptHooks(ocr=ocr, extract=extract, fraud=fraud, budget=budget)
 
@@ -193,8 +212,14 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
     cfg = get_config()
     narration.receipt_uploaded(filename)
     mime = ALLOWED_TYPES.get(Path(filename).suffix.lower(), "application/octet-stream")
-    doc = _insert(user_id, filename, mime, _thumbnail(path), url)
+    thumb = _thumbnail(path)
+    doc = _insert(user_id, filename, mime, thumb, url)
     state = {"step": "ocr", "t0": 0.0, "terminal": None, "posted_data": None}
+
+    def receipt(fields: dict) -> dict:
+        # has_thumbnail: a PDF has none, nor has an image one could not be
+        # made from, and the card must not ask for what is not there.
+        return {"type": "receipt", **fields, "has_thumbnail": thumb is not None}
 
     def start(step: str) -> dict:
         state.update(step=step, t0=time.perf_counter())
@@ -244,7 +269,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
 
         yield start("category")
         category = get_catalog().category_for(valid.category).label
-        day = valid.date if valid.date <= datetime.now(timezone.utc).date() else date.today()
+        day = valid.date if valid.date <= clock.today() else clock.today()
         extracted = {"merchant": valid.merchant, "amount": round(valid.amount, 2), "date": str(day),
                      "category": category, "items": valid.items, "payment_method": valid.payment_method}
         yield end("done", category)
@@ -263,7 +288,7 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             _finish(doc, user_id, url, status="duplicate", extracted=extracted, ocr_text=ocr_text[:20000],
                     expense_id=dupes[0]["expense_id"], embedding=qvec)
             state["terminal"] = "duplicate"
-            yield {"type": "receipt", **(get_receipt(user_id, doc, url=url) or {})}
+            yield receipt(get_receipt(user_id, doc, url=url) or {})
             return
         yield end("done", "no duplicate")
 
@@ -316,15 +341,15 @@ def process_receipt(user_id: str, path: str, filename: str, *, hooks: ReceiptHoo
             yield end("done", result)
 
         try:
-            yield {"type": "receipt", **(get_receipt(user_id, doc, url=url) or {})}
+            yield receipt(get_receipt(user_id, doc, url=url) or {})
         except Exception:
             log.warning("get_receipt failed after posting, building from known fields", exc_info=True)
-            yield {"type": "receipt", **jsonable(state["posted_data"])}
+            yield receipt(jsonable(state["posted_data"]))
     except Exception:
         if state.get("posted_data"):
             log.error("exception after posting, money moved, reporting success", exc_info=True)
             try:
-                yield {"type": "receipt", **jsonable(state["posted_data"])}
+                yield receipt(jsonable(state["posted_data"]))
             except Exception:
                 log.error("failed to yield posted receipt data", exc_info=True)
         else:

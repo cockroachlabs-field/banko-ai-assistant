@@ -147,3 +147,41 @@ def test_a_visit_question_about_the_active_receipt_stays_with_the_receipt():
     assert route("did I go to Trader Joe's?", active_receipt=RECEIPT, today=TODAY).kind == "receipt"
     # A window makes it a new question, as for any receipt follow-up.
     assert route("did I go to Trader Joe's this week?", active_receipt=RECEIPT, today=TODAY).kind == "visits"
+
+
+def test_a_largest_purchase_question_routes_to_sql_with_how_many():
+    from banko_ai.assistant.router import route
+    found = route("show me my top 5 purchases this year")
+    assert found.kind == "aggregate" and found.as_dict()["intent"]["operation"] == "largest"
+    assert found.as_dict()["intent"]["limit"] == 5
+    assert route("how much did I spend on coffee last month").as_dict()["intent"]["limit"] == 1
+    # Leaning on the list the turn before showed: the conversation's, not a new SQL question.
+    assert route("which one was the biggest?", has_history=True).kind == "plan"
+    leaning = route("what was the biggest purchase?", has_history=True)
+    assert leaning.kind == "plan" and leaning.follow_up       # its words alone must never key a cached answer
+    assert route("and the biggest purchase?", has_history=True).kind == "plan"
+    assert route("what was the biggest purchase?").kind == "aggregate"          # a first question means what it says
+    assert route("what was my biggest purchase in October?", has_history=True).kind == "aggregate"
+    # "When did I make" opens a visit question; this one asks which purchase.
+    assert route("when did I make my biggest purchase at Costco?").kind == "aggregate"
+
+
+def test_a_size_question_and_the_active_receipt():
+    """A receipt on the table does not turn a question about every purchase
+    into one about that receipt, and a question about the receipt is not
+    answered from every purchase."""
+    from banko_ai.assistant.router import route
+    asked = route("What was my biggest purchase last month?", active_receipt=RECEIPT, last_route="receipt",
+                  has_history=True, today=TODAY)
+    assert asked.kind == "aggregate" and asked.intent.operation == "largest"
+    for about_it in ("what was the biggest charge on it?", "what was the biggest charge on that receipt?",
+                     "is this my biggest purchase this month?"):
+        assert route(about_it, active_receipt=RECEIPT, last_route="receipt", has_history=True,
+                     today=TODAY).kind == "receipt", about_it
+    # "The biggest charge", with a receipt just uploaded and nothing else said yet: of that receipt, most likely.
+    assert route("what was the biggest charge?", active_receipt=RECEIPT, last_route="receipt",
+                 today=TODAY).kind == "plan"
+    # Some turns later "it" no longer means the receipt: the conversation's, not SQL's.
+    later = route("what was the biggest charge on it?", active_receipt=RECEIPT, last_route="plan", has_history=True,
+                  today=TODAY)
+    assert later.kind == "plan"

@@ -84,7 +84,8 @@ CACHED = _sse(("token", {"text": "You spent $42.10 on dining."}),
               ("done", {}))
 RECEIPT = _sse(("step", {"step": "ocr", "status": "done", "detail": "120 characters", "ms": 400}),
                ("receipt", {"document_id": "66666666-6666-4666-8666-666666666666", "status": "posted",
-                            "merchant": "Blue Bottle", "amount": 9.75, "category": "Coffee", "thread_id": OLD_THREAD}),
+                            "merchant": "Blue Bottle", "amount": 9.75, "category": "Coffee", "thread_id": OLD_THREAD,
+                            "has_thumbnail": True}),
                ("done", {}))
 PIXEL = bytes.fromhex("47494638396101000100800000000000ffffff21f90401000000002c00000000010001000002024401003b")
 
@@ -387,6 +388,31 @@ def _drop_receipt(page):
         dt.items.add(new File(['receipt'], 'lunch.jpg', { type: 'image/jpeg' }));
         window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
     }""")
+
+
+@pytest.mark.parametrize("stored, asked", [(True, 1), (False, 0)])
+def test_the_receipt_card_asks_for_a_thumbnail_only_when_there_is_one(server, browser, stored, asked):
+    """A PDF has no thumbnail. The card used to ask for one after every
+    upload, a 404 in the log each time."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page)
+        page.route("**/api/v1/receipts", lambda r: r.fulfill(
+            status=200, content_type="text/event-stream",
+            body=RECEIPT.replace('"has_thumbnail": true', f'"has_thumbnail": {json.dumps(stored)}')))
+        wanted = []
+        page.on("request", lambda r: wanted.append(r.url) if r.url.endswith("/thumbnail") else None)
+        _login(page, server, "sam")
+        _drop_receipt(page)
+        card = page.locator(".b-panel .b-receipt")
+        expect(card).to_contain_text("Posted · Coffee")
+        page.wait_for_timeout(400)
+        assert len(wanted) == asked, wanted
+        expect(card.locator("img")).to_have_count(1)
+        assert card.locator("img").is_visible() is stored
+        assert not errors, errors
+    finally:
+        ctx.close()
 
 
 def test_the_receipt_card_opens_the_agents_page_in_a_new_tab(server, browser):
@@ -1610,6 +1636,26 @@ def test_the_chaos_card_shows_only_with_a_plane(server, browser):
         page.reload()
         expect(page.get_by_test_id("chaos-card")).to_be_visible()
         expect(page.get_by_role("button", name="Take us-east-1 down")).to_be_visible()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_the_cdc_card_tells_no_changefeeds_from_a_list_that_failed(server, browser):
+    api = _PlatformApi()
+    ctx, page, errors = _platform(browser, api)
+    try:
+        _login(page, server, "maya")
+        for feeds, shown, hidden in (
+                ([], "No changefeeds on this cluster.", "The changefeeds could not be listed."),
+                (None, "The changefeeds could not be listed.", "No changefeeds on this cluster."),
+                ([{"job_id": "7", "status": "running", "running_status": "running", "lag_s": 2.4,
+                   "sink": "kafka://kafka"}], "kafka://kafka · running", "No changefeeds on this cluster.")):
+            api.data = {**_DATA, "cdc": {**_DATA["cdc"], "changefeeds": feeds}}
+            page.goto(server + "/platform")
+            expect(page.get_by_text(shown)).to_be_visible()
+            expect(page.get_by_text(hidden)).to_be_hidden()
+        expect(page.get_by_text("lag 2.4 s")).to_be_visible()
         assert not errors, errors
     finally:
         ctx.close()

@@ -14,10 +14,12 @@ import tempfile
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import requests
 from flask import (
     Flask,
+    abort,
     flash,
     g,
     jsonify,
@@ -43,7 +45,7 @@ from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine, mask_url
+from ..db.engine import NO_SUCH_DATABASE, get_engine, mask_url, missing_database, missing_table
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..observability.metrics import metrics
@@ -215,8 +217,14 @@ def create_app() -> Flask:
             try:
                 return fn()
             except Exception as e:
-                readiness.set(step, "running", f"waiting for the database ({e.__class__.__name__})")
-                boot_log.warning("%s: database not ready yet (%s); retrying in %.0fs", step, e, delay)
+                name = missing_database(e, config.database_url)
+                if name is not None:  # a typo in DATABASE_URL: one plain line, no SQL
+                    said = NO_SUCH_DATABASE.format(name=name)
+                    readiness.set(step, "running", said)
+                    boot_log.warning("%s: %s (retrying in %.0fs)", step, said, delay)
+                else:
+                    readiness.set(step, "running", f"waiting for the database ({e.__class__.__name__})")
+                    boot_log.warning("%s: database not ready yet (%s); retrying in %.0fs", step, e, delay)
                 if warmup_stop.wait(delay):
                     raise RuntimeError("warm-up stopped") from e
                 delay = min(delay * 2, 30.0)
@@ -278,9 +286,34 @@ def create_app() -> Flask:
         names = _with_backoff("personas", lambda: ensure_personas(config.database_url))
         return f"{', '.join(names)} present"
 
+    def _expire_idle_staff() -> int:
+        """Behind IAP an account is made for everyone who visits. One nobody
+        has used for IAP_USER_IDLE_DAYS goes, with its rows; the next visit
+        makes it again."""
+        if not config.iap_audience.strip() or config.iap_user_idle_days <= 0:
+            return 0
+        from ..services import staff as staff_accounts
+        return staff_accounts.expire_idle(config.iap_user_idle_days, url=config.database_url)
+
     def _expiry_step() -> str:
         from banko_ai.utils.migration import DatabaseMigration
-        return f"{DatabaseMigration(config.database_url).expire_demo_users()} expired"
+        expired = f"{DatabaseMigration(config.database_url).expire_demo_users()} expired"
+        if not config.iap_audience.strip():
+            return expired
+        try:
+            return f"{expired}, {_expire_idle_staff()} idle accounts removed"
+        except Exception as e:
+            # Health shows a failed step's words to anyone: the class only.
+            raise RuntimeError(f"the look for idle accounts failed ({e.__class__.__name__})") from None
+
+    def _expire_idle_daily() -> None:
+        # The boot step only runs once, and a hosted Banko stays up for weeks.
+        while not warmup_stop.wait(24 * 3600):
+            try:
+                _expire_idle_staff()
+            except Exception as e:
+                boot_log.warning("the daily look for idle accounts failed (%s); the next one tries again",
+                                 e.__class__.__name__)
 
     def _model_step() -> str:
         from ..utils.embeddings import load_embedding_model
@@ -363,6 +396,165 @@ def create_app() -> Flask:
         plain_page()
         return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
 
+    # --- Staff sign-in from the Google identity (web/iap.py) --------------
+    # Off unless IAP_AUDIENCE is set. On, the verified email is the only
+    # identity: it decides the account on every request, whatever cookie
+    # came with it, and a request without a valid assertion is not signed in.
+    from ..services import staff
+    from . import iap
+    verifier = iap.Verifier(config.iap_audience, fetch_keys=lambda: iap.fetch_keys())
+    # Said at every boot: a misspelt variable leaves the username page up on a
+    # hosted Banko, and nothing else would give that away.
+    if verifier.on:
+        boot_log.info("sign-in: from the Google identity, for the audience %s (IAP_AUDIENCE)", verifier.audience)
+    else:
+        boot_log.info("sign-in: a username, no password (IAP_AUDIENCE is not set)")
+    _IDENTITY_KEYS = ('user_id', 'username', 'thread_id', 'me')
+    # Assets, health checks and the pipeline's signed webhook carry no person.
+    _IAP_EXEMPT = ('/static/', '/favicon', '/api/health', '/health', '/api/cdc/')
+    # These answer for themselves when nobody is signed in.
+    _IAP_OWN_PAGES = ('/login', '/logout', '/signup', '/view-as')
+    _READS = ('GET', 'HEAD', 'OPTIONS')
+
+    def _persona_ids() -> set[str]:
+        try:
+            return {p.user_id for p in get_catalog().personas}
+        except Exception:   # a broken catalog file is reported at boot; nobody views a persona meanwhile
+            return set()
+
+    def _sign_out() -> None:
+        for key in _IDENTITY_KEYS:
+            session.pop(key, None)
+
+    def _note_visit(user_id: str) -> None:
+        # banko_meta is a GLOBAL table and a write to it is slow by design:
+        # once a day per person, and never on the request's own time.
+        threading.Thread(target=staff.seen, args=(user_id,), kwargs={"url": config.database_url},
+                         daemon=True, name="banko-seen").start()
+
+    def _sign_in_staff(who: iap.Identity) -> dict:
+        """This person's account, made on a first visit, with its history
+        started (or started again where it never finished). Raises when the
+        account of someone this process has not seen cannot be read."""
+        user, start = staff.ensure(who.subject, who.email, url=config.database_url)
+        if start:
+            app.extensions["banko_start_account"](user)
+        return user
+
+    def _not_signed_in():
+        """What a request gets that no valid assertion vouches for. Never the
+        default persona: /api/ answers for it when there is no session, and
+        behind IAP that would put one person's receipt on the persona
+        everyone can view."""
+        _sign_out()
+        g._banko_nobody = True
+        if request.path.startswith(_IAP_OWN_PAGES):
+            return None
+        if request.method in ('GET', 'HEAD') and not request.path.startswith(('/api/', '/cache-')):
+            return redirect(url_for('login'))
+        return jsonify({"error": "not_signed_in",
+                        "detail": "Sign-in comes from your Google account here. Reload the page."}), 401
+
+    out_of_reach_said = [float("-inf")]
+
+    def _account_out_of_reach(exc: Exception):
+        """The assertion is good and the account cannot be read: the database
+        is away, or was just rebuilt. Not signed in as anyone, not signed
+        out, and asked to try again. The class only goes to the log: the
+        text of a database error carries the statement and its parameters."""
+        if time.monotonic() - out_of_reach_said[0] > 60:     # every request of an outage would say it
+            out_of_reach_said[0] = time.monotonic()
+            _coach_log.getLogger("banko.web").warning(
+                "the account of a signed-in member of staff could not be read (%s); such requests are asked to "
+                "try again", exc.__class__.__name__)
+        g._banko_nobody = True
+        detail = "Banko cannot reach its database right now. Try again in a moment."
+        if request.path.startswith(('/api/', '/cache-')) or request.method not in ('GET', 'HEAD'):
+            return jsonify({"error": "unavailable", "detail": detail}), 503
+        plain_page()
+        return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
+
+    def _from_another_site() -> bool:
+        """Whether a request that changes something was sent by another
+        site's page. The session cookie is not what signs anyone in here.
+        The proxy's assertion is, and a browser sends the proxy's cookie with
+        a form another site submits, so SameSite on Banko's cookie guards
+        nothing. Browsers say where a request came from in Sec-Fetch-Site,
+        and older ones in Origin. A client that sends neither is no browser."""
+        site = request.headers.get("Sec-Fetch-Site")
+        if site is not None:
+            return site.strip().lower() not in ("same-origin", "none")
+        origin = request.headers.get("Origin")
+        if origin is None:
+            return False
+        try:
+            host = urlsplit(origin).netloc.lower()
+        except ValueError:      # "https://[::1": not an address, so not this one
+            return True
+        forwarded = (request.headers.get("X-Forwarded-Host") or "").split(",")[0].strip().lower()
+        return not host or host not in {request.host.lower(), forwarded}
+
+    @app.after_request
+    def _answered_for_nobody(response):
+        # The API blueprints name the user they answered for, which is the
+        # default persona when there is no session. A request turned away
+        # above was answered for nobody, and must not say otherwise.
+        if g.get("_banko_nobody"):
+            response.headers.pop("X-Banko-User", None)
+        if verifier.on:
+            # Another site can put Banko in a frame, and the browser sends the
+            # proxy's cookie for it: the person's own page loads there, and a
+            # click they are tricked into is sent by Banko's own script. No
+            # check on where a request came from sees that, so nothing may
+            # frame Banko. (Without IAP a framed Banko is not signed in:
+            # its own cookie is SameSite=Lax.)
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        return response
+
+    no_assertion_said = threading.Event()
+
+    @app.before_request
+    def _sign_in_from_iap():
+        if not verifier.on or request.path.startswith(_IAP_EXEMPT):
+            return None
+        if request.method not in _READS and _from_another_site():
+            g._banko_nobody = True
+            return jsonify({"error": "cross_site", "detail": "That request did not come from this site."}), 403
+        assertion = request.headers.get(iap.ASSERTION_HEADER)
+        if not assertion and not no_assertion_said.is_set():
+            # Said once: whoever set this up learns whether the proxy in front
+            # passes the assertion on. Header names only, never a value.
+            no_assertion_said.set()
+            _coach_log.getLogger("banko.web").info(
+                "IAP_AUDIENCE is set and a request came without the %s header, so it is not signed in. "
+                "It carried: %s", iap.ASSERTION_HEADER, ", ".join(sorted(name.lower() for name in request.headers.keys())))
+        who = verifier.identity(assertion)
+        if who is None:
+            return _not_signed_in()
+        if request.path.startswith('/api/agents/'):
+            abort(404)   # the 1.x feed lists every user's agent decisions, merchant and amount included
+        try:
+            user = _sign_in_staff(who)
+        except Exception as exc:
+            return _account_out_of_reach(exc)
+        me = user["user_id"]
+        g._banko_staff, g._banko_staff_identity = user, who
+        if session.get("me") != me:      # someone else's cookie, or a first visit
+            _sign_out()
+            session["me"] = me
+        if session.get("user_id") not in {me} | _persona_ids():   # yourself, or a persona you chose to view
+            session["user_id"], session["username"] = me, user["username"]
+        if staff.due(me):
+            _note_visit(me)
+        if request.method == 'GET' and not request.path.startswith(('/api/', '/cache-')):
+            # A history that failed is started again by the next page, at
+            # most once a minute. There is no starting over under a new name.
+            from ..services.seeding import seeding_status
+            if (seeding_status(me) or {}).get("state") == "failed" and staff.retry_due(me, now=time.monotonic()):
+                app.extensions["banko_start_account"](user)
+        return None
+
     @app.before_request
     def _set_request_scope():
         from ..utils.request_scope import set_user_scope
@@ -413,6 +605,8 @@ def create_app() -> Flask:
         else:
             readiness.set("integrity", "ready", f"0 drift across {report.accounts} accounts")
 
+    integrity_started = threading.Event()   # the step runs again after a rebuilt database; the worker starts once
+
     def _persona_data_step() -> str:
         from ..services.integrity import IntegrityWorker
         if config.banko_skip_autosetup:
@@ -427,7 +621,9 @@ def create_app() -> Flask:
             written = seed_personas(config.database_url, on_progress=_persona_progress)
             return ", ".join(f"{name} +{n}" for name, n in written.items())
         finally:
-            IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
+            if not integrity_started.is_set():
+                integrity_started.set()
+                IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
 
     def _assistant_step() -> str:
         # Builds the checkpointer once: the checkpoint tables on a first
@@ -457,17 +653,16 @@ def create_app() -> Flask:
             boot_log.warning("checkpoint TTL: the run did not finish; the next boot tries again", exc_info=True)
             raise RuntimeError(f"the run did not finish ({e.__class__.__name__}); the next boot tries again") from None
 
-    def _emit_welcome_signal(user: dict, base_url: str) -> None:
-        """Post a welcome signal matched to the user's spending style to this
-        same server at base_url (the signup request's host, read while that
-        request was live: this runs on the seeding thread after it ended).
+    def _emit_welcome_signal(user: dict) -> None:
+        """Hand the coach a welcome signal matched to the user's spending
+        style, in this process, the way the Simulate buttons do.
 
-        The POST runs on a background thread: a synchronous self-call inside
-        the signup request would deadlock a single-threaded server."""
-        secret = get_config().cdc_webhook_hmac_secret
-        if not secret:
-            print("welcome signal skipped: no webhook secret")
-            return
+        It used to be posted to this server's own webhook, at the address the
+        sign-up request came in on. Behind a proxy with a sign-in in front
+        that is the public address: the post never arrived, and the nudge was
+        lost without a word. Called on the seeding thread, after that request
+        is gone."""
+        from ..coach.signals import Signal
         sig_type, severity, payload = {
             "subscriber": ("recurring_drift", "info",
                            {"subscription": "Netflix", "old_amount": 15.99,
@@ -478,28 +673,18 @@ def create_app() -> Flask:
                {"category": "dining", "pct_used": 0.55,
                 "monthly_budget": 400.0, "spent_so_far": 220.0,
                 "days_remaining": 12}))
-        envelope = {"payload": [{"after": {
-            "signal_id": str(uuid.uuid4()), "user_id": user["user_id"],
-            "signal_type": sig_type, "severity": severity,
-            "payload": payload,
-            "idempotency_key": f"welcome:{user['user_id']}"},
-            "updated": f"{time.time():.10f}"}]}
-        body = json.dumps(envelope).encode()
-        mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        url = base_url.rstrip('/') + '/api/cdc/signals'
-
-        def _post() -> None:
-            try:
-                requests.post(
-                    url, data=body, timeout=5,
-                    headers={"Content-Type": "application/json",
-                             "X-Banko-Signature": mac})
-            except Exception as e:
-                print(f"welcome signal skipped: {e}")
-
-        import threading
-        threading.Thread(target=_post, daemon=True,
-                         name="welcome-signal").start()
+        try:
+            app.extensions["banko_coach"]["submit"](Signal.from_dict({
+                "signal_id": str(uuid.uuid4()), "user_id": user["user_id"],
+                "signal_type": sig_type, "severity": severity, "payload": payload,
+                "idempotency_key": f"welcome:{user['user_id']}"}))
+        except Exception as exc:
+            if verifier.on:
+                _coach_log.getLogger("banko.coach").warning(
+                    "the welcome nudge for account %s was not queued (%s)", user["user_id"], exc.__class__.__name__)
+            else:
+                _coach_log.getLogger("banko.coach").warning(
+                    "the welcome nudge for %s was not queued", user["username"], exc_info=True)
 
     def _login_page(**context):
         """The sign-in page: the catalog personas that exist, as one-click
@@ -509,9 +694,46 @@ def create_app() -> Flask:
         return render_template("auth/login.html", personas=personas, styles=sorted(get_catalog().profiles),
                                brand=brand, theme=config.ui_theme, **context)
 
+    def _view_as_page():
+        """Where the username page was, behind IAP: the personas to view, and
+        the way back to your own account. Without a valid assertion, a plain
+        word that sign-in comes from the Google account, and no form."""
+        brand = {"name": config.brand_name, "accent": config.brand_accent}
+        me = g.get("_banko_staff")
+        personas = get_profiles([p.user_id for p in get_catalog().personas]) if me else []
+        return render_template("auth/login.html", iap=True, me=me, viewing=session.get("user_id"),
+                               personas=personas, styles=[], brand=brand, theme=config.ui_theme)
+
+    @app.route('/view-as', methods=['POST'])
+    def view_as():
+        """Look at a persona's money, or go back to your own. Only behind
+        IAP, only for the person the assertion names, and only the catalog's
+        personas: a name is never typed into an identity."""
+        if not verifier.on:
+            abort(404)
+        me = g.get("_banko_staff")
+        if me is None:
+            return redirect(url_for('login'))
+        who = request.form.get('who', '').strip().lower()
+        if who == 'me':
+            session['user_id'], session['username'] = me["user_id"], me["username"]
+            return redirect(url_for('pages.dashboard'))
+        persona = next((p for p in get_profiles(sorted(_persona_ids())) if p["username"].lower() == who), None)
+        if persona is None:
+            flash('Pick one of the personas.', 'error')
+            return redirect(url_for('login'))
+        session['user_id'], session['username'] = persona["user_id"], persona["username"]
+        session.pop('thread_id', None)
+        return redirect(url_for('pages.dashboard'))
+
     @app.route('/login', methods=['GET', 'POST'])
     def login():
         """Login for known users, reveal signup for unknown usernames."""
+        if verifier.on:
+            # IAP owns identity: a posted username is not one.
+            if request.method == 'POST':
+                return redirect(url_for('pages.dashboard') if g.get("_banko_staff") else url_for('login'))
+            return _view_as_page()
         if request.method == 'POST':
             username = request.form.get('username', '').strip()
             if not username:
@@ -520,6 +742,13 @@ def create_app() -> Flask:
 
             um = UserManager(config.database_url)
             user = um.get_by_username(username)
+            if user and staff.made_by_sign_in(user["user_id"], url=config.database_url):
+                # IAP_AUDIENCE was set once and is not now, by choice or by a
+                # typo. The accounts it made are people's own, and a name
+                # with no password must not open one.
+                flash('That account belongs to someone who signs in with their Google account. '
+                      'It cannot be opened by name.', 'error')
+                return _login_page(regions=[])
             if user:
                 session['user_id'] = user["user_id"]
                 session['username'] = user["username"]
@@ -534,9 +763,33 @@ def create_app() -> Flask:
 
         return _login_page(regions=[])
 
+    def _start_account(new_user: dict) -> None:
+        """Seed a new account's history in the background, then hand the
+        coach its welcome signal. The getting-ready card covers the wait."""
+        def _seed_then_welcome() -> None:
+            from ..services.seeding import SIGNUP_BATCH_SIZE, seed_user
+            try:
+                # Small batches, so the person watching sees the count move.
+                seed_user(new_user["user_id"], on_progress=_emit_seeding, batch_size=SIGNUP_BATCH_SIZE)
+                _emit_welcome_signal(new_user)
+            except Exception as exc:
+                if verifier.on:
+                    # The username is the local part of someone's address, and a
+                    # database error's text carries its parameters: neither is logged.
+                    boot_log.warning("the history of account %s did not finish (%s); the next page it opens tries "
+                                     "again", new_user["user_id"], exc.__class__.__name__)
+                else:
+                    print(f"⚠️  seeding {new_user['username']} failed: {exc}")
+        threading.Thread(target=_seed_then_welcome, daemon=True, name=f"seed-{new_user['username']}").start()
+
+    app.extensions["banko_start_account"] = _start_account
+
     @app.route('/signup', methods=['POST'])
     def signup():
         """Create user, seed history, emit welcome signal, log in."""
+        if verifier.on:
+            # IAP owns identity, and makes the account itself.
+            return redirect(url_for('pages.dashboard') if g.get("_banko_staff") else url_for('login'))
         username = request.form.get('username', '').strip()
         spending_style = request.form.get('spending_style', '').strip()
         home_region = request.form.get('home_region', None)
@@ -583,19 +836,7 @@ def create_app() -> Flask:
         user = None
         try:
             user = um.create(username, spending_style, home_region, demo_user=True)
-            # Read now: the seeding thread outlives this request.
-            base_url = request.host_url
-
-            def _seed_then_welcome(new_user=user, base_url=base_url):
-                from ..services.seeding import SIGNUP_BATCH_SIZE, seed_user
-                try:
-                    # Small batches, so the person watching sees the count move.
-                    seed_user(new_user["user_id"], on_progress=_emit_seeding, batch_size=SIGNUP_BATCH_SIZE)
-                    _emit_welcome_signal(new_user, base_url)
-                except Exception as exc:
-                    print(f"⚠️  seeding {new_user['username']} failed: {exc}")
-            threading.Thread(target=_seed_then_welcome, daemon=True,
-                             name=f"seed-{user['username']}").start()
+            app.extensions["banko_start_account"](user)
 
             session['user_id'] = user["user_id"]
             session['username'] = user["username"]
@@ -650,6 +891,22 @@ def create_app() -> Flask:
                 "profile lookup failed (%s); serving the page without signing out", e.__class__.__name__)
             return None
         if profile is None:
+            me = g.get("_banko_staff")
+            if me is not None:
+                # Behind IAP the account is the person's own, or a persona
+                # they chose. Gone (it was idle for too long, or the database
+                # was rebuilt): make it again and go on with this page. The
+                # sign-in page could not sign them in.
+                staff.forget(me["user_id"])
+                try:
+                    again = _sign_in_staff(g._banko_staff_identity)
+                except Exception as exc:
+                    return _account_out_of_reach(exc)
+                g._banko_staff = again
+                session['user_id'], session['username'] = again["user_id"], again["username"]
+                session.pop('thread_id', None)
+                g.pop("_banko_profile", None)   # read once per request: read it again, it exists now
+                return None
             # The user is gone (an expired demo user, a rebuilt cluster) but
             # the browser kept its cookie: start over at the persona picker.
             for key in ('user_id', 'username', 'thread_id'):
@@ -660,6 +917,8 @@ def create_app() -> Flask:
     @app.route('/logout')
     def logout():
         """Back to the persona picker."""
+        if verifier.on:
+            return redirect(url_for('login'))   # nobody signs out of Google here: this is the view-as page
         session.pop('user_id', None)
         session.pop('username', None)
         user_manager.logout_user()
@@ -1258,9 +1517,13 @@ def create_app() -> Flask:
 
         from ..config.settings import get_config
         cfg = get_config()
-        user_id = (request.args.get("user_id") or session.get("user_id")
-                   or cfg.coach_default_user_id)
-        limit = min(int(request.args.get("limit", "20")), 100)
+        # Never a user id from the query: /api/ enforces no sign-in, so that
+        # would list anyone's nudges.
+        user_id = session.get("user_id") or cfg.coach_default_user_id
+        try:
+            limit = max(1, min(int(request.args.get("limit", "20")), 100))
+        except ValueError:
+            limit = 20
         db_url = get_database_url()
         from ..db.engine import get_engine
         eng = get_engine(db_url)
@@ -1284,8 +1547,8 @@ def create_app() -> Flask:
     @app.route("/api/coach/nudges/<nudge_id>", methods=["GET"])
     def coach_get_nudge(nudge_id: str):
         from ..coach.tools import explain_nudge
-        result = explain_nudge(nudge_id=nudge_id,
-                               database_url=get_database_url())
+        result = explain_nudge(user_id=session.get("user_id") or config.coach_default_user_id,
+                               nudge_id=nudge_id, database_url=get_database_url())
         if not result:
             return jsonify({"error": "not found"}), 404
         result["provider_used"] = display_label(config, result.get("provider_used"))
@@ -1337,6 +1600,13 @@ def create_app() -> Flask:
 
         from .assistant_api import user_room
         user_id = session.get("user_id")
+        if user_id and verifier.on:
+            # Socket.IO requests pass none of the page's request checks. Behind
+            # IAP the handshake's own assertion says who is asking, as it does
+            # for a page: yourself, or a persona you chose to view.
+            who = verifier.identity(request.headers.get(iap.ASSERTION_HEADER))
+            if who is None or user_id not in {staff.user_id_for(who.subject)} | _persona_ids():
+                return
         if user_id:
             join_room(user_room(user_id))
 
@@ -1389,8 +1659,32 @@ def create_app() -> Flask:
         return render_template("errors/error.html", code=404, brand_name=config.brand_name,
                                message="That page doesn't exist."), 404
 
+    def _being_set_up_again() -> bool:
+        """Whether the database really was emptied: its setup is running, or
+        its schema is gone and the watch is about to start it. One missing
+        table in a database that has its schema is an error like any other,
+        and a page that says "getting ready" for ever would only hide it."""
+        if app.extensions.get("banko_schema_watch") is None:
+            return False
+        if not all(readiness.is_ready(step) for step in ("schema", "personas")):
+            return True
+        try:
+            from ..db.schema import schema_state
+            return schema_state(config.database_url) == "missing"
+        except Exception:
+            return False
+
     @app.errorhandler(500)
     def server_error(error):
+        # The request that finds the tables gone: the schema watch has been
+        # poked and the setup is about to run again, so this one gets the
+        # getting-ready answer the next ones will, not an error page.
+        if missing_table(error) and _being_set_up_again():
+            detail = "The database was rebuilt and is being set up again. Try again in a moment."
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "warming_up", "detail": detail}), 503
+            plain_page()
+            return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
         if _wants_json():
             return jsonify({"error": NEUTRAL_FAILED}), 500
         plain_page()
@@ -1398,8 +1692,6 @@ def create_app() -> Flask:
                                message=NEUTRAL_FAILED), 500
 
     # Register blueprints
-    from .agent_dashboard import agent_dashboard
-    app.register_blueprint(agent_dashboard)
     from .api_v1 import api_v1
     app.register_blueprint(api_v1)
     from .assistant_api import assistant_api
@@ -1420,8 +1712,45 @@ def create_app() -> Flask:
     app.register_blueprint(pages)
 
     # Shell context for all templates
-    from .shell import shell_context
+    from .shell import shell_context, tab_icon_url
     app.context_processor(shell_context)
+    # A global, not shell context: the getting-ready and error pages have no shell and link the icon too.
+    app.jinja_env.globals["tab_icon_url"] = tab_icon_url
+
+    def _checkpoint_tables_step() -> str:
+        if not readiness.wait_for("schema", timeout=600):
+            raise RuntimeError("the schema is not ready yet; the first question makes the checkpoint tables")
+        from ..assistant import checkpoint
+        checkpoint.ensure_tables()
+        return "checkpoint tables present"
+
+    def _set_up_database_again() -> None:
+        """The database was emptied under this process (a cluster rebuilt
+        from the chaos stage). Run the boot's database steps again: starting
+        them marks the schema and the personas not ready, so pages show the
+        getting-ready page meanwhile, as they do on a first boot."""
+        from ..db.regions import clear_region_caches
+        from ..services.seeding import forget_statuses
+        from ..workers.traffic import stop_simulator
+        try:
+            stop_simulator()   # its customers went with the database
+        except Exception:
+            boot_log.warning("rebuild: the load simulator did not stop cleanly", exc_info=True)
+        clear_region_caches()  # what was known about regions and row homes described the old database
+        forget_statuses()
+        staff.forget()         # the accounts made for staff went with the database: the next visit makes them again
+        with persona_counts_lock:
+            persona_counts.clear()
+        from ..assistant import checkpoint
+        checkpoint.tables_gone()   # before the gate reopens: a question in between makes them itself
+        start_warmup(readiness, [
+            ("schema", _schema_step),
+            ("personas", _personas_step),
+            ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
+        ], stop=warmup_stop, name="banko-rebuild-db")
+        start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-rebuild-seed")
+        start_warmup(readiness, [("assistant", _checkpoint_tables_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
+                     stop=warmup_stop, name="banko-rebuild-assistant")
 
     # Last, so every closure the steps call already exists.
     # Lane A needs no database. Lane B runs the gate (schema, personas)
@@ -1451,4 +1780,18 @@ def create_app() -> Flask:
     readiness.mark_background("checkpoint_ttl")
     start_warmup(readiness, [("assistant", _assistant_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
                  stop=warmup_stop, name="banko-warmup-assistant")
+    if config.iap_audience.strip() and config.iap_user_idle_days > 0 and not config.banko_skip_autosetup:
+        threading.Thread(target=_expire_idle_daily, name="banko-idle-accounts", daemon=True).start()
+    # A database emptied under this process is set up again (workers/schema_watch.py).
+    # Not on --no-data runs and in tests, which make and drop tables themselves.
+    if config.schema_watch_seconds > 0 and not config.banko_skip_autosetup:
+        from ..db.engine import watch_missing_tables
+        from ..db.schema import schema_state
+        from ..workers.schema_watch import SchemaWatch
+        watch = SchemaWatch(state=lambda: schema_state(config.database_url), gate_ready=_gate_ready,
+                            rebuild=_set_up_database_again, interval=float(config.schema_watch_seconds),
+                            stop=warmup_stop)
+        app.extensions["banko_schema_watch"] = watch   # holds it: the engine only keeps a weak reference
+        watch_missing_tables(watch)
+        watch.start()
     return app

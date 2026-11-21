@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from ..utils import clock
+
 _PLACEHOLDER_DATE_STRINGS = frozenset({
     "YYYY-MM-DD",
     "yyyy-mm-dd",
@@ -76,7 +78,7 @@ class ReceiptExtraction(BaseModel):
     @classmethod
     def reject_placeholder_date(cls, v: Any) -> Any:
         if v is None or (isinstance(v, str) and not v.strip()):
-            return datetime.date.today()
+            return clock.today()
         if isinstance(v, str) and v.strip() in _PLACEHOLDER_DATE_STRINGS:
             raise ValueError(f"date {v!r} is a prompt-template placeholder")
         return v

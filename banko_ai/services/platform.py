@@ -155,17 +155,35 @@ def _sink(uri: str | None) -> str | None:
     return f"{parts.scheme}://{parts.hostname}" if parts.hostname else parts.scheme or None
 
 
+def changefeeds(conn: Connection) -> list[dict]:
+    """The cluster's changefeed jobs, newest first, each with how far its
+    high-water mark trails now. Raises when the statement fails."""
+    return [{"job_id": str(r[0]), "status": r[1], "running_status": r[2],
+             "lag_s": float(r[3]) if r[3] is not None else None, "sink": _sink(r[4])}
+            for r in conn.execute(text("""
+                SELECT job_id, status, running_status,
+                       round(extract(epoch FROM now())::DECIMAL - high_water_timestamp / 1e9, 1), sink_uri
+                FROM [SHOW CHANGEFEED JOBS] ORDER BY created DESC LIMIT 10"""))]
+
+
+_unlisted: set[str] = set()  # reasons already logged, so a card refreshed every few seconds says each once
+
+
 def cdc_status(*, url: str | None = None) -> dict:
+    """changefeeds is None when the jobs could not be listed (a role that may
+    not see them, say): the card says so. An empty list means there are none.
+    The two read alike for as long as a failure was swallowed here, and a
+    mistake in the statement hid behind that."""
+    feeds: list[dict] | None
     with _session(url) as conn:
         try:
-            feeds = [{"job_id": str(r[0]), "status": r[1], "running_status": r[2],
-                      "lag_s": float(r[3]) if r[3] is not None else None, "sink": _sink(r[4])}
-                     for r in conn.execute(text("""
-                         SELECT job_id, status, running_status,
-                                round(extract(epoch FROM now()) - high_water_timestamp / 1e9, 1), sink_uri
-                         FROM [SHOW CHANGEFEED JOBS] ORDER BY created DESC LIMIT 10"""))]
-        except Exception:
-            feeds = []
+            feeds = changefeeds(conn)
+        except Exception as exc:
+            feeds = None
+            reason = (str(exc).splitlines() or [exc.__class__.__name__])[0][:300]
+            if reason not in _unlisted:
+                _unlisted.add(reason)
+                log.warning("the changefeed jobs could not be listed: %s", reason)
         signals = conn.execute(text(
             "SELECT count(*) FROM spending_signals WHERE produced_at > now() - INTERVAL '10 minutes'")).scalar() or 0
         nudges = conn.execute(text(

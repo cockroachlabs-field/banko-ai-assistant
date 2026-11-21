@@ -17,6 +17,12 @@ from sqlalchemy import text
 
 from .intent_classifier import AggregationIntent
 
+# Questions about the largest or smallest purchases order the rows by amount.
+SIZE_ORDER = {"largest": "DESC", "smallest": "ASC"}
+# The most purchases one size answer lists. More can be asked for: the card
+# then says how many it shows.
+MOST_LISTED = 10
+
 
 def _to_pyformat(sql: str) -> str:
     """Convert :name placeholders to %(name)s format for psycopg's client-side binding.
@@ -40,6 +46,8 @@ class AggregationResult:
     last_date: date | None
     rows: list[dict] = field(default_factory=list)
     merchant: str | None = None
+    largest: list[dict] = field(default_factory=list)
+    limit: int = 1
 
 
 @lru_cache(maxsize=4)
@@ -129,10 +137,38 @@ def _where_and_params(intent: AggregationIntent, user_id: str,
     return where, params
 
 
+def _by_amount_sql(where: str, order: str) -> str:
+    """One statement for the rows and for their EXPLAIN, so the plan in the
+    trace is the plan of the query that answered. Purchases of the same
+    amount come latest first, then by id: the same question, the same card."""
+    return f"""
+        SELECT expense_date, merchant, expense_amount, shopping_type
+        FROM expenses {where}
+        ORDER BY expense_amount {order}, expense_date DESC, expense_id
+        LIMIT :n
+    """
+
+
+def _by_amount(conn, where: str, params: dict, order: str, n: int) -> list[dict]:
+    return [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2]), "category": r[3]}
+            for r in conn.execute(text(_by_amount_sql(where, order)), {**params, "n": n}).fetchall()]
+
+
+def _listed(intent: AggregationIntent) -> int:
+    """How many rows a size question reads. One was asked for: the two after
+    it come too, so the answer can show what the largest is the largest of."""
+    return 3 if intent.limit == 1 else min(intent.limit, MOST_LISTED)
+
+
 def run_aggregation(intent: AggregationIntent, user_id: str,
                     database_url: str,
                     region: str | None = None,
-                    merchant: str | None = None) -> AggregationResult:
+                    merchant: str | None = None,
+                    top: int = 0) -> AggregationResult:
+    """rows are the 25 most recent purchases in the window, or, for a
+    question about the largest or smallest, those purchases in order of
+    amount. With top, largest also carries that many biggest purchases:
+    recent rows say nothing about which purchase was the largest."""
     from ..db.engine import get_engine, routed
     category = None if merchant else resolve_category(intent.subject, database_url)
     where, params = _where_and_params(intent, user_id, category, region, merchant)
@@ -145,12 +181,16 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
                    MIN(expense_date), MAX(expense_date)
             FROM expenses {where}
         """), params).fetchone()
-        detail = c.execute(text(f"""
-            SELECT expense_date, merchant, expense_amount
-            FROM expenses {where}
-            ORDER BY expense_date DESC
-            LIMIT 25
-        """), params).fetchall()
+        if intent.operation in SIZE_ORDER:
+            rows = _by_amount(c, where, params, SIZE_ORDER[intent.operation], _listed(intent))
+        else:
+            rows = [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
+                SELECT expense_date, merchant, expense_amount
+                FROM expenses {where}
+                ORDER BY expense_date DESC
+                LIMIT 25
+            """), params).fetchall()]
+        largest = _by_amount(c, where, params, "DESC", top) if top else []
 
     total = float(agg[0] or 0)
     count = int(agg[1] or 0)
@@ -164,9 +204,10 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
         average=round(total / count, 2) if count else 0.0,
         first_date=agg[2],
         last_date=agg[3],
-        rows=[{"date": str(r[0]), "merchant": r[1],
-               "amount": float(r[2])} for r in detail],
+        rows=rows,
         merchant=merchant,
+        largest=largest,
+        limit=intent.limit,
     )
 
 
@@ -175,6 +216,8 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
                         region: str | None = None,
                         merchant: str | None = None) -> str:
     """Run EXPLAIN ANALYZE of the aggregation query and return the plan as text.
+    For the largest or smallest purchases that is the statement that ordered
+    them, which is where the rows in the answer came from.
 
     CockroachDB does not accept bound placeholders in EXPLAIN under server-side binding,
     so this statement binds parameters client-side with psycopg.ClientCursor."""
@@ -184,15 +227,17 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
     where, params = _where_and_params(intent, user_id, category, region, merchant)
 
     # Convert :name placeholders to %(name)s for client-side binding
-    where_pyformat = _to_pyformat(where)
-
-    sql = f"""
-        EXPLAIN ANALYZE
-        SELECT COALESCE(SUM(expense_amount), 0),
-               COUNT(*),
-               MIN(expense_date), MAX(expense_date)
-        FROM expenses {where_pyformat}
-    """
+    if intent.operation in SIZE_ORDER:
+        sql = "EXPLAIN ANALYZE " + _to_pyformat(_by_amount_sql(where, SIZE_ORDER[intent.operation]))
+        params = {**params, "n": _listed(intent)}
+    else:
+        sql = f"""
+            EXPLAIN ANALYZE
+            SELECT COALESCE(SUM(expense_amount), 0),
+                   COUNT(*),
+                   MIN(expense_date), MAX(expense_date)
+            FROM expenses {_to_pyformat(where)}
+        """
 
     from ..db.engine import get_engine, routed
     eng = get_engine(routed(database_url, user_id))

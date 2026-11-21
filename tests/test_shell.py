@@ -228,6 +228,57 @@ def test_profile_service(member):
     assert get_profile("not-a-uuid") is None
 
 
+# The tab icon's link: the file's address with a short hash of the file after it.
+_ICON_LINK = re.compile(r'<link rel="icon" type="image/svg\+xml" href="/static/favicon\.svg\?v=([0-9a-f]{8})">')
+
+
+def test_a_changed_tab_icon_is_fetched_again(monkeypatch, member):
+    """A browser keeps a site's tab icon for days while its address stays
+    the same, so a new icon behind the old address goes unseen until that
+    copy expires. The address carries a short hash of the file, so a changed
+    icon is another address."""
+    import hashlib
+    from pathlib import Path
+
+    from flask import render_template
+
+    import banko_ai
+    icon = Path(banko_ai.__file__).parent / "static" / "favicon.svg"
+    version = hashlib.sha256(icon.read_bytes()).hexdigest()[:8]
+    client = app_client(monkeypatch)
+    with client.application.test_request_context("/"):
+        warming = render_template("errors/warming.html", detail="Creating the schema.", brand_name="Banko")
+    sign_in = client.get("/login").get_data(as_text=True)
+    with client.session_transaction() as s:
+        s["user_id"] = member
+    missing = client.get("/no-such-page")
+    assert missing.status_code == 404
+    pages = {"a page": _render(client, member), "the sign-in page": sign_in, "the getting-ready page": warming,
+             "the error page": missing.get_data(as_text=True)}
+    for name, html in pages.items():
+        found = _ICON_LINK.search(html)
+        assert found and found.group(1) == version, name
+    served = client.get(f"/static/favicon.svg?v={version}")
+    assert served.status_code == 200 and served.data == icon.read_bytes()
+
+
+def test_a_page_never_fails_over_its_tab_icon(monkeypatch, member, tmp_path):
+    """The hash is read from the file the static route serves. Where that
+    file cannot be read the icon is missing and nothing else is: every page
+    still answers, and links the bare address."""
+    client = app_client(monkeypatch)
+    monkeypatch.setattr(client.application, "static_folder", str(tmp_path))     # a folder without the icon
+    assert client.get("/static/favicon.svg").status_code == 404
+    bare = '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
+    assert bare in _render(client, member)
+    sign_in = client.get("/login")
+    assert sign_in.status_code == 200 and bare in sign_in.get_data(as_text=True)
+    with client.session_transaction() as s:
+        s["user_id"] = member
+    missing = client.get("/no-such-page")
+    assert missing.status_code == 404 and bare in missing.get_data(as_text=True)
+
+
 def test_the_tab_icon_is_the_cockroach_labs_brandmark(monkeypatch, member):
     """Every page and the login page link the brandmark, which follows the
     browser's light or dark theme; the old roach mark is gone."""
@@ -236,6 +287,42 @@ def test_the_tab_icon_is_the_cockroach_labs_brandmark(monkeypatch, member):
     assert icon.status_code == 200 and icon.mimetype == "image/svg+xml"
     assert b"Cockroach Labs brandmark" in icon.data and b"prefers-color-scheme: dark" in icon.data
     for html in (_render(client, member), client.get("/login").get_data(as_text=True)):
-        assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
+        assert _ICON_LINK.search(html)
         assert "roach-logo" not in html
     assert client.get("/static/roach-logo.svg").status_code == 404
+
+
+def test_the_tab_icon_fills_its_canvas():
+    """A browser tab gives the icon 16 pixels. Drawn in the middle half of
+    its canvas, the mark got 8 of them: a speck beside the other tabs. It
+    takes the whole canvas now, less a margin, and nothing of it is cut off."""
+    import re
+    from pathlib import Path
+
+    import banko_ai
+    svg = (Path(banko_ai.__file__).parent / "static" / "favicon.svg").read_text()
+    x0, y0, width, height = (float(n) for n in re.search(r'viewBox="([^"]+)"', svg).group(1).split())
+    tx, ty = (float(n) for n in re.search(r"translate\(([^)]+)\)", svg).group(1).split())
+    points = [float(n) for n in re.findall(r"-?\d+\.?\d*", re.search(r' d="([^"]+)"', svg).group(1))]
+    xs, ys = [n + tx for n in points[0::2]], [n + ty for n in points[1::2]]
+    assert width == height                                                  # a tab icon is square
+    assert x0 <= min(xs) and max(xs) <= x0 + width and y0 <= min(ys) and max(ys) <= y0 + height
+    assert max(max(xs) - min(xs), max(ys) - min(ys)) / width >= 0.85        # it was 0.50
+    assert abs((min(xs) + max(xs)) / 2 - (x0 + width / 2)) < 1              # and it sits in the middle
+    assert abs((min(ys) + max(ys)) / 2 - (y0 + height / 2)) < 1
+
+
+def test_the_pages_with_their_own_head_carry_the_tab_icon(monkeypatch, member):
+    """The getting-ready page and the error page do not extend the shell.
+    Without the link a browser asks for /favicon.ico, and the log gets a 404
+    every time someone opens the app while it starts."""
+    from flask import render_template
+    client = app_client(monkeypatch)
+    with client.application.test_request_context("/"):
+        warming = render_template("errors/warming.html", detail="Creating the schema.", brand_name="Banko")
+    with client.session_transaction() as s:
+        s["user_id"] = member
+    missing = client.get("/no-such-page")
+    assert missing.status_code == 404
+    for html in (warming, missing.get_data(as_text=True)):
+        assert _ICON_LINK.search(html)

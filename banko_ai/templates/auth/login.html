@@ -2,14 +2,46 @@
 <html lang="en" style="--ac: {{ brand.accent }}">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in · {{ brand.name }}</title>
-<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+<title>{{ 'View as' if iap and me else 'Sign in' }} · {{ brand.name }}</title>
+<link rel="icon" type="image/svg+xml" href="{{ tab_icon_url() }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 <script>(function(){var t=localStorage.getItem("banko.theme")||{{ theme|tojson }};var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=d?"dark":"light";})();</script>
 </head>
 <body>
 <main style="max-width:880px;margin:6vh auto;padding:0 16px;display:flex;flex-direction:column;gap:18px">
   <div class="b-logo" style="font-size:22px;margin:0"><span class="b-mark"></span>{{ brand.name }}</div>
+  {% if iap and not me %}
+  <div>
+    <h1 style="margin:0;font-size:24px">Sign in with your Google account</h1>
+    <p class="b-muted" style="margin:6px 0 0">Here {{ brand.name }} signs you in from the Google account your browser is already using. That sign-in did not come through on this request, so nobody is signed in. Open the page again through its usual address.</p>
+  </div>
+  {% elif iap %}
+  <div>
+    <h1 style="margin:0;font-size:24px">View as</h1>
+    <p class="b-muted" style="margin:6px 0 0">You are signed in as <b>{{ me.username }}</b> from your Google account. The demo's numbers live on these personas: look at one of them, or go back to your own account.</p>
+  </div>
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="b-tag {{ 'bad' if category == 'error' else 'ok' }}">{{ message }}</div>{% endfor %}{% endwith %}
+  <div class="b-grid">
+    <form method="post" action="{{ url_for('view_as') }}" class="b-card" style="display:flex;flex-direction:column;gap:10px">
+      <input type="hidden" name="who" value="me">
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="b-ava" style="background: #6933FF;cursor:default">{{ me.username[0]|upper }}</span>
+        <div><div class="b-name">{{ me.username }}</div><div class="b-muted">your own account{% if viewing == me.user_id %} · on screen now{% endif %}</div></div>
+      </div>
+      <button class="b-btn primary" type="submit">Continue as yourself</button>
+    </form>
+    {% for p in personas %}
+    <form method="post" action="{{ url_for('view_as') }}" class="b-card" style="display:flex;flex-direction:column;gap:10px">
+      <input type="hidden" name="who" value="{{ p.username }}">
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="b-ava" style="background: {{ p.avatar_color }};cursor:default">{{ p.display_name[0] }}</span>
+        <div><div class="b-name">{{ p.display_name }}</div><div class="b-muted">{{ p.spending_style }}{% if p.home_region %} · {{ p.home_region }}{% endif %}{% if viewing == p.user_id %} · on screen now{% endif %}</div></div>
+      </div>
+      <button class="b-btn" type="submit">View as {{ p.display_name.split(' ')[0] }}</button>
+    </form>
+    {% endfor %}
+  </div>
+  {% else %}
   <div>
     <h1 style="margin:0;font-size:24px">Pick a persona</h1>
     <p class="b-muted" style="margin:6px 0 0">Each one is a real user in CockroachDB with months of history.</p>
@@ -50,6 +82,7 @@
     </div>
     <button class="b-btn" type="submit">{{ 'Create and sign in' if show_signup else 'Continue' }}</button>
   </form>
+  {% endif %}
 </main>
 </body>
 </html>

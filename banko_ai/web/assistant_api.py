@@ -384,9 +384,16 @@ def _attach_receipt(user_id: str, thread_id: str | None, receipt: dict) -> str |
 def upload_receipt():
     upload = request.files.get("receipt")
     if upload is None or not upload.filename:
+        # The page always attaches the file, so a request that gets here
+        # without one lost it on the way (a proxy, a retry that could not
+        # replay its body). The access log shows only the 400: say what came.
+        log.warning("receipt upload refused: no file part named receipt (%s, %s bytes, parts: %s)",
+                    request.mimetype or "no content type", request.content_length,
+                    ", ".join(sorted({*request.files, *request.form})) or "none")
         return jsonify({"error": "Choose a receipt image or PDF"}), 400
     suffix = Path(upload.filename).suffix.lower()
     if suffix not in receipts.ALLOWED_TYPES:
+        log.info("receipt upload refused: %s is not an image or a PDF", suffix or "a file with no extension")
         return jsonify({"error": "Upload a receipt image or PDF"}), 400
     user_id = _uid()
     thread_id = request.form.get("thread_id")

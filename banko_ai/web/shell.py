@@ -4,7 +4,10 @@ routes are registered, so a page appears in the sidebar when it ships."""
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import logging
+from pathlib import Path
 
 from flask import current_app, g, request, session, url_for
 
@@ -78,6 +81,26 @@ def plain_page() -> None:
     g._banko_plain = True
 
 
+@functools.lru_cache(maxsize=4)
+def _version_of(icon: Path) -> str | None:
+    """A short hash of the file, read once. None where it cannot be read:
+    every page links the icon, the error page too, and none of them may
+    fail over it."""
+    try:
+        return hashlib.sha256(icon.read_bytes()).hexdigest()[:8]
+    except OSError:
+        return None
+
+
+def tab_icon_url() -> str:
+    """The tab icon's address, with a short hash of the file after it. A
+    browser keeps a site's tab icon for days while its address stays the
+    same, so a new icon behind the old address goes unseen. Changed, the
+    icon has another address and is fetched at once."""
+    version = _version_of(Path(current_app.static_folder or "") / "favicon.svg")
+    return url_for("static", filename="favicon.svg", v=version)      # no version, no query string
+
+
 def shell_context() -> dict:
     if g.get("_banko_plain"):
         return {}
@@ -98,6 +121,13 @@ def _is_persona(user_id: str) -> bool:
         return False
 
 
+def _staff(on_screen: str) -> dict | None:
+    me = g.get("_banko_staff")
+    if not me:
+        return None
+    return {"username": me["username"], "viewing": me["user_id"] != on_screen}
+
+
 def _shell(profile: dict) -> dict:
     cfg = get_config()
     shown = current_app.extensions["banko_ai"]["shown"]()
@@ -113,6 +143,9 @@ def _shell(profile: dict) -> dict:
                  "display_name": profile["display_name"], "avatar_color": profile["avatar_color"],
                  "initial": (profile["display_name"] or "?")[0].upper(), "region": _region(profile),
                  "persona": _is_persona(profile["user_id"])},
+        # Behind IAP: the member of staff the assertion named. With a persona
+        # on screen it is somebody else than `user`, and the page says so.
+        "staff": _staff(profile["user_id"]),
         "nav": nav_groups(current_app),
         "page": {"assistant_thread": "assistant"}.get(page_raw, page_raw),
         "section": {"assistant_thread": "assistant", "account": "accounts"}.get(page_raw, page_raw),

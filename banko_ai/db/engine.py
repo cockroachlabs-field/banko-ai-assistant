@@ -9,6 +9,7 @@ import logging
 import random
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -27,6 +28,40 @@ T = TypeVar("T")
 
 _engines: dict[str, Engine] = {}
 _engines_lock = threading.Lock()
+
+UNDEFINED_TABLE = "42P01"
+# Whoever wants to hear that a statement failed because a table is not there
+# (the app's schema watch). Weak: a finished app's watch is not kept alive.
+_missing_table_watchers: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def watch_missing_tables(watch: Any) -> None:
+    """Poke this object (its poke()) whenever a statement on any engine fails
+    with "relation does not exist". A probe for an optional table does that
+    too, so a poke means look, not that anything is wrong."""
+    _missing_table_watchers.add(watch)
+
+
+def missing_table(exc: BaseException | None) -> bool:
+    """Whether this failure, or anything it wraps, is "relation does not exist"."""
+    seen = 0
+    while exc is not None and seen < 8:
+        if getattr(exc, "sqlstate", None) == UNDEFINED_TABLE:
+            return True
+        exc = (getattr(exc, "original_exception", None) or getattr(exc, "orig", None)
+               or exc.__cause__ or exc.__context__)
+        seen += 1
+    return False
+
+
+def _note_missing_table(context: Any) -> None:
+    if getattr(context.original_exception, "sqlstate", None) != UNDEFINED_TABLE:
+        return
+    for watch in list(_missing_table_watchers):
+        try:
+            watch.poke()
+        except Exception:
+            log.debug("a missing-table watcher failed", exc_info=True)
 
 RETRYABLE_SQLSTATES = {"40001"}            # serialization failure: always safe to retry
 AMBIGUOUS_SQLSTATES = {"40003"}            # result unknown: retry only idempotent work
@@ -228,6 +263,7 @@ def get_engine(url: str | None = None, *, pool_size: int | None = None) -> Engin
             )
             if home:
                 _home(engine, home if isinstance(home, str) else home[0])
+            event.listen(engine, "handle_error", _note_missing_table)
             _engines[key] = engine
     return engine
 
@@ -238,6 +274,25 @@ def mask_url(url: str) -> str:
         return make_url(normalize_db_url(url)).render_as_string(hide_password=True)
     except Exception:
         return "(unparseable database URL)"
+
+
+NO_SUCH_DATABASE = 'no database named "{name}" on this cluster; check DATABASE_URL'
+
+
+def missing_database(exc: BaseException, url: str | None = None) -> str | None:
+    """The database name, when exc says the database in the URL does not
+    exist (SQLSTATE 3D000). CockroachDB accepts the connection and says so
+    only when a statement touches the database, and no retry cures a typo.
+    The name comes from the URL, never from the error text."""
+    seen: BaseException | None = exc
+    while seen is not None:
+        if getattr(getattr(seen, "orig", seen), "sqlstate", None) == "3D000":
+            try:
+                return make_url(normalize_db_url(url or get_config().database_url)).database or ""
+            except Exception:
+                return ""
+        seen = seen.__cause__
+    return None
 
 
 @dataclass

@@ -20,6 +20,8 @@ from ..config.settings import get_config
 from ..services import accounts, actions, budgets, caches, goals, ledger, memories, receipts, recurring, reports
 from ..services import transactions as txns
 from ..services._sql import jsonable
+from ..utils import clock
+from ..utils.embeddings import ModelWarmingUp, note_skipped
 from ..utils.request_trace import trace_step
 from . import narration
 
@@ -152,7 +154,7 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
     url = ctx.url or get_config().database_url
     if a.date_from and a.date_to and a.date_from > a.date_to:
         raise ToolError("date_from must be on or before date_to")
-    end = (a.date_to or date.today()) + timedelta(days=1)
+    end = (a.date_to or clock.today()) + timedelta(days=1)
     start = a.date_from or (end - timedelta(days=31))
     if a.merchant:
         merchant = resolve_merchant(a.merchant, ctx.user_id, url)
@@ -164,10 +166,12 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
         if resolve_category(a.category, url) is None:
             raise ToolError(f"No category called '{a.category}'")
     intent = AggregationIntent("sum", a.category if not merchant else None, start, end)
-    agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant)
+    agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant, top=3)
+    # rows are the most recent purchases; largest says which were the biggest,
+    # so a model asked about the largest one never picks it from recent rows.
     return {"total": agg.total, "count": agg.count, "average": agg.average, "category": agg.category,
             "merchant": agg.merchant, "from": str(start), "to": str(end - timedelta(days=1)),
-            "rows": agg.rows[:10]}
+            "rows": agg.rows[:10], "largest": agg.largest}
 
 
 def _receipt(ctx: ToolContext, a: ReceiptArgs) -> dict | None:
@@ -217,7 +221,8 @@ def _propose_budget(ctx: ToolContext, a: BudgetArgs) -> dict:
 
 TOOLS: dict[str, Tool] = {t.name: t for t in (
     Tool("search_transactions", "find purchases by meaning (e.g. 'late night food', 'pizza')", SearchArgs, _search),
-    Tool("spend_summary", "exact totals from SQL for a window, optionally one category or merchant", SpendArgs, _spend),
+    Tool("spend_summary", "exact totals from SQL for a window, optionally one category or merchant; rows are the "
+         "most recent purchases and largest the three biggest, so name the biggest from largest", SpendArgs, _spend),
     Tool("receipt_details", "the active receipt (or one by document_id): merchant, total, items, linked expense",
          ReceiptArgs, _receipt),
     Tool("similar_transactions", "purchases most like one expense", ExpenseArgs,
@@ -284,8 +289,11 @@ def run_tool(name: str, args: dict | None, ctx: ToolContext) -> dict:
     except (ledger.NotFound, ToolError) as exc:
         trace_step("tool", name, str(exc), status="warning")
         return done(ok=False, error=str(exc))
-    except Exception:
-        log.warning("tool %s failed", name, exc_info=True)
+    except Exception as exc:
+        if isinstance(exc, ModelWarmingUp):
+            note_skipped(log, f"tool {name}", exc)
+        else:
+            log.warning("tool %s failed", name, exc_info=True)
         trace_step("tool", name, "failed; details are in the server log", status="error")
         return done(ok=False, error="failed")
     # Counts that were cut to their range, so the answer never claims the 100 rows or 24 months it asked for.

@@ -36,6 +36,30 @@ def seeded_diner(months: int, *, today: date | None = None, user_id: str | None 
     return uid
 
 
+def card_purchase(user_id: str, merchant: str, amount: str, category: str = "Coffee") -> str:
+    """A card purchase posted the way the app posts one: with an embedding
+    (a receipt, the load simulator and seeding all store one), here of the
+    description, as seeding does."""
+    from banko_ai.services import ledger
+    from banko_ai.services._sql import vector_floats
+    from banko_ai.services._vector import embed
+    from banko_ai.services.accounts import list_accounts
+    card = next(a for a in list_accounts(user_id)["accounts"] if a["kind"] == "credit")
+    description = f"Spent ${float(amount):.2f} on {category.lower()} at {merchant} using Credit Card."
+    return ledger.post_purchase(user_id, card["account_id"], amount=amount, merchant=merchant, category=category,
+                                description=description, payment_method="Credit Card",
+                                embedding=vector_floats(embed(description)))
+
+
+def splurge(user_id: str) -> str:
+    """An amount three standard deviations above what this user usually
+    spends, whatever the seed drew for them."""
+    with get_engine().connect() as c:
+        mean, spread = c.execute(text("SELECT avg(expense_amount), stddev(expense_amount) FROM expenses "
+                                      "WHERE user_id = CAST(:u AS UUID)"), {"u": user_id}).one()
+    return f"{mean + 3 * spread:.2f}"
+
+
 def drop_user(user_id: str) -> None:
     # Retried: deleting expenses touches C-SPANN partition metadata, which
     # can lose a 40001 race with another user's delete right next to it.

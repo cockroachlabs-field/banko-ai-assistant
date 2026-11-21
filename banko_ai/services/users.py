@@ -82,6 +82,21 @@ def delete_users(ids: Sequence[str], *, url: str | None = None, batch: int = 100
                 _forget_conversations(chunk, url)
             except Exception:  # their checkpoints expire on their own; never block the delete
                 log.warning("could not delete checkpoints while removing users", exc_info=True)
+        if "agent_decisions" in present:
+            # No user column here: a decision names its user, or the purchase
+            # it was about, in its context, and the reasoning beside it names
+            # the merchant and the amount. Before the purchases go.
+            about = "context->>'user_id' = ANY(CAST(:ids AS STRING[]))"
+            if "expenses" in present:
+                about += (" OR context->>'expense_id' IN (SELECT expense_id::STRING FROM expenses "
+                          "WHERE user_id = ANY(CAST(:ids AS UUID[])))")
+            decisions = text(f"DELETE FROM agent_decisions WHERE {about} LIMIT {batch}")
+
+            def delete_decisions(conn, chunk=chunk) -> int:
+                return int(conn.execute(decisions, {"ids": chunk}).rowcount)
+
+            while run_transaction(delete_decisions, url=url) >= batch:
+                pass
         for table, kind in _user_id_types().items():
             if table not in present:
                 continue
@@ -92,10 +107,20 @@ def delete_users(ids: Sequence[str], *, url: str | None = None, batch: int = 100
 
             while run_transaction(delete_batch, url=url) >= batch:
                 pass
-        if "banko_meta" in present:
-            keys = [f"seed:{u}" for u in chunk] + [f"seed_lock:{u}" for u in chunk]
-            run_transaction(lambda conn: conn.execute(text(
-                "DELETE FROM banko_meta WHERE key = ANY(CAST(:keys AS STRING[]))"), {"keys": keys}), url=url)
+        def delete_meta(kinds: tuple[str, ...], chunk=chunk) -> None:
+            if "banko_meta" in present:
+                keys = [f"{kind}:{u}" for u in chunk for kind in kinds]
+                run_transaction(lambda conn: conn.execute(text(
+                    "DELETE FROM banko_meta WHERE key = ANY(CAST(:keys AS STRING[]))"), {"keys": keys}), url=url)
+
+        delete_meta(("seed", "seed_lock"))
         removed += run_transaction(lambda conn: conn.execute(text(
             "DELETE FROM users WHERE user_id = ANY(CAST(:ids AS UUID[]))"), {"ids": chunk}).rowcount, url=url)
+        # The note of a visit goes after the user it is about. It is what
+        # marks an account for the idle clock: gone first, a stop between the
+        # two statements would leave an account nothing ever removes.
+        delete_meta(("seen",))
+        from . import staff  # here, not at the top: staff reaches for this module when an account expires
+        for user_id in chunk:
+            staff.forget(user_id)  # a signed-in person's account is remembered for as long as the process lives
     return removed
