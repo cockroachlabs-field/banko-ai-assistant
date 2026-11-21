@@ -19,6 +19,7 @@ over a second slower.
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
@@ -29,6 +30,16 @@ DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 class ModelWarmingUp(RuntimeError):
     """The embedding model is still loading; try again shortly."""
+
+
+def note_skipped(log: logging.Logger, what: str, exc: BaseException) -> None:
+    """Log a step a request went on without. A model that is still loading
+    is the first seconds after a boot and gets one line; anything else keeps
+    its traceback."""
+    if isinstance(exc, ModelWarmingUp):
+        log.info("%s skipped: the embedding model is still loading", what)
+    else:
+        log.warning("%s skipped", what, exc_info=exc)
 
 
 class SharedEmbeddingModel:

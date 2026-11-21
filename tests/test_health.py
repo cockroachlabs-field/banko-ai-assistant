@@ -71,6 +71,36 @@ def test_app_boots_with_database_down(monkeypatch, make_app):
 
 
 @pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
+def test_a_database_name_that_does_not_exist_is_said_in_plain_words(monkeypatch, make_app, caplog):
+    """A typo in the database name of DATABASE_URL: the cluster answers and
+    the database is not there. The page, the health detail and the log say
+    that and point at DATABASE_URL, without the SQL or a link to SQLAlchemy."""
+    import logging
+
+    from sqlalchemy.engine import make_url
+
+    from banko_ai.utils.db_retry import normalize_db_url
+    monkeypatch.setenv("AI_SERVICE", "ollama")
+    monkeypatch.setenv("DATABASE_URL",
+                       make_url(normalize_db_url(URL)).set(database="dafaultdb").render_as_string(hide_password=False))
+    monkeypatch.setenv("WARMUP_WAIT_SECONDS", "1")
+    caplog.set_level(logging.WARNING, logger="banko.boot")
+    client = make_app().test_client()
+    said = 'no database named "dafaultdb" on this cluster; check DATABASE_URL'
+    deadline, detail = time.time() + 20, ""
+    while detail != said and time.time() < deadline:
+        detail = (client.get("/api/health/ready").get_json().get("schema") or {}).get("detail") or ""
+        time.sleep(0.2)
+    assert detail == said
+    page = client.get("/login")
+    assert page.status_code == 503 and b"no database named" in page.data and b"dafaultdb" in page.data
+    # Lines about this database only: an app from an earlier test can still be retrying its own.
+    ours = [r.getMessage() for r in caplog.records if r.name == "banko.boot" and "dafaultdb" in r.getMessage()]
+    assert any(line.startswith(f"schema: {said} (retrying in") for line in ours), ours
+    assert not any("sqlalche.me" in line or "[SQL:" in line for line in ours)
+
+
+@pytest.mark.skipif(not URL, reason="DATABASE_URL not set")
 def test_ready_waits_for_the_personas(monkeypatch, make_app):
     """A presenter typing "maya" before the personas exist would create an
     ordinary user the backfill never repairs, so /login waits for them."""
