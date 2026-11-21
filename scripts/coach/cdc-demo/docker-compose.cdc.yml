@@ -38,7 +38,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
 
   connect:
-    image: quay.io/debezium/connect:${DEBEZIUM_VERSION:-3.6.0.Final}
+    image: quay.io/debezium/connect:${DEBEZIUM_VERSION:-3.7.1.Final}
     hostname: connect
     container_name: banko-cdc-connect
     depends_on:
