@@ -1113,3 +1113,90 @@ def test_the_biggest_purchase_at_a_merchant_or_in_a_category(g, member, thread):
     assert out["route"]["kind"] == "aggregate" and quiet.calls == []
     assert out["answer"].startswith("Your biggest Restaurant purchase from ")
     assert f"**${float(dining[0]):,.2f}** at **{dining[1]}**" in out["answer"].splitlines()[0]
+
+
+# A conversation with a receipt on the table, and the answer cache.
+
+def _receipt_on_the_table(g, member, thread, merchant="Blue Bottle Coffee", amount=9.75) -> str:
+    doc = str(uuid.uuid4())
+    with get_engine().begin() as c:
+        c.execute(text("INSERT INTO receipts (document_id, user_id, status, extracted) VALUES "
+                       "(CAST(:d AS UUID), CAST(:u AS UUID), 'posted', CAST(:x AS JSONB))"),
+                  {"d": doc, "u": member, "x": json.dumps({"merchant": merchant, "amount": amount, "category": "Coffee",
+                                                           "items": ["Latte", "Croissant"], "date": "2026-11-21"})})
+    G.set_active_receipt(thread, {"document_id": doc, "merchant": merchant, "items": ["Latte", "Croissant"],
+                                  "amount": amount}, graph=g)
+    return doc
+
+
+def _cache_steps(events) -> list[str]:
+    return [e["status"] for e in events if e["type"] == "step" and e["label"] == "Answer cache"]
+
+
+def test_the_same_question_about_a_receipt_comes_from_the_cache_the_second_time(g, member, thread):
+    """Asked twice in a row with a receipt on the table, a question cost two
+    model calls and the trace never mentioned a cache. A conversation with a
+    receipt stayed away from the answer cache altogether, because the same
+    words about another receipt mean something else. The receipt is part of
+    the key now."""
+    _receipt_on_the_table(g, member, thread)
+    q = "how much was this receipt?"
+    first, events = _turn(g, member, thread, q, ScriptedChat("It came to $9.75 at Blue Bottle Coffee."))
+    assert first["route"]["kind"] == "receipt" and not first["cached"] and _cache_steps(events) == ["miss"]
+    again, again_events = _turn(g, member, thread, q, ScriptedChat("the model was asked again"))
+    assert again["cached"] and again["answer"] == first["answer"] and again["saved_tokens"] > 0
+    assert _cache_steps(again_events) == ["hit"]
+    assert "LLM answer" not in [e["label"] for e in again_events if e["type"] == "step"]
+    in_spanish, spanish_events = _turn(g, member, thread, q, ScriptedChat("Fueron $9.75 en Blue Bottle Coffee."),
+                                       language_code="es-ES")
+    assert not in_spanish["cached"] and _cache_steps(spanish_events) == ["miss"]     # another language, another answer
+
+
+def test_another_receipt_never_gets_the_first_ones_answer(g, member, thread):
+    _receipt_on_the_table(g, member, thread)
+    q = "how much was this receipt?"
+    _turn(g, member, thread, q, ScriptedChat("It came to $9.75 at Blue Bottle Coffee."))
+    other = threads.create_thread(member)["thread_id"]
+    try:
+        _receipt_on_the_table(g, member, other, merchant="Harbor Deli", amount=18.20)
+        out, events = _turn(g, member, other, q, ScriptedChat("It came to $18.20 at Harbor Deli."))
+        assert not out["cached"] and "18.20" in out["answer"] and _cache_steps(events) == ["miss"]
+    finally:
+        threads.delete_thread(member, other)
+
+
+def test_a_question_that_leans_on_the_turn_before_is_still_never_cached(g, member, thread):
+    _receipt_on_the_table(g, member, thread)
+    _turn(g, member, thread, "how much was this receipt?", ScriptedChat("It came to $9.75."))
+    q = "was the latte on it?"                              # "it": after another turn it means something else
+    first, events = _turn(g, member, thread, q, ScriptedChat("Yes, one latte."))
+    again, again_events = _turn(g, member, thread, q, ScriptedChat("Yes, the latte is on it."))
+    assert not first["cached"] and not again["cached"] and again["answer"] == "Yes, the latte is on it."
+    assert _cache_steps(events) == [] and _cache_steps(again_events) == []
+
+
+def test_a_new_purchase_retires_what_was_cached_about_a_receipt(g, member, thread):
+    from banko_ai.services import ledger
+    from banko_ai.services.accounts import list_accounts
+    _receipt_on_the_table(g, member, thread)
+    q = "how much was this receipt?"
+    _turn(g, member, thread, q, ScriptedChat("It came to $9.75."))
+    card = next(a for a in list_accounts(member)["accounts"] if a["kind"] == "credit")
+    ledger.post_purchase(member, card["account_id"], amount="3.10", merchant="Corner Kiosk", category="Other")
+    out, events = _turn(g, member, thread, q, ScriptedChat("It came to $9.75, as before."))
+    assert not out["cached"] and out["answer"] == "It came to $9.75, as before." and _cache_steps(events) == ["miss"]
+
+
+def test_an_open_question_beside_a_receipt_is_cached_with_it(g, member, thread):
+    """"coffee expenses" twice, with a coffee receipt on the table: an open
+    question the planner answers, and the second ask comes from the cache."""
+    _receipt_on_the_table(g, member, thread)
+    q = "coffee expenses"
+    plan = ('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}', '{"steps": []}')
+    first, events = _turn(g, member, thread, q, ScriptedChat(*plan, "You bought coffee a few times."))
+    assert first["route"]["kind"] == "plan" and not first["cached"] and _cache_steps(events) == ["miss"]
+    again, again_events = _turn(g, member, thread, q, ScriptedChat("the model was asked again"))
+    assert again["cached"] and again["answer"] == first["answer"] and _cache_steps(again_events) == ["hit"]
+    # The same words in a conversation without the receipt are another question: its answer was never theirs.
+    elsewhere, elsewhere_events = _fresh_thread_turn(g, member, q, ScriptedChat(*plan, "A few coffees, no receipt here."))
+    assert not elsewhere["cached"] and _cache_steps(elsewhere_events) == ["miss"]
