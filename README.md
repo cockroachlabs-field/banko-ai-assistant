@@ -96,7 +96,7 @@ webhook and the welcome nudge for new users. macOS AirPlay holds port
 
 From a clone, put `uv run` in front of the same commands after `uv sync`.
 With Docker, `docker compose up -d` starts CockroachDB and Banko together;
-[`docs/DOCKER.md`](docs/DOCKER.md) covers the images and compose files.
+[`docs/DOCKER.md`](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/DOCKER.md) covers the images and compose files.
 
 ### Offline
 
@@ -217,7 +217,7 @@ and the Debezium CockroachDB connector on the `spending_signals` table; run
 the app with `COACH_KAFKA_ENABLED=true KAFKA_BOOTSTRAP_SERVERS=localhost:29092`
 and an `INSERT INTO spending_signals` reaches the coach with no webhook.
 `scripts/coach/assert_nudges.py` checks either transport end to end, and
-[PIPELINE_CONTRACT.md](PIPELINE_CONTRACT.md) is the producer contract. The
+[PIPELINE_CONTRACT.md](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/PIPELINE_CONTRACT.md) is the producer contract. The
 companion repo
 [`cockroachdb-watsonx-data-pipeline`](https://github.com/viragtripathi/cockroachdb-watsonx-data-pipeline)
 streams the same changes into Apache Iceberg on watsonx.data.
@@ -228,7 +228,7 @@ The banking data has a JSON API under `/api/v1` (dashboard, accounts and
 statements, transactions and semantic search, cash flow, budgets, recurring
 bills, goals, transfers with idempotency keys), scoped to the signed-in
 user. `/api/health`, `/api/health/live` and `/api/health/ready` report the
-app's state. Routes and examples are in [`docs/API.md`](docs/API.md).
+app's state. Routes and examples are in [`docs/API.md`](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/API.md).
 
 ## Upgrading from 1.3
 

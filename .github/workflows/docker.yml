@@ -12,10 +12,16 @@ on:
         required: false
         type: boolean
         default: true
+      overview_only:
+        description: "Only refresh the overview on Docker Hub, no build"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   docker:
     name: Build & Push Docker Image
+    if: ${{ !inputs.overview_only }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -40,3 +46,39 @@ jobs:
             ${{ inputs.push_latest && format('{0}/banko-ai-assistant:latest', secrets.DOCKERHUB_USERNAME) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+
+  # Docker Hub's overview is the README. It is not part of the image, so
+  # nothing kept it current: after 2.0.0 the page still showed the 1.x README,
+  # with two pictures that main had dropped since. It follows the image now,
+  # and overview_only refreshes it for a release that is already out.
+  overview:
+    name: Docker Hub overview
+    needs: docker
+    if: ${{ !cancelled() && (needs.docker.result == 'success' || needs.docker.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # What the README links is pinned to the release's tag, as on PyPI, so
+      # the page keeps its pictures whatever main does later. The release
+      # workflow creates that tag: without it every picture would be broken.
+      - name: Pin the README's links to this release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "::error::There is no tag v$VERSION. Run the release workflow first, then this one again with overview_only."
+            exit 1
+          fi
+          python3 scripts/pin_readme_images.py "$VERSION"
+
+      # The token needs Docker Hub's read, write and delete scope to change the overview.
+      - name: Update the overview on Docker Hub
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ secrets.DOCKERHUB_USERNAME }}/banko-ai-assistant
+          short-description: "A demo bank with an AI assistant on CockroachDB: vector search, LangGraph, five LLM providers"
+          readme-filepath: ./README.md
