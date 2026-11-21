@@ -75,6 +75,13 @@ jobs:
           # The CI node is throwaway; tests/conftest.py refuses 26257 without this.
           BANKO_ALLOW_CHAOS_TESTS: "1"
 
+      # PyPI keeps this release's description for good and loads its images
+      # from GitHub when the page is viewed. Linked on main they broke the
+      # 1.3.2 page the day main dropped those files; linked at this release's
+      # own tag, which the last step creates, they cannot.
+      - name: Pin the README's images to this release
+        run: python scripts/pin_readme_images.py "${{ inputs.version }}"
+
       - name: Build package
         run: |
           uv pip install --system build

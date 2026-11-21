@@ -120,7 +120,7 @@ These come from prior development pain (mostly from droid sessions Feb-Apr 2026)
 ### Documentation
 
 - ONE end-to-end doc for any new feature, not a sprawl of `FEATURE_X.md` + `FEATURE_X_NOTES.md` + `FEATURE_X_FIXES.md`. The user has explicitly deleted droid-era doc piles. Keep `docs/` lean.
-- README target: ~250 lines, with the architecture diagram and the page screenshots (docs/images/<page>-light.png and -dark.png, taken from a seeded database on watsonx). Image links are absolute raw.githubusercontent.com URLs so PyPI renders them.
+- README target: ~250 lines, with the architecture diagram and the page screenshots (docs/images/<page>-light.png and -dark.png, taken from a seeded database on watsonx). Image links are absolute raw.githubusercontent.com URLs so PyPI renders them. In the repository they point at main; the release workflow runs `scripts/pin_readme_images.py` before it builds, which moves them to the release's own tag, because PyPI keeps a release's text for good (the 1.3.2 page lost both of its images the day main dropped those files). `tests/test_readme.py` checks that every file the README links is in the repository.
 - Demo marketing tone: Cisco / CockroachDB customer-story register. **Reject validation-speak** like "we prove it at scale with an industry-standard benchmark." The user has pushed back on that phrasing.
 
 ### Foundation layers (v2)
