@@ -207,6 +207,7 @@ def clear_region_caches() -> None:
     _tables_ready_cache.clear()
     _gateway_region_cache.clear()
     _money_tables_regional.clear()
+    _region_columns_seen.clear()
     resolve_user_region_cache_clear()
 
 

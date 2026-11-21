@@ -285,3 +285,18 @@ def test_fail_itself_raising_still_ends_cleanly(member, image):
         status = c.execute(text("SELECT status FROM receipts WHERE user_id = CAST(:u AS UUID) "
                                 "ORDER BY created_at DESC LIMIT 1"), {"u": member}).scalar()
     assert status == "failed"
+
+
+def test_the_receipt_says_whether_it_has_a_thumbnail(member, image, tmp_path):
+    """The receipt card asked for a thumbnail after every upload. A PDF has
+    none, nor has an image one could not be made from, and each of those was
+    a 404 in the log right after an upload that had worked."""
+    posted = _run(member, image, _hooks({**FIELDS, "merchant": "Thumb Market", "amount": 12.31}))[-1]
+    assert posted["type"] == "receipt" and posted["has_thumbnail"] is True
+    assert receipts.thumbnail(member, posted["document_id"])
+    pdf = tmp_path / "r.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    events = list(receipts.process_receipt(member, str(pdf), "r.pdf",
+                                           hooks=_hooks({**FIELDS, "merchant": "Paper Market", "amount": 12.32})))
+    assert events[-1]["type"] == "receipt" and events[-1]["has_thumbnail"] is False
+    assert receipts.thumbnail(member, events[-1]["document_id"]) is None

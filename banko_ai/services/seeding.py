@@ -39,6 +39,13 @@ _status: dict[str, dict] = {}
 _status_lock = threading.Lock()
 
 
+def forget_statuses() -> None:
+    """Drop every remembered seeding status: the database they describe was
+    emptied, and "done" would be a claim about history that is gone."""
+    with _status_lock:
+        _status.clear()
+
+
 def seeding_status(user_id: str) -> dict | None:
     with _status_lock:
         found = _status.get(str(user_id))

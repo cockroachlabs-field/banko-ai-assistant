@@ -43,7 +43,7 @@ from ..coach.handler import SignalHandler
 from ..coach.signals import SignalParseError, parse_changefeed_envelope
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
-from ..db.engine import get_engine, mask_url
+from ..db.engine import get_engine, mask_url, missing_table
 from ..db.regions import detect_database_regions
 from ..db.schema import ensure_schema, run_pending_conversions
 from ..observability.metrics import metrics
@@ -413,6 +413,8 @@ def create_app() -> Flask:
         else:
             readiness.set("integrity", "ready", f"0 drift across {report.accounts} accounts")
 
+    integrity_started = threading.Event()   # the step runs again after a rebuilt database; the worker starts once
+
     def _persona_data_step() -> str:
         from ..services.integrity import IntegrityWorker
         if config.banko_skip_autosetup:
@@ -427,7 +429,9 @@ def create_app() -> Flask:
             written = seed_personas(config.database_url, on_progress=_persona_progress)
             return ", ".join(f"{name} +{n}" for name, n in written.items())
         finally:
-            IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
+            if not integrity_started.is_set():
+                integrity_started.set()
+                IntegrityWorker(url=config.database_url, stop=warmup_stop, on_report=_integrity).start()
 
     def _assistant_step() -> str:
         # Builds the checkpointer once: the checkpoint tables on a first
@@ -457,17 +461,16 @@ def create_app() -> Flask:
             boot_log.warning("checkpoint TTL: the run did not finish; the next boot tries again", exc_info=True)
             raise RuntimeError(f"the run did not finish ({e.__class__.__name__}); the next boot tries again") from None
 
-    def _emit_welcome_signal(user: dict, base_url: str) -> None:
-        """Post a welcome signal matched to the user's spending style to this
-        same server at base_url (the signup request's host, read while that
-        request was live: this runs on the seeding thread after it ended).
+    def _emit_welcome_signal(user: dict) -> None:
+        """Hand the coach a welcome signal matched to the user's spending
+        style, in this process, the way the Simulate buttons do.
 
-        The POST runs on a background thread: a synchronous self-call inside
-        the signup request would deadlock a single-threaded server."""
-        secret = get_config().cdc_webhook_hmac_secret
-        if not secret:
-            print("welcome signal skipped: no webhook secret")
-            return
+        It used to be posted to this server's own webhook, at the address the
+        sign-up request came in on. Behind a proxy with a sign-in in front
+        that is the public address: the post never arrived, and the nudge was
+        lost without a word. Called on the seeding thread, after that request
+        is gone."""
+        from ..coach.signals import Signal
         sig_type, severity, payload = {
             "subscriber": ("recurring_drift", "info",
                            {"subscription": "Netflix", "old_amount": 15.99,
@@ -478,28 +481,14 @@ def create_app() -> Flask:
                {"category": "dining", "pct_used": 0.55,
                 "monthly_budget": 400.0, "spent_so_far": 220.0,
                 "days_remaining": 12}))
-        envelope = {"payload": [{"after": {
-            "signal_id": str(uuid.uuid4()), "user_id": user["user_id"],
-            "signal_type": sig_type, "severity": severity,
-            "payload": payload,
-            "idempotency_key": f"welcome:{user['user_id']}"},
-            "updated": f"{time.time():.10f}"}]}
-        body = json.dumps(envelope).encode()
-        mac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        url = base_url.rstrip('/') + '/api/cdc/signals'
-
-        def _post() -> None:
-            try:
-                requests.post(
-                    url, data=body, timeout=5,
-                    headers={"Content-Type": "application/json",
-                             "X-Banko-Signature": mac})
-            except Exception as e:
-                print(f"welcome signal skipped: {e}")
-
-        import threading
-        threading.Thread(target=_post, daemon=True,
-                         name="welcome-signal").start()
+        try:
+            app.extensions["banko_coach"]["submit"](Signal.from_dict({
+                "signal_id": str(uuid.uuid4()), "user_id": user["user_id"],
+                "signal_type": sig_type, "severity": severity, "payload": payload,
+                "idempotency_key": f"welcome:{user['user_id']}"}))
+        except Exception:
+            _coach_log.getLogger("banko.coach").warning(
+                "the welcome nudge for %s was not queued", user["username"], exc_info=True)
 
     def _login_page(**context):
         """The sign-in page: the catalog personas that exist, as one-click
@@ -583,15 +572,13 @@ def create_app() -> Flask:
         user = None
         try:
             user = um.create(username, spending_style, home_region, demo_user=True)
-            # Read now: the seeding thread outlives this request.
-            base_url = request.host_url
 
-            def _seed_then_welcome(new_user=user, base_url=base_url):
+            def _seed_then_welcome(new_user=user):
                 from ..services.seeding import SIGNUP_BATCH_SIZE, seed_user
                 try:
                     # Small batches, so the person watching sees the count move.
                     seed_user(new_user["user_id"], on_progress=_emit_seeding, batch_size=SIGNUP_BATCH_SIZE)
-                    _emit_welcome_signal(new_user, base_url)
+                    _emit_welcome_signal(new_user)
                 except Exception as exc:
                     print(f"⚠️  seeding {new_user['username']} failed: {exc}")
             threading.Thread(target=_seed_then_welcome, daemon=True,
@@ -1389,8 +1376,32 @@ def create_app() -> Flask:
         return render_template("errors/error.html", code=404, brand_name=config.brand_name,
                                message="That page doesn't exist."), 404
 
+    def _being_set_up_again() -> bool:
+        """Whether the database really was emptied: its setup is running, or
+        its schema is gone and the watch is about to start it. One missing
+        table in a database that has its schema is an error like any other,
+        and a page that says "getting ready" for ever would only hide it."""
+        if app.extensions.get("banko_schema_watch") is None:
+            return False
+        if not all(readiness.is_ready(step) for step in ("schema", "personas")):
+            return True
+        try:
+            from ..db.schema import schema_state
+            return schema_state(config.database_url) == "missing"
+        except Exception:
+            return False
+
     @app.errorhandler(500)
     def server_error(error):
+        # The request that finds the tables gone: the schema watch has been
+        # poked and the setup is about to run again, so this one gets the
+        # getting-ready answer the next ones will, not an error page.
+        if missing_table(error) and _being_set_up_again():
+            detail = "The database was rebuilt and is being set up again. Try again in a moment."
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "warming_up", "detail": detail}), 503
+            plain_page()
+            return render_template("errors/warming.html", detail=detail, brand_name=config.brand_name), 503
         if _wants_json():
             return jsonify({"error": NEUTRAL_FAILED}), 500
         plain_page()
@@ -1423,6 +1434,40 @@ def create_app() -> Flask:
     from .shell import shell_context
     app.context_processor(shell_context)
 
+    def _checkpoint_tables_step() -> str:
+        if not readiness.wait_for("schema", timeout=600):
+            raise RuntimeError("the schema is not ready yet; the first question makes the checkpoint tables")
+        from ..assistant import checkpoint
+        checkpoint.ensure_tables()
+        return "checkpoint tables present"
+
+    def _set_up_database_again() -> None:
+        """The database was emptied under this process (a cluster rebuilt
+        from the chaos stage). Run the boot's database steps again: starting
+        them marks the schema and the personas not ready, so pages show the
+        getting-ready page meanwhile, as they do on a first boot."""
+        from ..db.regions import clear_region_caches
+        from ..services.seeding import forget_statuses
+        from ..workers.traffic import stop_simulator
+        try:
+            stop_simulator()   # its customers went with the database
+        except Exception:
+            boot_log.warning("rebuild: the load simulator did not stop cleanly", exc_info=True)
+        clear_region_caches()  # what was known about regions and row homes described the old database
+        forget_statuses()
+        with persona_counts_lock:
+            persona_counts.clear()
+        from ..assistant import checkpoint
+        checkpoint.tables_gone()   # before the gate reopens: a question in between makes them itself
+        start_warmup(readiness, [
+            ("schema", _schema_step),
+            ("personas", _personas_step),
+            ("locality", lambda: f"{len(run_pending_conversions(config.database_url))} conversions"),
+        ], stop=warmup_stop, name="banko-rebuild-db")
+        start_warmup(readiness, [("persona_data", _persona_data_step)], stop=warmup_stop, name="banko-rebuild-seed")
+        start_warmup(readiness, [("assistant", _checkpoint_tables_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
+                     stop=warmup_stop, name="banko-rebuild-assistant")
+
     # Last, so every closure the steps call already exists.
     # Lane A needs no database. Lane B runs the gate (schema, personas)
     # first; locality conversions are online in CockroachDB, so they come
@@ -1451,4 +1496,16 @@ def create_app() -> Flask:
     readiness.mark_background("checkpoint_ttl")
     start_warmup(readiness, [("assistant", _assistant_step), ("checkpoint_ttl", _checkpoint_ttl_step)],
                  stop=warmup_stop, name="banko-warmup-assistant")
+    # A database emptied under this process is set up again (workers/schema_watch.py).
+    # Not on --no-data runs and in tests, which make and drop tables themselves.
+    if config.schema_watch_seconds > 0 and not config.banko_skip_autosetup:
+        from ..db.engine import watch_missing_tables
+        from ..db.schema import schema_state
+        from ..workers.schema_watch import SchemaWatch
+        watch = SchemaWatch(state=lambda: schema_state(config.database_url), gate_ready=_gate_ready,
+                            rebuild=_set_up_database_again, interval=float(config.schema_watch_seconds),
+                            stop=warmup_stop)
+        app.extensions["banko_schema_watch"] = watch   # holds it: the engine only keeps a weak reference
+        watch_missing_tables(watch)
+        watch.start()
     return app

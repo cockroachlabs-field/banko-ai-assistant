@@ -51,6 +51,9 @@ def test_a_signup_history_reports_progress_in_small_steps(monkeypatch):
     """A new user's history is written in batches of 50, so the setup bar
     moves on a 3-region cluster instead of sitting at 0 for the first 200."""
     client = app_client(monkeypatch)
+    # A sign-up ends with a welcome signal, which the coach answers by asking
+    # the model. This test is about the history; no model is asked.
+    client.application.extensions["banko_coach"]["submit"] = lambda signal: True
     socketio = client.application.extensions["socketio"]
     real_emit, sent = socketio.emit, []
 

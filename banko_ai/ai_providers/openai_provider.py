@@ -374,7 +374,9 @@ class OpenAIProvider(AIProvider):
             ai_response = ""
             try:
                 if self.client:
-                    response = self.client.chat.completions.create(
+                    from .openai_temperature import create_chat_completion
+                    response = create_chat_completion(
+                        self.client.chat.completions.create,
                         model=self.current_model,
                         messages=[
                             {"role": "system", "content": "You are Banko, a helpful financial assistant."},

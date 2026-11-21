@@ -14,6 +14,9 @@ from ..config.settings import get_config
 log = logging.getLogger("banko.assistant")
 _lock = threading.Lock()
 _saver = None
+# The database was emptied under this process and the checkpoint tables went
+# with it: whoever needs the saver next makes them again first.
+_tables_due = False
 # The pool's connections show up under this name in SHOW SESSIONS.
 APPLICATION_NAME = "banko-checkpointer"
 # In SHOW CREATE TABLE: any row-level TTL setting, and the interval of an
@@ -26,9 +29,12 @@ _TTL_INTERVAL = re.compile(r"\(created_at \+ \\?'([^'\\]+)")
 def get_saver():
     """The checkpointer, built on first use. Its tables' TTL is keep_ttl()'s
     job, so a turn that builds the checkpointer never waits on that."""
-    global _saver
+    global _saver, _tables_due
     with _lock:
         if _saver is not None:
+            if _tables_due:
+                _saver.setup()      # raises: still due, and the next caller tries again
+                _tables_due = False
             return _saver
         from langchain_cockroachdb import CockroachDBSaver
         from psycopg.rows import dict_row
@@ -45,8 +51,23 @@ def get_saver():
                                       "application_name": APPLICATION_NAME})
         saver = CockroachDBSaver(pool)
         saver.setup()
-        _saver = saver
+        _saver, _tables_due = saver, False
         return _saver
+
+
+def tables_gone() -> None:
+    """The database was emptied under this process. get_saver() makes the
+    checkpoint tables once, when it builds the saver, so it has to be told
+    to make them again on the saver it already has."""
+    global _tables_due
+    with _lock:
+        _tables_due = True
+
+
+def ensure_tables() -> None:
+    """Make the checkpoint tables now if they are due, instead of on the
+    first question. A failure leaves them due."""
+    get_saver()
 
 
 def _blob_table(pool) -> str:

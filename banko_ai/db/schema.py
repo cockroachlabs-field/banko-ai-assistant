@@ -30,7 +30,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from ..config.settings import get_config
-from .engine import get_engine
+from .engine import get_engine, missing_table
 from .rls import policy_statements, policy_tables, rls_statements, role_statements, supports_rls
 
 log = logging.getLogger("banko.schema")
@@ -632,10 +632,15 @@ class SchemaResult:
     seconds: float = 0.0
 
 
-def _stored(conn: Connection) -> dict | None:
+def _stored(conn: Connection, *, strict: bool = False) -> dict | None:
+    """The stored fingerprint, or None when there is none. strict lets every
+    failure through except banko_meta not being there, for a caller that
+    acts on "none" (a role that may not read the table has not lost it)."""
     try:
         row = conn.execute(text("SELECT value FROM banko_meta WHERE key = :k"), {"k": FINGERPRINT_KEY}).fetchone()
-    except ProgrammingError:  # banko_meta does not exist yet
+    except ProgrammingError as exc:  # banko_meta does not exist yet
+        if strict and not missing_table(exc):
+            raise
         return None
     return json.loads(row[0]) if row else None
 
@@ -937,7 +942,7 @@ def schema_state(url: str | None = None) -> str:
     """"current", "outdated" or "missing", from the stored fingerprint: the
     same one SELECT as ensure_schema's fast path, and nothing written."""
     with get_engine(url).connect() as conn:
-        stored = _stored(conn)
+        stored = _stored(conn, strict=True)
     if not stored:
         return "missing"
     want = fingerprint(Topology(regional=bool(stored.get("regional"))), rls=bool(stored.get("rls")))

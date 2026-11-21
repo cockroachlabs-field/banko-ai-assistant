@@ -36,6 +36,7 @@ class Readiness:
     def __init__(self) -> None:
         self._components: dict[str, Component] = {}
         self._background: set[str] = set()
+        self._lanes: dict[str, object] = {}   # step -> the warm-up lane that runs it now
         self._changed = threading.Condition()
 
     def mark_background(self, name: str) -> None:
@@ -45,8 +46,18 @@ class Readiness:
             self._background.add(name)
             self._changed.notify_all()
 
-    def set(self, name: str, state: str, detail: str = "") -> None:
+    def set(self, name: str, state: str, detail: str = "", *, lane: object | None = None) -> None:
+        """lane is the warm-up lane reporting. A step started again (the
+        database was rebuilt) belongs to the newer lane from its "pending"
+        on, and what an older lane still has to say about it is dropped: a
+        first-boot step failing late on the old database would otherwise
+        mark as failed what the newer one finished."""
         with self._changed:
+            if lane is not None:
+                if state == "pending":
+                    self._lanes[name] = lane
+                elif self._lanes.get(name) is not lane:
+                    return
             self._components[name] = Component(state=state, detail=detail)
             self._changed.notify_all()
 
@@ -87,22 +98,23 @@ def start_warmup(readiness: Readiness, steps: list[Step], *,
     """Run steps in order on a daemon thread. A failing step is recorded and
     the next one still runs. Setting `stop` ends the lane before its next
     step; steps that retry should watch it too."""
+    lane = object()
     for step_name, _ in steps:
-        readiness.set(step_name, "pending")
+        readiness.set(step_name, "pending", lane=lane)
 
     def run() -> None:
         for step_name, fn in steps:
             if stop is not None and stop.is_set():
-                readiness.set(step_name, "failed", "warm-up stopped")
+                readiness.set(step_name, "failed", "warm-up stopped", lane=lane)
                 continue
-            readiness.set(step_name, "running")
+            readiness.set(step_name, "running", lane=lane)
             started = time.monotonic()
             try:
                 detail = fn() or ""
-                readiness.set(step_name, "ready", detail)
+                readiness.set(step_name, "ready", detail, lane=lane)
                 log.info("warm-up: %s ready in %.1fs %s", step_name, time.monotonic() - started, detail)
             except Exception as e:
-                readiness.set(step_name, "failed", f"{e.__class__.__name__}: {e}")
+                readiness.set(step_name, "failed", f"{e.__class__.__name__}: {e}", lane=lane)
                 log.warning("warm-up: %s failed: %s", step_name, e)
 
     thread = threading.Thread(target=run, name=name, daemon=True)
