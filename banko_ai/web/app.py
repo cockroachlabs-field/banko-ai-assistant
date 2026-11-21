@@ -1712,8 +1712,10 @@ def create_app() -> Flask:
     app.register_blueprint(pages)
 
     # Shell context for all templates
-    from .shell import shell_context
+    from .shell import shell_context, tab_icon_url
     app.context_processor(shell_context)
+    # A global, not shell context: the getting-ready and error pages have no shell and link the icon too.
+    app.jinja_env.globals["tab_icon_url"] = tab_icon_url
 
     def _checkpoint_tables_step() -> str:
         if not readiness.wait_for("schema", timeout=600):
