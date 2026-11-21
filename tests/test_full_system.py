@@ -13,6 +13,12 @@ Run this to verify everything works before the demo.
 """
 
 import os
+
+import pytest
+
+# Calls a real model, so it runs only when asked for: BANKO_LIVE_MODEL_TESTS=1.
+pytestmark = pytest.mark.skipif(os.getenv("BANKO_LIVE_MODEL_TESTS") != "1",
+                                reason="calls a real model; set BANKO_LIVE_MODEL_TESTS=1 to run it")
 import sys
 import time
 from datetime import datetime
