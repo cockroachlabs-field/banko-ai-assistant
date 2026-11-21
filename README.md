@@ -1,5 +1,7 @@
+[![CI](https://github.com/cockroachlabs-field/banko-ai-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/cockroachlabs-field/banko-ai-assistant/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/banko-ai-assistant)](https://pypi.org/project/banko-ai-assistant/)
 [![Python versions](https://img.shields.io/pypi/pyversions/banko-ai-assistant)](https://pypi.org/project/banko-ai-assistant/)
+[![Downloads](https://static.pepy.tech/badge/banko-ai-assistant)](https://pepy.tech/projects/banko-ai-assistant?timeRange=threeMonths&category=version&includeCIDownloads=true&granularity=weekly&viewType=line&versions=Total%2C2.*%2C1.*)
 [![License](https://img.shields.io/pypi/l/banko-ai-assistant)](https://pypi.org/project/banko-ai-assistant/)
 [![Docker Pulls](https://img.shields.io/docker/pulls/virag/banko-ai-assistant)](https://hub.docker.com/r/virag/banko-ai-assistant)
 
