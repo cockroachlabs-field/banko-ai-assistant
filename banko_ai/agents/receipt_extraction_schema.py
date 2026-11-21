@@ -60,7 +60,9 @@ class ReceiptExtraction(BaseModel):
     # read; the prompt asks for null then. A missing date is today, a
     # missing payment method None (the ledger uses the account's own).
     date: datetime.date = Field(default_factory=datetime.date.today)
-    category: str = Field(min_length=1)
+    # A receipt with a store and a total is a purchase whatever kind it is:
+    # with no category the model could name, the catalog says Other.
+    category: str | None = None
     items: list[str] = Field(default_factory=list)
     payment_method: str | None = None
 
@@ -83,9 +85,9 @@ class ReceiptExtraction(BaseModel):
             raise ValueError(f"date {v!r} is a prompt-template placeholder")
         return v
 
-    @field_validator("payment_method", mode="before")
+    @field_validator("payment_method", "category", mode="before")
     @classmethod
-    def blank_payment_method_is_none(cls, v: Any) -> Any:
+    def blank_is_none(cls, v: Any) -> Any:
         if isinstance(v, str) and not v.strip():
             return None
         return v

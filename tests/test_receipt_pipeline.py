@@ -188,6 +188,45 @@ def test_a_receipt_without_a_date_or_payment_method_posts(member, image):
     assert final["date"] == str(date.today()) and final["payment_method"] is None
 
 
+def test_a_receipt_with_no_clear_category_posts_as_other(member, image):
+    """The prompt tells the model to answer null for what it cannot find. A
+    receipt with a store and a total is a purchase all the same: it was
+    refused whole because nobody could say what kind of purchase it was."""
+    fields = {"merchant": "City Parking Garage", "amount": 46.29, "category": None, "items": None,
+              "date": None, "payment_method": None}
+    final = _run(member, image, _hooks(fields))[-1]
+    assert final["type"] == "receipt" and final["status"] == "posted", final
+    assert final["merchant"] == "City Parking Garage" and final["category"] == "Other"
+
+
+@pytest.mark.parametrize("fields, said, logged", [
+    ({"merchant": "City Parking Garage", "amount": None, "category": "Transport"},
+     "We couldn't find the total on that receipt. Try a clearer photo or scan.", ["amount"]),
+    ({"merchant": None, "amount": 46.29, "category": "Transport"},
+     "We couldn't find the store's name on that receipt. Try a clearer photo or scan.", ["merchant"]),
+    ({"merchant": "store name", "amount": 0, "category": "Transport"},
+     "We couldn't find the store's name and the total on that receipt. Try a clearer photo or scan.",
+     ["amount", "merchant"]),
+])
+def test_a_receipt_that_is_refused_says_what_was_missing_and_the_log_says_why(member, image, caplog, fields, said, logged):
+    """"The receipt fields didn't look right" for a PDF with a clear total,
+    and nothing in the log: neither the person nor whoever runs the server
+    could tell what the model had failed to find."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="banko.receipts"):
+        events = _run(member, image, _hooks(fields))
+    assert events[-1] == {"type": "error", "message": said}
+    assert [e for e in events if e["type"] == "step" and e["step"] == "extract"][-1]["status"] == "failed"
+    line = next(r.getMessage() for r in caplog.records if "did not pass" in r.getMessage())
+    assert all(name in line for name in logged)
+    assert "City Parking Garage" not in line and "46.29" not in line         # what failed, not what the receipt said
+
+
+def test_fields_that_are_wrong_in_another_way_keep_the_general_words(member, image):
+    odd = {"merchant": "City Parking Garage", "amount": 46.29, "category": "Transport", "date": "the day after tomorrow"}
+    assert _run(member, image, _hooks(odd))[-1] == {"type": "error", "message": receipts.INVALID}
+
+
 def test_default_hooks_extract_reaches_the_llm():
     """Issue #1: default_hooks().extract must work with a real LLM (monkeypatched here)."""
     from unittest.mock import MagicMock
