@@ -235,3 +235,56 @@ def test_no_purchases_at_all_is_said_plainly():
     # A category with nothing in it keeps the wording the totals use.
     assert "No matching transactions on Restaurant" in A.render_aggregation_markdown(
         _agg(operation="largest", category="Restaurant", count=0, total=0.0, rows=[]))
+
+
+_LATEST = [{"date": f"2026-09-{30 - i:02d}", "merchant": "Domino's" if i % 2 else "Peet's Coffee",
+            "amount": 38.58 if i % 2 else 7.5} for i in range(10)]
+_BROKEN_DOWN = dict(
+    total=11587.89, count=141, rows=_LATEST,
+    top_merchants=[{"merchant": "Greenway Apartments", "total": 5550.0, "count": 3, "category": "Housing"},
+                   {"merchant": "Domino's", "total": 1416.84, "count": 30, "category": "Restaurant"},
+                   {"merchant": "Whole Foods", "total": 912.4, "count": 11, "category": None}],   # bought under two
+    top_categories=[{"category": "Housing", "total": 5550.0, "count": 3},
+                    {"category": "Restaurant", "total": 2310.44, "count": 52},
+                    {"category": "Groceries", "total": 1630.1, "count": 19}])
+
+
+def test_the_insights_are_asked_about_the_whole_window_not_about_the_rows_listed():
+    """"Significant spending occurred at Domino's, totaling $192.92", said of
+    three months in which Domino's took $1,416.84: the prompt added up the
+    purchases the card lists and called the result exact."""
+    prompt = A.insights_messages(_agg(**_BROKEN_DOWN), "what's my total expenses")[0]["content"]
+    # Each merchant comes with its category, so the model never has to guess which merchant leads which category.
+    assert "Greenway Apartments (Housing, $5,550.00, 3 purchases)" in prompt
+    assert "Domino's (Restaurant, $1,416.84, 30 purchases)" in prompt
+    assert "Whole Foods ($912.40, 11 purchases)" in prompt  # no one category to name
+    assert "$192.90" not in prompt                          # what the five Domino's rows listed add up to
+    assert "Housing ($5,550.00, 3 purchases)" in prompt and "Restaurant ($2,310.44, 52 purchases)" in prompt
+    one_category = A.insights_messages(_agg(category="Restaurant", **{**_BROKEN_DOWN, "top_categories": []}),
+                                       "how much on dining")[0]["content"]
+    assert "By category" not in one_category and "Domino's ($1,416.84, 30 purchases)" in one_category   # all Restaurant
+    alone = A.insights_messages(_agg(merchant="Blue Bottle"), "how much at Blue Bottle")[0]["content"]
+    assert "Top merchants" not in alone and "By category" not in alone   # nothing was broken down: nothing is claimed
+
+
+def test_a_total_shows_its_breakdown_then_the_latest_purchases():
+    text = A.render_aggregation_markdown(_agg(**_BROKEN_DOWN))
+    lines = text.split("\n")
+    assert lines[0] == "You spent **$11,587.89** on all categories from 2026-09-01 to 2026-09-30 (141 transactions)."
+    assert "| Category | Spent | Purchases |" in lines and "| Housing | $5,550.00 | 3 |" in lines
+    assert "| Merchant | Spent | Purchases |" not in lines  # every category was asked about: categories it is
+    assert "The latest 10 of 141:" in lines
+    assert text.index("| Category |") < text.index("The latest 10 of 141:") < text.index("| Date | Merchant | Amount |")
+    assert "| 2026-09-30 | Peet's Coffee | $7.50 |" in lines
+
+    dining = A.render_aggregation_markdown(_agg(category="Restaurant", **{**_BROKEN_DOWN, "top_categories": []}))
+    assert "| Merchant | Spent | Purchases |" in dining and "| Domino's | $1,416.84 | 30 |" in dining
+    assert "| Category |" not in dining
+
+    three = [{"date": f"2026-09-0{d}", "merchant": "Blue Bottle", "amount": 14.5} for d in (3, 2, 1)]
+    few = A.render_aggregation_markdown(_agg(rows=three))   # three purchases, all listed, nothing to break down
+    assert "The latest" not in few and "| Spent |" not in few
+    assert "| 2026-09-03 | Blue Bottle | $14.50 |" in few
+    one_group = A.render_aggregation_markdown(_agg(category="Coffee", top_merchants=[
+        {"merchant": "Blue Bottle", "total": 42.5, "count": 3}]))
+    assert "| Spent |" not in one_group                     # one merchant is no breakdown

@@ -88,10 +88,28 @@ def render_aggregation_markdown(agg) -> str:
                     f"({agg.count} transactions, ${agg.total:,.2f} total).")
     else:
         headline = f"You spent **${agg.total:,.2f}** {scope} {window} ({agg.count} transactions)."
-    lines = [headline, "", "| Date | Merchant | Amount |", "|---|---|---|"]
+    lines = [headline]
+    label, groups = _breakdown(agg)
+    if groups:
+        lines += ["", f"| {label} | Spent | Purchases |", "|---|---|---|"]
+        lines += [f"| {g[label.lower()]} | ${g['total']:,.2f} | {g['count']} |" for g in groups]
+    if agg.count > len(agg.rows):
+        lines += ["", f"The latest {len(agg.rows)} of {agg.count}:"]
+    lines += ["", "| Date | Merchant | Amount |", "|---|---|---|"]
     for row in agg.rows:
         lines.append(f"| {row['date']} | {row['merchant']} | ${row['amount']:,.2f} |")
     return "\n".join(lines)
+
+
+def _breakdown(agg) -> tuple[str, list[dict]]:
+    """What a total is broken down by, summed by SQL over the whole window:
+    categories when every category was asked about, else merchants. One
+    group is no breakdown."""
+    categories = getattr(agg, "top_categories", None) or []
+    merchants = getattr(agg, "top_merchants", None) or []
+    if len(categories) > 1:
+        return "Category", categories
+    return ("Merchant", merchants) if len(merchants) > 1 else ("", [])
 
 
 def render_visits_markdown(found: dict, *, window: tuple | None = None, last_ever: str | None = None) -> str:
@@ -117,15 +135,26 @@ def render_visits_markdown(found: dict, *, window: tuple | None = None, last_eve
 
 def insights_messages(agg, question: str) -> list[dict]:
     """The prompt for two or three observations over figures SQL already
-    computed (top merchants are summed here, never by the model)."""
-    merchants: dict[str, float] = {}
-    for row in agg.rows:
-        merchants[row["merchant"]] = merchants.get(row["merchant"], 0) + row["amount"]
-    top = ", ".join(f"{m} (${v:,.2f})" for m, v in sorted(merchants.items(), key=lambda kv: -kv[1])[:3])
+    computed. Every figure in it covers the whole window: the breakdown
+    comes from SQL too, never from adding up the purchases the card lists,
+    which are only the latest ones."""
+    def groups(key: str, found: list[dict], categories: bool = False) -> str:
+        def one(g: dict) -> str:
+            under = f"{g['category']}, " if categories and g.get("category") else ""
+            return f"{g[key]} ({under}${g['total']:,.2f}, {g['count']} purchase{'' if g['count'] == 1 else 's'})"
+        return ", ".join(one(g) for g in found)
     scope = getattr(agg, "merchant", None) or agg.category or "all categories"
+    figures = [f"total ${agg.total:,.2f} across {agg.count} transactions on {scope} {_window(agg)}"]
+    categories = getattr(agg, "top_categories", None) or []
+    merchants = getattr(agg, "top_merchants", None) or []
+    if len(categories) > 1:
+        figures.append("By category: " + groups("category", categories))
+    if merchants:
+        # With its category when the question spans all of them, so the model
+        # never guesses which merchant leads which category.
+        figures.append("Top merchants: " + groups("merchant", merchants, categories=not agg.category))
     prompt = ("You are a personal finance coach. Exact figures, already computed from the user's "
-              f"expense database: total ${agg.total:,.2f} across {agg.count} transactions on {scope} "
-              f"{_window(agg)}. Top merchants: {top}. "
+              f"expense database: {'. '.join(figures)}. "
               f"The user asked: \"{question}\". Write two or three short, specific observations or "
               "suggestions as markdown bullets. Use only the figures given; do not compute new totals "
               "or restate the question. No headings, bullets only.")

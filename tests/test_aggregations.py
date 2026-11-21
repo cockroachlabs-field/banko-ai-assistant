@@ -194,3 +194,44 @@ def test_purchases_of_the_same_amount_come_back_in_one_order():
     first = run_aggregation(intent, USER, DB).rows
     assert [row["merchant"] for row in first] == [f"T-{ids[0][:4]}", f"T-{ids[2][:4]}", f"T-{ids[1][:4]}"]
     assert run_aggregation(intent, USER, DB).rows == first
+
+
+def _buy(conn, merchant: str, amount: float, days_ago: int, category: str) -> None:
+    conn.execute(text("""
+        INSERT INTO expenses (expense_id, user_id, expense_date, expense_amount, shopping_type, description,
+                              merchant, payment_method)
+        VALUES (:id, :u, :d, :a, :c, '', :m, 'Credit Card')
+    """), {"id": str(uuid.uuid4()), "u": USER, "d": date.today() - timedelta(days=days_ago), "a": amount,
+           "c": category, "m": merchant})
+
+
+def test_a_total_is_broken_down_over_the_whole_window_not_over_the_purchases_it_lists():
+    """The observations under a total named "top merchants" added up from
+    the latest purchases the card lists. Over three months that is a sample:
+    the landlord, paid on the first, was not in it at all, and the pizza
+    place was credited with one week's orders."""
+    eng = create_engine(DB)
+    with eng.begin() as c:
+        for days_ago in (85, 55, 25):
+            _buy(c, "Greenway Apartments", 1850.00, days_ago, "Housing")
+        for days_ago in range(1, 13):                      # the latest twelve purchases, none of them the rent
+            _buy(c, "Corner Cafe", 5.00, days_ago, "Coffee")
+    end = date.today() + timedelta(days=1)
+    r = run_aggregation(AggregationIntent("sum", None, end - timedelta(days=91), end), USER, DB)
+    assert r.count == 19 and round(r.total, 2) == 5857.59   # 3 rents, 12 coffees and the fixture's four in the window
+    assert len(r.rows) == 10 and {row["merchant"] for row in r.rows} == {"Corner Cafe", "M4"}   # the latest ten, no rent
+    assert [(m["merchant"], m["total"], m["count"], m["category"]) for m in r.top_merchants[:3]] == [
+        ("Greenway Apartments", 5550.0, 3, "Housing"), ("M2", 100.0, 1, "Restaurant"), ("M1", 72.59, 1, "Restaurant")]
+    with eng.begin() as c:
+        _buy(c, "Greenway Apartments", 40.00, 3, "Utilities")       # the landlord also bills the water
+    mixed = run_aggregation(AggregationIntent("sum", None, end - timedelta(days=91), end), USER, DB).top_merchants[0]
+    assert (mixed["merchant"], mixed["total"], mixed["category"]) == ("Greenway Apartments", 5590.0, None)   # no one category
+    assert [(g["category"], g["total"], g["count"]) for g in r.top_categories] == [
+        ("Housing", 5550.0, 3), ("Restaurant", 222.59, 3), ("Coffee", 60.0, 12), ("Groceries", 25.0, 1)]
+
+    dining = run_aggregation(AggregationIntent("sum", "restaurants", end - timedelta(days=91), end), USER, DB)
+    assert dining.top_categories == []                      # one category was asked about: its merchants
+    assert [(m["merchant"], m["total"]) for m in dining.top_merchants] == [("M2", 100.0), ("M1", 72.59), ("M0", 50.0)]
+    one = run_aggregation(AggregationIntent("sum", None, end - timedelta(days=91), end), USER, DB, merchant="Corner Cafe")
+    assert one.top_merchants == [] and one.top_categories == [] and one.count == 12     # one merchant: nothing to break down
+    eng.dispose()

@@ -264,8 +264,9 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     key, hit = None, None
     try:
         key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),
+                                # card: 2 since the card carries a breakdown and the insights are written from it
                                 {"agg": [agg.operation, agg.category, agg.merchant, str(agg.window_start),
-                                         str(agg.window_end), agg.total, agg.count], "lang": language})
+                                         str(agg.window_end), agg.total, agg.count], "lang": language, "card": 2})
         hit = caches.get_search(user_id, key, url=deps.url, stat="narrative")
     except Exception as exc:  # a cache outage is a miss, never a broken answer
         note_skipped(log, "narrative cache read", exc)
