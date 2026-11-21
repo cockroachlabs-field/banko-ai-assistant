@@ -92,8 +92,14 @@ class Route:
 
 
 def _merchant_words(receipt: dict) -> set[str]:
+    """The words that are this merchant's own. A word that names a category
+    (the coffee in Blue Bottle Coffee, the cafe in Local Cafe) is not one:
+    a question with it is about that kind of purchase, not this receipt."""
+    from ..config.catalog import get_catalog
     merchant = str(receipt.get("merchant") or "")
-    return {w for w in _WORD.findall(merchant.lower().replace("'", "")) if w not in _STOP}
+    names_a_category = get_catalog().find
+    return {w for w in _WORD.findall(merchant.lower().replace("'", ""))
+            if w not in _STOP and names_a_category(w) is None}
 
 
 def _item_words(receipt: dict) -> set[str]:
