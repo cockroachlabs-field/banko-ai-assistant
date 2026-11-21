@@ -97,7 +97,12 @@ def server():
     # the legacy sample expenses, so none are written into the test database.
     env = {**os.environ, "AI_SERVICE": "ollama", "COACH_KAFKA_ENABLED": "false", "BANKO_SKIP_AUTOSETUP": "0",
            "CDC_WEBHOOK_HMAC_SECRET": "dev-only-secret", "PYTHONUNBUFFERED": "1"}
-    assert ":26258/" in env.get("DATABASE_URL", ""), "the browser pass runs against the test database only"
+    # A throwaway node on this machine, whichever port it has; never the demo
+    # cluster's port and never a database somewhere else: this boot seeds and
+    # the tests write.
+    target = urllib.parse.urlsplit(env.get("DATABASE_URL", ""))
+    assert target.hostname in ("localhost", "127.0.0.1") and target.port not in (None, 26257), \
+        "the browser pass runs against a throwaway local database only, never port 26257"
     # `python -m banko_ai` ignores its arguments, so call the click group directly.
     proc = subprocess.Popen([sys.executable, "-c", "from banko_ai.cli import cli; cli()",
                              "run", "--host", "127.0.0.1", "--port", str(PORT)],
@@ -481,6 +486,99 @@ def test_the_assistant_page_titles_the_thread_and_lists_its_trace(server, browse
         expect(rows.filter(has_text="Answer cache")).to_have_text("Answer cachemiss")
         expect(rows.filter(has_text="Model")).to_have_text("Model6339 ms")
         expect(rows.filter(has_text="Aggregation SQL")).to_have_text("Aggregation SQL$42.10 across 3 transactions · 24 ms")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+# An answer taller than the Assistant page shows at once: a spending total with its purchases under it.
+TALL = _sse(("answer", {"answer": "You spent **$9,180.75** on all categories.\n\n| Date | Merchant | Amount |\n|---|---|---|\n"
+                                  + "".join(f"| 2026-11-{day:02d} | Shop {day} | ${day}.00 |\n" for day in range(1, 31))
+                                  + "\nThat is every purchase.", "citations": [], "proposals": [], "cached": False,
+                        "route": "aggregate", "meta": {"trace": [], "explain": PLAN}}),
+            ("done", {}))
+UNREAD_RECEIPT = _sse(("step", {"step": "ocr", "status": "done", "detail": "310 characters", "ms": 1800}),
+                      ("step", {"step": "extract", "status": "failed", "detail": "no total", "ms": 1200}),
+                      ("error", {"message": "The receipt fields didn't look right. Try a clearer photo."}),
+                      ("done", {}))
+_PANE = """() => {
+    const pane = document.querySelector('.b-assist-page'), chat = pane.querySelector('.b-chat');
+    return { visible: chat.clientHeight, content: chat.scrollHeight, scrolled: Math.round(chat.scrollTop),
+             box_bottom: pane.querySelector('.b-comp').getBoundingClientRect().bottom,
+             pane_bottom: pane.getBoundingClientRect().bottom };
+}"""
+
+
+def test_an_answer_taller_than_the_page_scrolls_and_the_message_box_stays(server, browser):
+    """The Assistant page is a pane of fixed height. Its middle column grew
+    with the conversation instead of scrolling inside it: after one long
+    answer the message box and the paperclip sat below the pane's edge, cut
+    off, and no wheel brought them back. Nothing more could be asked."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TALL)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        box = page.locator(".b-assist-page .b-comp textarea")
+        box.fill("what's my total expenses")
+        page.keyboard.press("Enter")
+        chat = page.locator(".b-assist-page .b-chat")
+        expect(chat).to_contain_text("That is every purchase.")
+        page.wait_for_function("() => document.querySelector('.b-assist-page .b-meta').offsetParent !== null")
+        page.wait_for_timeout(200)                                    # the scroll to the newest line is a tick later
+        at = page.evaluate(_PANE)
+        assert at["content"] > at["visible"] + 200, at                # taller than the page shows
+        assert at["box_bottom"] <= at["pane_bottom"], at              # the message box is still on the pane
+        expect(box).to_be_in_viewport()
+        expect(page.locator('.b-assist-page .b-comp button[aria-label="Add a receipt"]')).to_be_in_viewport()
+        # At the newest line: where the answer ends, with how it was answered and the plan under it. Those
+        # parts show a frame after the answer itself, and the scroll used to run before them.
+        assert at["scrolled"] + at["visible"] >= at["content"] - 2, at
+        expect(page.locator(".b-assist-page .b-meta").last).to_be_in_viewport()
+        expect(page.locator(".b-assist-page .b-plan").last).to_be_in_viewport()
+        chat.hover()
+        page.mouse.wheel(0, -400)                                     # and the wheel goes back up through it
+        page.wait_for_function(f"() => document.querySelector('.b-assist-page .b-chat').scrollTop < {at['scrolled']}")
+        box.fill("and last month?")                                   # the conversation goes on
+        page.keyboard.press("Enter")
+        expect(page.locator(".b-assist-page .b-msg-user")).to_have_count(2)
+        expect(page.locator(".b-assist-page .b-meta")).to_have_count(2)
+        expect(page.locator(".b-assist-page .b-meta").last).to_be_in_viewport()      # at the end of the new answer
+        expect(box).to_be_in_viewport()
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_a_receipt_that_could_not_be_read_can_be_tried_again_in_the_same_conversation(server, browser):
+    """After a long answer, a receipt whose fields could not be read left
+    its card below the pane's edge, and the next upload landed there too:
+    the page looked stuck, with no way to try the receipt again."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TALL)
+        outcomes = [UNREAD_RECEIPT, RECEIPT]
+        page.route("**/api/v1/receipts", lambda r: r.fulfill(status=200, content_type="text/event-stream",
+                                                             body=outcomes.pop(0)))
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        page.locator(".b-assist-page .b-comp textarea").fill("what's my total expenses")
+        page.keyboard.press("Enter")
+        expect(page.locator(".b-assist-page .b-chat")).to_contain_text("That is every purchase.")
+        pdf = {"name": "46.29.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 a receipt"}
+        picker = page.locator('.b-assist-page .b-comp input[type="file"]')
+        picker.set_input_files(pdf)
+        cards = page.locator(".b-assist-page .b-receipt")
+        expect(cards).to_have_count(1)
+        expect(cards.first).to_contain_text("The receipt fields didn't look right")
+        expect(cards.first).to_be_in_viewport()
+        expect(page.locator('.b-assist-page .b-comp button[aria-label="Add a receipt"]')).to_be_in_viewport()
+        picker.set_input_files(pdf)                                   # the same file again
+        expect(cards).to_have_count(2)
+        expect(cards.last).to_contain_text("Blue Bottle")
+        expect(cards.last).to_be_in_viewport()
         assert not errors, errors
     finally:
         ctx.close()
