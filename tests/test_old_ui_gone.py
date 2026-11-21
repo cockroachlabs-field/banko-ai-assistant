@@ -57,3 +57,17 @@ def test_the_unscoped_legacy_apis_are_gone(monkeypatch):
         assert client.post("/api/vectorstore-search", json={"query": "coffee"}).status_code == 404
     finally:
         stop_apps()
+
+
+@pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
+def test_the_unscoped_agents_api_is_gone(monkeypatch):
+    """No sign-in and no user scope: these returned every user's agent
+    activity, with the merchant and amount in a fraud check's reasoning and
+    whatever an agent was working on at that moment. The Agents page reads
+    /api/v1/agents, which answers for the signed-in user."""
+    try:
+        client = app_client(monkeypatch)
+        for old in ("/api/agents/status", "/api/agents/activity", "/api/agents/stats"):
+            assert client.get(old).status_code == 404, old
+    finally:
+        stop_apps()
