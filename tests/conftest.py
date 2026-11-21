@@ -1,4 +1,5 @@
 import os
+import time
 from urllib.parse import urlsplit
 
 import pytest
@@ -24,6 +25,14 @@ def _guard_database_url() -> None:
 
 
 _guard_database_url()
+
+# One clock for the suite, and it is the app's: UTC. Tests say date.today()
+# all over, and west of UTC that is yesterday's date every evening: a test
+# that seeded "through today" and then asked the app about today failed
+# after 7 pm in New York. CI already runs in UTC.
+os.environ["TZ"] = "UTC"
+if hasattr(time, "tzset"):
+    time.tzset()
 
 # The app no longer sniffs PYTEST_CURRENT_TEST; tests opt out of sample data explicitly.
 os.environ.setdefault("BANKO_SKIP_AUTOSETUP", "1")

@@ -15,6 +15,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+from ..utils import clock
 from .base_agent import BaseAgent
 from .tools.analysis_tools import create_analysis_tools
 from .tools.search_tools import create_search_tools
@@ -422,7 +423,7 @@ Be thorough but not overly cautious. False positives are costly."""
             
             with engine.connect() as conn:
                 from datetime import datetime, timedelta
-                cutoff_date = (datetime.now() - timedelta(hours=hours)).date()
+                cutoff_date = (clock.now() - timedelta(hours=hours)).date()
                 result = conn.execute(text("""
                     SELECT expense_id
                     FROM expenses
