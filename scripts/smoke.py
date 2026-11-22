@@ -112,6 +112,7 @@ class Smoke:
         self.user_id: str | None = None
         self.total = new_total()  # a new purchase each run; receipt() picks another if this one was posted lately
         self.searched: dict | None = None  # the search check's answer, which other_words() asks for again
+        self.groceries: str | None = None  # the card "on groceries last month" got, for the same total asked otherwise
 
     # -- plumbing -------------------------------------------------------------------------------
 
@@ -201,7 +202,23 @@ class Smoke:
         self.expect_route(a, "aggregate")
         if "$" not in a["answer"]:
             raise AssertionError(f"no dollar figure: {a['answer'][:120]!r}")
-        return a["answer"].splitlines()[0][:100]
+        self.groceries = a["answer"].splitlines()[0]
+        return self.groceries[:100]
+
+    def subject_kept(self) -> str:
+        """ "groceries total last month": no on, for or at marks the subject.
+        It used to be dropped, and the answer was the total of everything.
+        It is the question the totals check asked, so it gets that card, to
+        the cent. Its insights come from the narrative cache when that has
+        them by now; otherwise this costs the one call that writes them."""
+        a = self.ask(self.thread(), "groceries total last month")
+        self.expect_route(a, "aggregate")
+        first = a["answer"].splitlines()[0]
+        if " on Groceries " not in first:
+            raise AssertionError(f"not a total of groceries: {first[:120]!r}")
+        if self.groceries and first != self.groceries:
+            raise AssertionError(f"not the total 'on groceries last month' got: {first[:120]!r}")
+        return first[:100]
 
     def largest(self) -> str:
         """The biggest purchase is a fact SQL has: the card comes from code,
@@ -360,6 +377,7 @@ class Smoke:
         self.check("receipt and follow-ups", self.receipt)
         self.check("dining from SQL", dining)
         self.check("totals from SQL", self.totals)
+        self.check("a total keeps its subject", self.subject_kept)
         self.check("largest from SQL", self.largest)
         self.check("cache on a repeat", self.cache)
         self.check("visits from SQL", self.visits)

@@ -1,0 +1,839 @@
+# Everyday ways to ask for a total or a count of all spending, with what the totals route reads from each
+# when asked on 2026-11-20: operation, window start, window end (exclusive). tests/test_totals_subject.py
+how much did I spend	sum	2026-08-23	2026-11-21
+how much did I spend?	sum	2026-08-23	2026-11-21
+How much did I spend this month?	sum	2026-11-01	2026-12-01
+how much have I spent	sum	2026-08-23	2026-11-21
+how much have I spent so far	sum	2026-08-23	2026-11-21
+how much have I spent thus far	sum	2026-08-23	2026-11-21
+how much have I spent to date	sum	2026-08-23	2026-11-21
+how much have I spent up to date	sum	2026-08-23	2026-11-21
+how much have I spent till now	sum	2026-08-23	2026-11-21
+how much have I spent until now	sum	2026-08-23	2026-11-21
+how much have I spent up till now	sum	2026-08-23	2026-11-21
+how much have I spent as of now	sum	2026-08-23	2026-11-21
+how much have I spent as of yet	sum	2026-08-23	2026-11-21
+how much have I spent yet	sum	2026-08-23	2026-11-21
+how much have I spent in all	sum	2026-08-23	2026-11-21
+how much have I spent all in all	sum	2026-08-23	2026-11-21
+how much have I spent all told	sum	2026-08-23	2026-11-21
+how much did I spend in total	sum	2026-08-23	2026-11-21
+how much did I spend in total?	sum	2026-08-23	2026-11-21
+how much did I spend total	sum	2026-08-23	2026-11-21
+how much did I spend, total?	sum	2026-08-23	2026-11-21
+how much did I spend combined	sum	2026-08-23	2026-11-21
+how much did I spend in sum	sum	2026-08-23	2026-11-21
+how much did i spend tho	sum	2026-08-23	2026-11-21
+how much did I spend though	sum	2026-08-23	2026-11-21
+how much did I spend anyway	sum	2026-08-23	2026-11-21
+how much did I spend btw	sum	2026-08-23	2026-11-21
+how much did I spend by the way	sum	2026-08-23	2026-11-21
+how much did I spend, by the way?	sum	2026-08-23	2026-11-21
+how much did I spend again	sum	2026-08-23	2026-11-21
+how much did I spend again?	sum	2026-08-23	2026-11-21
+how much did I spend, do you know?	sum	2026-08-23	2026-11-21
+how much did I spend, please	sum	2026-08-23	2026-11-21
+how much did I spend pls	sum	2026-08-23	2026-11-21
+how much did I spend plz	sum	2026-08-23	2026-11-21
+how much did I spend thanks	sum	2026-08-23	2026-11-21
+how much did I spend, thanks	sum	2026-08-23	2026-11-21
+how much did I spend thank you	sum	2026-08-23	2026-11-21
+how much did I spend lol	sum	2026-08-23	2026-11-21
+how much did I spend exactly	sum	2026-08-23	2026-11-21
+how much exactly did I spend	sum	2026-08-23	2026-11-21
+exactly how much did I spend	sum	2026-08-23	2026-11-21
+how much did I spend in the end	sum	2026-08-23	2026-11-21
+how much did I end up spending	sum	2026-08-23	2026-11-21
+how much did I wind up spending	sum	2026-08-23	2026-11-21
+how much did I wind up spending last month	sum	2026-10-01	2026-11-01
+how much did I manage to spend	sum	2026-08-23	2026-11-21
+how much did I manage to spend this month	sum	2026-11-01	2026-12-01
+how much money did I spend	sum	2026-08-23	2026-11-21
+how much money have I spent	sum	2026-08-23	2026-11-21
+how much $ did I spend	sum	2026-08-23	2026-11-21
+how much $$ did I spend	sum	2026-08-23	2026-11-21
+how many dollars did I spend	sum	2026-08-23	2026-11-21
+how many dollars have I spent this month	sum	2026-11-01	2026-12-01
+how many bucks did I spend	sum	2026-08-23	2026-11-21
+how much went out	sum	2026-08-23	2026-11-21
+how much went out this month	sum	2026-11-01	2026-12-01
+how much money went out last month	sum	2026-10-01	2026-11-01
+how much money left my account this month	sum	2026-11-01	2026-12-01
+how much has gone out this month	sum	2026-11-01	2026-12-01
+how much did I pay out	sum	2026-08-23	2026-11-21
+how much have I paid out this month	sum	2026-11-01	2026-12-01
+how much did I pay out last month	sum	2026-10-01	2026-11-01
+how much did I spend out of pocket	sum	2026-08-23	2026-11-21
+how much was spent	sum	2026-08-23	2026-11-21
+how much was spent this month	sum	2026-11-01	2026-12-01
+how much has been spent	sum	2026-08-23	2026-11-21
+how much has been spent this month	sum	2026-11-01	2026-12-01
+how much got spent this month	sum	2026-11-01	2026-12-01
+how much money was spent last month	sum	2026-10-01	2026-11-01
+how much did we spend	sum	2026-08-23	2026-11-21
+how much have we spent	sum	2026-08-23	2026-11-21
+how much did I personally spend	sum	2026-08-23	2026-11-21
+how much did I myself spend	sum	2026-08-23	2026-11-21
+how much have I spent myself	sum	2026-08-23	2026-11-21
+how much did I spend on stuff	sum	2026-08-23	2026-11-21
+how much did I spend on things	sum	2026-08-23	2026-11-21
+how much did I spend on everything	sum	2026-08-23	2026-11-21
+how much did I spend on anything	sum	2026-08-23	2026-11-21
+how much did I spend across everything	sum	2026-08-23	2026-11-21
+how much did I spend across all categories	sum	2026-08-23	2026-11-21
+how much did I spend across the board	sum	2026-08-23	2026-11-21
+how much did I spend in all categories	sum	2026-08-23	2026-11-21
+how much did I spend for everything	sum	2026-08-23	2026-11-21
+how much did I spend all categories	sum	2026-08-23	2026-11-21
+how much did I spend all categories combined	sum	2026-08-23	2026-11-21
+how much did I spend in every category	sum	2026-08-23	2026-11-21
+total spending across all categories	sum	2026-08-23	2026-11-21
+total across all categories	sum	2026-08-23	2026-11-21
+what's my total across everything	sum	2026-08-23	2026-11-21
+how much is my total	sum	2026-08-23	2026-11-21
+how much is the total	sum	2026-08-23	2026-11-21
+how much is my total spending	sum	2026-08-23	2026-11-21
+how much is my spending	sum	2026-08-23	2026-11-21
+how much was my spending	sum	2026-08-23	2026-11-21
+how much was my total	sum	2026-08-23	2026-11-21
+how much was my total spending last month	sum	2026-10-01	2026-11-01
+how much were my expenses	sum	2026-08-23	2026-11-21
+how much were my expenses last month	sum	2026-10-01	2026-11-01
+how much are my expenses	sum	2026-08-23	2026-11-21
+how much are my total expenses	sum	2026-08-23	2026-11-21
+how much are my expenses this month	sum	2026-11-01	2026-12-01
+how much do my expenses come to	sum	2026-08-23	2026-11-21
+what does my total come to	sum	2026-08-23	2026-11-21
+what did my total come to last month	sum	2026-10-01	2026-11-01
+what does my total spending come to	sum	2026-08-23	2026-11-21
+what does my spending total	sum	2026-08-23	2026-11-21
+what did my spending total last month	sum	2026-10-01	2026-11-01
+what do my expenses total	sum	2026-08-23	2026-11-21
+what did my expenses total last month	sum	2026-10-01	2026-11-01
+what does my total add up to	sum	2026-08-23	2026-11-21
+what does my spending add up to in total	sum	2026-08-23	2026-11-21
+how much do my purchases add up to	sum	2026-08-23	2026-11-21
+how much do my expenses add up to this month	sum	2026-11-01	2026-12-01
+how much did my purchases add up to	sum	2026-08-23	2026-11-21
+what is the total	sum	2026-08-23	2026-11-21
+what is my total	sum	2026-08-23	2026-11-21
+what was my total	sum	2026-08-23	2026-11-21
+what is the grand total	sum	2026-08-23	2026-11-21
+what's my grand total	sum	2026-08-23	2026-11-21
+what's my grand total this year	sum	2026-01-01	2026-11-21
+what's the grand total of my spending	sum	2026-08-23	2026-11-21
+give me the grand total	sum	2026-08-23	2026-11-21
+what's my running total	sum	2026-08-23	2026-11-21
+what's my running total this month	sum	2026-11-01	2026-12-01
+what's the running total	sum	2026-08-23	2026-11-21
+what's my total so far	sum	2026-08-23	2026-11-21
+what's my total so far this month	sum	2026-11-01	2026-12-01
+what's my total to date	sum	2026-08-23	2026-11-21
+what is my total spend to date	sum	2026-08-23	2026-11-21
+what's my spending total	sum	2026-08-23	2026-11-21
+what's my spend total	sum	2026-08-23	2026-11-21
+what's the total spend	sum	2026-08-23	2026-11-21
+what's the total figure	sum	2026-08-23	2026-11-21
+what's the total number	sum	2026-08-23	2026-11-21
+what's the overall total	sum	2026-08-23	2026-11-21
+what is the overall amount I spent	sum	2026-08-23	2026-11-21
+what is the full amount I spent	sum	2026-08-23	2026-11-21
+what's the full total	sum	2026-08-23	2026-11-21
+what's the entire amount I spent	sum	2026-08-23	2026-11-21
+what is the whole amount I spent	sum	2026-08-23	2026-11-21
+what's the complete total	sum	2026-08-23	2026-11-21
+what's my total outgoings	sum	2026-08-23	2026-11-21
+what are my total outgoings	sum	2026-08-23	2026-11-21
+how much are my outgoings	sum	2026-08-23	2026-11-21
+what's my total outlay	sum	2026-08-23	2026-11-21
+what's my total expenditure this month	sum	2026-11-01	2026-12-01
+what is my total expenditure	sum	2026-08-23	2026-11-21
+what are my total expenditures	sum	2026-08-23	2026-11-21
+what are my total expenses	sum	2026-08-23	2026-11-21
+what were my total expenses	sum	2026-08-23	2026-11-21
+what were my total expenses last month	sum	2026-10-01	2026-11-01
+what are my total costs	sum	2026-08-23	2026-11-21
+what are my total charges	sum	2026-08-23	2026-11-21
+what are my total purchases	sum	2026-08-23	2026-11-21
+what were my total purchases last month	sum	2026-10-01	2026-11-01
+what's the total of my purchases	sum	2026-08-23	2026-11-21
+what's the total of all my purchases	sum	2026-08-23	2026-11-21
+what's the total of my transactions	sum	2026-08-23	2026-11-21
+what's the total value of my purchases	sum	2026-08-23	2026-11-21
+what's the total value of my transactions this month	sum	2026-11-01	2026-12-01
+what's the dollar amount I spent	sum	2026-08-23	2026-11-21
+what's the dollar total	sum	2026-08-23	2026-11-21
+what's the total dollar amount	sum	2026-08-23	2026-11-21
+what's the total in dollars	sum	2026-08-23	2026-11-21
+total in dollars	sum	2026-08-23	2026-11-21
+total in usd	sum	2026-08-23	2026-11-21
+total spend	sum	2026-08-23	2026-11-21
+total spent	sum	2026-08-23	2026-11-21
+total spending	sum	2026-08-23	2026-11-21
+total expenses	sum	2026-08-23	2026-11-21
+total purchases	sum	2026-08-23	2026-11-21
+total transactions	sum	2026-08-23	2026-11-21
+total charges	sum	2026-08-23	2026-11-21
+total costs	sum	2026-08-23	2026-11-21
+total outgoings	sum	2026-08-23	2026-11-21
+total amount	sum	2026-08-23	2026-11-21
+total amount spent	sum	2026-08-23	2026-11-21
+total amount I spent	sum	2026-08-23	2026-11-21
+total amount I have spent	sum	2026-08-23	2026-11-21
+total money spent	sum	2026-08-23	2026-11-21
+total money spent this month	sum	2026-11-01	2026-12-01
+total dollars spent	sum	2026-08-23	2026-11-21
+my total	sum	2026-08-23	2026-11-21
+my total spending	sum	2026-08-23	2026-11-21
+my total spend	sum	2026-08-23	2026-11-21
+my total expenses	sum	2026-08-23	2026-11-21
+my spending total	sum	2026-08-23	2026-11-21
+spending total	sum	2026-08-23	2026-11-21
+spend total	sum	2026-08-23	2026-11-21
+expenses total	sum	2026-08-23	2026-11-21
+expense total	sum	2026-08-23	2026-11-21
+overall total	sum	2026-08-23	2026-11-21
+overall spending total	sum	2026-08-23	2026-11-21
+overall spend	sum	2026-08-23	2026-11-21
+total overall	sum	2026-08-23	2026-11-21
+grand total	sum	2026-08-23	2026-11-21
+sum total	sum	2026-08-23	2026-11-21
+the sum total of my spending	sum	2026-08-23	2026-11-21
+sum of my spending	sum	2026-08-23	2026-11-21
+sum of all spending	sum	2026-08-23	2026-11-21
+sum of all expenses	sum	2026-08-23	2026-11-21
+sum of everything	sum	2026-08-23	2026-11-21
+sum of everything I spent	sum	2026-08-23	2026-11-21
+sum everything I spent	sum	2026-08-23	2026-11-21
+sum up my spending	sum	2026-08-23	2026-11-21
+sum up my expenses	sum	2026-08-23	2026-11-21
+sum up my spending this month	sum	2026-11-01	2026-12-01
+add up everything I spent	sum	2026-08-23	2026-11-21
+tally up my total spending	sum	2026-08-23	2026-11-21
+calculate my total spending	sum	2026-08-23	2026-11-21
+calculate how much I spent	sum	2026-08-23	2026-11-21
+compute my total spending	sum	2026-08-23	2026-11-21
+work out how much I spent	sum	2026-08-23	2026-11-21
+figure out how much I spent	sum	2026-08-23	2026-11-21
+find out how much I spent	sum	2026-08-23	2026-11-21
+check how much I spent	sum	2026-08-23	2026-11-21
+see how much I spent	sum	2026-08-23	2026-11-21
+can you tell me how much I spent	sum	2026-08-23	2026-11-21
+can you tell me how much I've spent	sum	2026-08-23	2026-11-21
+can u tell me how much i spent	sum	2026-08-23	2026-11-21
+could you tell me how much I spent last month	sum	2026-10-01	2026-11-01
+could you please tell me how much I spent	sum	2026-08-23	2026-11-21
+could you let me know how much I spent	sum	2026-08-23	2026-11-21
+can you let me know how much I spent	sum	2026-08-23	2026-11-21
+would you tell me how much I spent	sum	2026-08-23	2026-11-21
+would you mind telling me how much I spent	sum	2026-08-23	2026-11-21
+will you tell me how much I spent	sum	2026-08-23	2026-11-21
+please can you tell me how much I spent	sum	2026-08-23	2026-11-21
+can you give me my total spending	sum	2026-08-23	2026-11-21
+can you give me the total	sum	2026-08-23	2026-11-21
+can you give me a total	sum	2026-08-23	2026-11-21
+can you give me a total of my spending	sum	2026-08-23	2026-11-21
+can you get me my total spending	sum	2026-08-23	2026-11-21
+can you total my spending	sum	2026-08-23	2026-11-21
+can you sum my expenses	sum	2026-08-23	2026-11-21
+can you sum up my expenses	sum	2026-08-23	2026-11-21
+can you calculate my total spending	sum	2026-08-23	2026-11-21
+can you work out my total spending	sum	2026-08-23	2026-11-21
+can you check how much I spent	sum	2026-08-23	2026-11-21
+can you see how much I spent	sum	2026-08-23	2026-11-21
+can you find out how much I spent	sum	2026-08-23	2026-11-21
+can you figure out how much I spent	sum	2026-08-23	2026-11-21
+can you look up how much I spent	sum	2026-08-23	2026-11-21
+can you help me figure out how much I spent	sum	2026-08-23	2026-11-21
+can you help me see how much I spent	sum	2026-08-23	2026-11-21
+can you help me understand how much I spent	sum	2026-08-23	2026-11-21
+help me figure out how much I spent	sum	2026-08-23	2026-11-21
+help me understand how much I'm spending	sum	2026-08-23	2026-11-21
+tell me how much I spent	sum	2026-08-23	2026-11-21
+tell me how much I've spent this month	sum	2026-11-01	2026-12-01
+tell me the total	sum	2026-08-23	2026-11-21
+tell me my total	sum	2026-08-23	2026-11-21
+tell me what I spent	sum	2026-08-23	2026-11-21
+tell me what my total spending is	sum	2026-08-23	2026-11-21
+tell me what my total is	sum	2026-08-23	2026-11-21
+please tell me the total I spent	sum	2026-08-23	2026-11-21
+pls tell me how much i spent	sum	2026-08-23	2026-11-21
+kindly tell me how much I spent	sum	2026-08-23	2026-11-21
+just tell me how much I spent	sum	2026-08-23	2026-11-21
+just tell me the total	sum	2026-08-23	2026-11-21
+simply tell me how much I spent	sum	2026-08-23	2026-11-21
+let me know how much I spent	sum	2026-08-23	2026-11-21
+let me see how much I spent	sum	2026-08-23	2026-11-21
+let me see my total spending	sum	2026-08-23	2026-11-21
+lemme know how much I spent	sum	2026-08-23	2026-11-21
+lemme see how much I spent	sum	2026-08-23	2026-11-21
+i want to know how much I spent	sum	2026-08-23	2026-11-21
+i want to see how much I spent	sum	2026-08-23	2026-11-21
+i want to see my total spending	sum	2026-08-23	2026-11-21
+i want my total spending	sum	2026-08-23	2026-11-21
+i wanna know how much i spent	sum	2026-08-23	2026-11-21
+i wanna see how much i spent	sum	2026-08-23	2026-11-21
+i need to know how much I spent	sum	2026-08-23	2026-11-21
+i need to see how much I spent	sum	2026-08-23	2026-11-21
+i need my total spending	sum	2026-08-23	2026-11-21
+i need the total	sum	2026-08-23	2026-11-21
+i need a total of my spending	sum	2026-08-23	2026-11-21
+i'd like to know how much I spent	sum	2026-08-23	2026-11-21
+i'd like to see how much I spent	sum	2026-08-23	2026-11-21
+i'd like my total spending	sum	2026-08-23	2026-11-21
+i'd like to see my total spending	sum	2026-08-23	2026-11-21
+i would like to know how much I spent	sum	2026-08-23	2026-11-21
+i would like to see my total spending	sum	2026-08-23	2026-11-21
+i would love to know how much I spent	sum	2026-08-23	2026-11-21
+i'd love to know how much I spent	sum	2026-08-23	2026-11-21
+i am curious how much I spent	sum	2026-08-23	2026-11-21
+i'm curious how much I spent	sum	2026-08-23	2026-11-21
+i'm curious how much I've spent this month	sum	2026-11-01	2026-12-01
+curious how much I spent	sum	2026-08-23	2026-11-21
+just curious how much I spent	sum	2026-08-23	2026-11-21
+just curious, how much did I spend	sum	2026-08-23	2026-11-21
+just wondering how much I spent	sum	2026-08-23	2026-11-21
+just wondering how much I've spent this month	sum	2026-11-01	2026-12-01
+i wonder how much I spent	sum	2026-08-23	2026-11-21
+i was wondering how much I spent	sum	2026-08-23	2026-11-21
+i was just wondering how much I spent	sum	2026-08-23	2026-11-21
+i am wondering how much I spent	sum	2026-08-23	2026-11-21
+wondering how much I spent	sum	2026-08-23	2026-11-21
+was wondering how much I spent	sum	2026-08-23	2026-11-21
+any idea how much I spent	sum	2026-08-23	2026-11-21
+any idea how much I spent last month	sum	2026-10-01	2026-11-01
+do you know how much I spent	sum	2026-08-23	2026-11-21
+do you have my total spending	sum	2026-08-23	2026-11-21
+do you have a total for my spending	sum	2026-08-23	2026-11-21
+do u know how much i spent	sum	2026-08-23	2026-11-21
+do you happen to know how much I spent	sum	2026-08-23	2026-11-21
+would you know how much I spent	sum	2026-08-23	2026-11-21
+you know how much I spent	sum	2026-08-23	2026-11-21
+know how much I spent	sum	2026-08-23	2026-11-21
+quick question how much did I spend	sum	2026-08-23	2026-11-21
+quick question, how much did I spend	sum	2026-08-23	2026-11-21
+quick question: how much did I spend this month	sum	2026-11-01	2026-12-01
+question: how much did I spend	sum	2026-08-23	2026-11-21
+one question, how much did I spend	sum	2026-08-23	2026-11-21
+hey how much did I spend	sum	2026-08-23	2026-11-21
+hey there how much did I spend	sum	2026-08-23	2026-11-21
+hey banko how much did I spend	sum	2026-08-23	2026-11-21
+hey banko, how much did I spend this month	sum	2026-11-01	2026-12-01
+hi banko how much did I spend	sum	2026-08-23	2026-11-21
+hi there, how much did I spend	sum	2026-08-23	2026-11-21
+hello, how much did I spend	sum	2026-08-23	2026-11-21
+hello banko how much have I spent	sum	2026-08-23	2026-11-21
+banko how much did I spend	sum	2026-08-23	2026-11-21
+banko, how much did I spend	sum	2026-08-23	2026-11-21
+yo how much did I spend	sum	2026-08-23	2026-11-21
+yo banko how much did I spend	sum	2026-08-23	2026-11-21
+hey buddy how much did I spend	sum	2026-08-23	2026-11-21
+good morning, how much did I spend yesterday	sum	2026-11-19	2026-11-20
+good morning how much did I spend	sum	2026-08-23	2026-11-21
+morning, how much did I spend yesterday	sum	2026-11-19	2026-11-20
+good evening how much did I spend today	sum	2026-11-20	2026-11-21
+ok so how much did I spend	sum	2026-08-23	2026-11-21
+ok and how much did I spend	sum	2026-08-23	2026-11-21
+okay so how much did I spend	sum	2026-08-23	2026-11-21
+okay, how much did I spend this week	sum	2026-11-16	2026-11-21
+alright how much did I spend	sum	2026-08-23	2026-11-21
+alright, how much did I spend this month	sum	2026-11-01	2026-12-01
+all right how much did I spend	sum	2026-08-23	2026-11-21
+right, how much did I spend	sum	2026-08-23	2026-11-21
+right so how much did I spend	sum	2026-08-23	2026-11-21
+so how much did I spend	sum	2026-08-23	2026-11-21
+so, how much did I spend	sum	2026-08-23	2026-11-21
+so how much have I spent in total	sum	2026-08-23	2026-11-21
+so what did I spend	sum	2026-08-23	2026-11-21
+so what's my total	sum	2026-08-23	2026-11-21
+so what is my total spending	sum	2026-08-23	2026-11-21
+and how much did I spend	sum	2026-08-23	2026-11-21
+and how much did I spend last month	sum	2026-10-01	2026-11-01
+and my total spending	sum	2026-08-23	2026-11-21
+and the total	sum	2026-08-23	2026-11-21
+and in total	sum	2026-08-23	2026-11-21
+but how much did I spend	sum	2026-08-23	2026-11-21
+but how much did I spend in total	sum	2026-08-23	2026-11-21
+now how much did I spend	sum	2026-08-23	2026-11-21
+now tell me how much I spent	sum	2026-08-23	2026-11-21
+well how much did I spend	sum	2026-08-23	2026-11-21
+well, how much did I spend	sum	2026-08-23	2026-11-21
+well then how much did I spend	sum	2026-08-23	2026-11-21
+then how much did I spend	sum	2026-08-23	2026-11-21
+also how much did I spend	sum	2026-08-23	2026-11-21
+also, how much did I spend last month	sum	2026-10-01	2026-11-01
+also what's my total spending	sum	2026-08-23	2026-11-21
+next, how much did I spend	sum	2026-08-23	2026-11-21
+first, how much did I spend	sum	2026-08-23	2026-11-21
+anyway how much did I spend	sum	2026-08-23	2026-11-21
+anyway, how much did I spend	sum	2026-08-23	2026-11-21
+btw how much did I spend	sum	2026-08-23	2026-11-21
+by the way how much did I spend	sum	2026-08-23	2026-11-21
+by the way, how much did I spend last month	sum	2026-10-01	2026-11-01
+oh and how much did I spend	sum	2026-08-23	2026-11-21
+oh how much did I spend	sum	2026-08-23	2026-11-21
+um how much did I spend	sum	2026-08-23	2026-11-21
+uh how much did I spend	sum	2026-08-23	2026-11-21
+hmm how much did I spend	sum	2026-08-23	2026-11-21
+hmm, how much did I spend this month	sum	2026-11-01	2026-12-01
+wait how much did I spend	sum	2026-08-23	2026-11-21
+wait, how much did I spend	sum	2026-08-23	2026-11-21
+wow how much did I spend	sum	2026-08-23	2026-11-21
+actually how much did I spend	sum	2026-08-23	2026-11-21
+actually, how much did I spend last month	sum	2026-10-01	2026-11-01
+honestly how much did I spend	sum	2026-08-23	2026-11-21
+seriously how much did I spend	sum	2026-08-23	2026-11-21
+seriously, how much did I spend	sum	2026-08-23	2026-11-21
+like how much did I spend	sum	2026-08-23	2026-11-21
+how much did I spend like in total	sum	2026-08-23	2026-11-21
+how much did i like spend	sum	2026-08-23	2026-11-21
+remind me how much I spent	sum	2026-08-23	2026-11-21
+remind me how much I spent last month	sum	2026-10-01	2026-11-01
+remind me what I spent	sum	2026-08-23	2026-11-21
+remind me of my total spending	sum	2026-08-23	2026-11-21
+display my total spending	sum	2026-08-23	2026-11-21
+get me my total spending	sum	2026-08-23	2026-11-21
+get my total spending	sum	2026-08-23	2026-11-21
+pull up my total spending	sum	2026-08-23	2026-11-21
+pull my total spending	sum	2026-08-23	2026-11-21
+what'd I spend	sum	2026-08-23	2026-11-21
+what'd i spend last month	sum	2026-10-01	2026-11-01
+how much'd I spend	sum	2026-08-23	2026-11-21
+how much've I spent	sum	2026-08-23	2026-11-21
+how much did I spend, do you know	sum	2026-08-23	2026-11-21
+how much did I spend, can you tell me	sum	2026-08-23	2026-11-21
+how much did I spend, any idea	sum	2026-08-23	2026-11-21
+how much did I spend, if you know	sum	2026-08-23	2026-11-21
+how much did I spend if you don't mind	sum	2026-08-23	2026-11-21
+how much did I spend, right?	sum	2026-08-23	2026-11-21
+how much did I spend, huh	sum	2026-08-23	2026-11-21
+how much did I spend, eh	sum	2026-08-23	2026-11-21
+how much did I spend, again?	sum	2026-08-23	2026-11-21
+how much did I spend, remind me	sum	2026-08-23	2026-11-21
+how much did I spend? thanks	sum	2026-08-23	2026-11-21
+how much did I spend? thank you	sum	2026-08-23	2026-11-21
+how much did I spend? thanks!	sum	2026-08-23	2026-11-21
+how much did I spend please?	sum	2026-08-23	2026-11-21
+how much did I spend, please and thank you	sum	2026-08-23	2026-11-21
+how much did I spend, thx	sum	2026-08-23	2026-11-21
+how much did I spend ty	sum	2026-08-23	2026-11-21
+how much did I spend, cheers	sum	2026-08-23	2026-11-21
+how much did I spend mate	sum	2026-08-23	2026-11-21
+how much did I spend man	sum	2026-08-23	2026-11-21
+how much did I spend dude	sum	2026-08-23	2026-11-21
+how much did I spend bro	sum	2026-08-23	2026-11-21
+how much did I spend banko	sum	2026-08-23	2026-11-21
+how much did I spend, banko?	sum	2026-08-23	2026-11-21
+how much did I spend buddy	sum	2026-08-23	2026-11-21
+how much do I spend	sum	2026-08-23	2026-11-21
+how much am I spending	sum	2026-08-23	2026-11-21
+how much have I been spending	sum	2026-08-23	2026-11-21
+how much was I spending	sum	2026-08-23	2026-11-21
+how much was I spending last year	sum	2025-01-01	2026-01-01
+how much had I spent	sum	2026-08-23	2026-11-21
+how much did I end up paying	sum	2026-08-23	2026-11-21
+how much did I wind up paying	sum	2026-08-23	2026-11-21
+how much I spent	sum	2026-08-23	2026-11-21
+how much I spend	sum	2026-08-23	2026-11-21
+how much i have spent	sum	2026-08-23	2026-11-21
+how much ive spent	sum	2026-08-23	2026-11-21
+how much i've spent so far	sum	2026-08-23	2026-11-21
+how much I'm spending	sum	2026-08-23	2026-11-21
+how much im spending	sum	2026-08-23	2026-11-21
+how much I'd spent	sum	2026-08-23	2026-11-21
+how much we've spent	sum	2026-08-23	2026-11-21
+how much we're spending	sum	2026-08-23	2026-11-21
+how much are we spending	sum	2026-08-23	2026-11-21
+how much were we spending	sum	2026-08-23	2026-11-21
+how much is being spent	sum	2026-08-23	2026-11-21
+how much is spent	sum	2026-08-23	2026-11-21
+how much gets spent	sum	2026-08-23	2026-11-21
+how much got spent	sum	2026-08-23	2026-11-21
+how much has been spent so far	sum	2026-08-23	2026-11-21
+how much did I get charged	sum	2026-08-23	2026-11-21
+how much did I get charged this month	sum	2026-11-01	2026-12-01
+how much was I charged	sum	2026-08-23	2026-11-21
+how much was I charged this month	sum	2026-11-01	2026-12-01
+how much have I been charged	sum	2026-08-23	2026-11-21
+how much am I being charged	sum	2026-08-23	2026-11-21
+how much am I getting charged	sum	2026-08-23	2026-11-21
+how much am I paying	sum	2026-08-23	2026-11-21
+how much do I pay	sum	2026-08-23	2026-11-21
+how much did I pay	sum	2026-08-23	2026-11-21
+how much did I pay in total	sum	2026-08-23	2026-11-21
+how much have I been paying	sum	2026-08-23	2026-11-21
+how much did I purchase	sum	2026-08-23	2026-11-21
+how much have I purchased	sum	2026-08-23	2026-11-21
+how much have I purchased this month	sum	2026-11-01	2026-12-01
+how much did I buy	sum	2026-08-23	2026-11-21
+how much did I buy this month	sum	2026-11-01	2026-12-01
+how much have I bought	sum	2026-08-23	2026-11-21
+how much stuff did I buy	sum	2026-08-23	2026-11-21
+how many times did I pay	count	2026-08-23	2026-11-21
+how many times did I spend	count	2026-08-23	2026-11-21
+how many times did I spend money	count	2026-08-23	2026-11-21
+how many times did I spend money this month	count	2026-11-01	2026-12-01
+how many times was I charged	count	2026-08-23	2026-11-21
+how many times was I charged this month	count	2026-11-01	2026-12-01
+how many times have I been charged	count	2026-08-23	2026-11-21
+how many purchases have I made	count	2026-08-23	2026-11-21
+how many purchases have I made so far	count	2026-08-23	2026-11-21
+how many purchases did I make	count	2026-08-23	2026-11-21
+how many purchases did I do	count	2026-08-23	2026-11-21
+how many purchases were there	count	2026-08-23	2026-11-21
+how many purchases were there last month	count	2026-10-01	2026-11-01
+how many purchases are there	count	2026-08-23	2026-11-21
+how many purchases do I have	count	2026-08-23	2026-11-21
+how many purchases did I have	count	2026-08-23	2026-11-21
+how many purchases total	count	2026-08-23	2026-11-21
+how many purchases in total	count	2026-08-23	2026-11-21
+how many total purchases	count	2026-08-23	2026-11-21
+how many total transactions	count	2026-08-23	2026-11-21
+how many transactions in total	count	2026-08-23	2026-11-21
+how many transactions total	count	2026-08-23	2026-11-21
+how many transactions are there	count	2026-08-23	2026-11-21
+how many transactions were there	count	2026-08-23	2026-11-21
+how many transactions were there this month	count	2026-11-01	2026-12-01
+how many transactions were made	count	2026-08-23	2026-11-21
+how many transactions were made this month	count	2026-11-01	2026-12-01
+how many transactions have there been	count	2026-08-23	2026-11-21
+how many transactions do I have	count	2026-08-23	2026-11-21
+how many transactions do I have this month	count	2026-11-01	2026-12-01
+how many transactions did I have	count	2026-08-23	2026-11-21
+how many transactions did I do	count	2026-08-23	2026-11-21
+how many transactions have I made	count	2026-08-23	2026-11-21
+how many transactions have I done	count	2026-08-23	2026-11-21
+how many transactions have I had	count	2026-08-23	2026-11-21
+how many transactions went through	count	2026-08-23	2026-11-21
+how many transactions went through this month	count	2026-11-01	2026-12-01
+how many transactions posted this month	count	2026-11-01	2026-12-01
+how many transactions happened this month	count	2026-11-01	2026-12-01
+how many transactions occurred last month	count	2026-10-01	2026-11-01
+how many transactions took place last month	count	2026-10-01	2026-11-01
+how many transactions in my account this month	count	2026-11-01	2026-12-01
+how many transactions are in my history	count	2026-08-23	2026-11-21
+how many transactions were recorded	count	2026-08-23	2026-11-21
+how many transactions were processed	count	2026-08-23	2026-11-21
+how many transactions cleared	count	2026-08-23	2026-11-21
+how many charges are there	count	2026-08-23	2026-11-21
+how many charges were there this month	count	2026-11-01	2026-12-01
+how many charges did I have	count	2026-08-23	2026-11-21
+how many charges do I have	count	2026-08-23	2026-11-21
+how many charges have I had	count	2026-08-23	2026-11-21
+how many charges have I made	count	2026-08-23	2026-11-21
+how many charges went through	count	2026-08-23	2026-11-21
+how many charges this month	count	2026-11-01	2026-12-01
+how many expenses did I have	count	2026-08-23	2026-11-21
+how many expenses do I have	count	2026-08-23	2026-11-21
+how many expenses this month	count	2026-11-01	2026-12-01
+how many expenses were there	count	2026-08-23	2026-11-21
+how many times did I buy something	count	2026-08-23	2026-11-21
+how many times did I buy something this month	count	2026-11-01	2026-12-01
+how many times did I purchase something	count	2026-08-23	2026-11-21
+how many times have I spent money this week	count	2026-11-16	2026-11-21
+number of purchases	count	2026-08-23	2026-11-21
+number of transactions	count	2026-08-23	2026-11-21
+number of transactions I made	count	2026-08-23	2026-11-21
+number of transactions made this month	count	2026-11-01	2026-12-01
+number of purchases made	count	2026-08-23	2026-11-21
+number of purchases I've made	count	2026-08-23	2026-11-21
+number of charges	count	2026-08-23	2026-11-21
+number of expenses	count	2026-08-23	2026-11-21
+the number of transactions this month	count	2026-11-01	2026-12-01
+what is the number of transactions	count	2026-08-23	2026-11-21
+what's the number of purchases I made	count	2026-08-23	2026-11-21
+what is my number of transactions	count	2026-08-23	2026-11-21
+transaction count	count	2026-08-23	2026-11-21
+transaction count this month	count	2026-11-01	2026-12-01
+purchase count	count	2026-08-23	2026-11-21
+purchase count this month	count	2026-11-01	2026-12-01
+count of transactions	count	2026-08-23	2026-11-21
+count of purchases	count	2026-08-23	2026-11-21
+count of my transactions	count	2026-08-23	2026-11-21
+count of my purchases this month	count	2026-11-01	2026-12-01
+count transactions	count	2026-08-23	2026-11-21
+count purchases	count	2026-08-23	2026-11-21
+count my purchases	count	2026-08-23	2026-11-21
+count the transactions	count	2026-08-23	2026-11-21
+count all transactions	count	2026-08-23	2026-11-21
+count all my transactions this year	count	2026-01-01	2026-11-21
+count up my transactions	count	2026-08-23	2026-11-21
+count how many purchases I made	count	2026-08-23	2026-11-21
+count how many transactions I have	count	2026-08-23	2026-11-21
+what's my transaction count	count	2026-08-23	2026-11-21
+what's the count of my transactions	count	2026-08-23	2026-11-21
+what's my purchase count this month	count	2026-11-01	2026-12-01
+give me a count of my transactions	count	2026-08-23	2026-11-21
+give me the number of transactions	count	2026-08-23	2026-11-21
+give me the transaction count	count	2026-08-23	2026-11-21
+total number of transactions	count	2026-08-23	2026-11-21
+total number of purchases	count	2026-08-23	2026-11-21
+total number of purchases this month	count	2026-11-01	2026-12-01
+total count of transactions	count	2026-08-23	2026-11-21
+what's the total number of transactions	count	2026-08-23	2026-11-21
+what is the total number of purchases I made	count	2026-08-23	2026-11-21
+how much spending have I done	sum	2026-08-23	2026-11-21
+how much spending have I done this month	sum	2026-11-01	2026-12-01
+how much spending did I do	sum	2026-08-23	2026-11-21
+how much have I spend	sum	2026-08-23	2026-11-21
+how much have i spend this month	sum	2026-11-01	2026-12-01
+how much I have spend so far	sum	2026-08-23	2026-11-21
+how much did I have to pay	sum	2026-08-23	2026-11-21
+how much did I have to spend	sum	2026-08-23	2026-11-21
+how much have I had to pay	sum	2026-08-23	2026-11-21
+how much have I had to spend this month	sum	2026-11-01	2026-12-01
+how much have I payed	sum	2026-08-23	2026-11-21
+how much have I payed this month	sum	2026-11-01	2026-12-01
+how much did I payed	sum	2026-08-23	2026-11-21
+how much have i spended	sum	2026-08-23	2026-11-21
+how much did i spended	sum	2026-08-23	2026-11-21
+how much hav i spent	sum	2026-08-23	2026-11-21
+how mcuh did i spend	sum	2026-08-23	2026-11-21
+how muhc did i spend	sum	2026-08-23	2026-11-21
+how much did i sepnd	sum	2026-08-23	2026-11-21
+how much did i spnd	sum	2026-08-23	2026-11-21
+how much did i spedn	sum	2026-08-23	2026-11-21
+how much did i spen	sum	2026-08-23	2026-11-21
+how much did i spemd	sum	2026-08-23	2026-11-21
+how much did i spent	sum	2026-08-23	2026-11-21
+how much did i spnet	sum	2026-08-23	2026-11-21
+howmuch did i spend	sum	2026-08-23	2026-11-21
+how much money did i spned	sum	2026-08-23	2026-11-21
+how mush did I spend	sum	2026-08-23	2026-11-21
+how much did I spend totaly	sum	2026-08-23	2026-11-21
+how much did I spend totally	sum	2026-08-23	2026-11-21
+how much did I spend in totol	sum	2026-08-23	2026-11-21
+how much did I spend in toal	sum	2026-08-23	2026-11-21
+how much did I spend in ttoal	sum	2026-08-23	2026-11-21
+total expences	sum	2026-08-23	2026-11-21
+total expences this month	sum	2026-11-01	2026-12-01
+total expenditure	sum	2026-08-23	2026-11-21
+total purchaces	sum	2026-08-23	2026-11-21
+total purchses	sum	2026-08-23	2026-11-21
+total pruchases	sum	2026-08-23	2026-11-21
+how many purchses did I make	count	2026-08-23	2026-11-21
+how many purchase did I make	count	2026-08-23	2026-11-21
+how many purchas did I make	count	2026-08-23	2026-11-21
+how many transaction did I make	count	2026-08-23	2026-11-21
+how many transacton this month	count	2026-11-01	2026-12-01
+how many trasactions	count	2026-08-23	2026-11-21
+how many tranactions this month	count	2026-11-01	2026-12-01
+how many trnasactions	count	2026-08-23	2026-11-21
+how many transctions did I make	count	2026-08-23	2026-11-21
+what's my rough total	sum	2026-08-23	2026-11-21
+give me a rough total	sum	2026-08-23	2026-11-21
+what's my approximate total	sum	2026-08-23	2026-11-21
+what's the exact total	sum	2026-08-23	2026-11-21
+what's my exact spending total	sum	2026-08-23	2026-11-21
+what's the precise total	sum	2026-08-23	2026-11-21
+what's my actual total	sum	2026-08-23	2026-11-21
+what's the actual amount I spent	sum	2026-08-23	2026-11-21
+what's the real total	sum	2026-08-23	2026-11-21
+what's the final total	sum	2026-08-23	2026-11-21
+what's the combined total	sum	2026-08-23	2026-11-21
+what's the cumulative total	sum	2026-08-23	2026-11-21
+what's my cumulative spending total	sum	2026-08-23	2026-11-21
+what's the full amount I spent	sum	2026-08-23	2026-11-21
+how much do I spend in general	sum	2026-08-23	2026-11-21
+how much did I spend, more or less	sum	2026-08-23	2026-11-21
+how much did I spend, give or take	sum	2026-08-23	2026-11-21
+ballpark, how much did I spend	sum	2026-08-23	2026-11-21
+what's the ballpark total	sum	2026-08-23	2026-11-21
+how much did I spend, ballpark	sum	2026-08-23	2026-11-21
+how much did I spend this whole month	sum	2026-11-01	2026-12-01
+how much did I spend this entire year	sum	2026-01-01	2026-11-21
+how much did I spend over the course of this month	sum	2026-11-01	2026-12-01
+how much did I spend throughout this month	sum	2026-11-01	2026-12-01
+how much did I spend for the whole of last month	sum	2026-10-01	2026-11-01
+how much have I spent to this point	sum	2026-08-23	2026-11-21
+how much have I spent up to this point	sum	2026-08-23	2026-11-21
+how much have I spent at this point	sum	2026-08-23	2026-11-21
+how much did I spend including everything	sum	2026-08-23	2026-11-21
+how much did I spend, everything included	sum	2026-08-23	2026-11-21
+how much did I spend all in	sum	2026-08-23	2026-11-21
+how much did I spend all inclusive	sum	2026-08-23	2026-11-21
+how much did I spend on the whole	sum	2026-08-23	2026-11-21
+how much have I spent across all my accounts	sum	2026-08-23	2026-11-21
+how much have I spent in total across all accounts	sum	2026-08-23	2026-11-21
+how much came out of my account	sum	2026-08-23	2026-11-21
+how much came out of my account this month	sum	2026-11-01	2026-12-01
+how much has come out of my account	sum	2026-08-23	2026-11-21
+how much money has gone	sum	2026-08-23	2026-11-21
+how much money has gone this month	sum	2026-11-01	2026-12-01
+how much money is gone	sum	2026-08-23	2026-11-21
+how much of my money is gone	sum	2026-08-23	2026-11-21
+how much of my money did I spend	sum	2026-08-23	2026-11-21
+how much did I spend and on what	sum	2026-08-23	2026-11-21
+how much did I spend and what on	sum	2026-08-23	2026-11-21
+how much did I spend, broken down	sum	2026-08-23	2026-11-21
+how much did I spend broken down by category	sum	2026-08-23	2026-11-21
+how much did I spend, by category	sum	2026-08-23	2026-11-21
+how much did I spend per category	sum	2026-08-23	2026-11-21
+how much did I spend in each category	sum	2026-08-23	2026-11-21
+how much did I spend on each category	sum	2026-08-23	2026-11-21
+total by category	sum	2026-08-23	2026-11-21
+total per category	sum	2026-08-23	2026-11-21
+total spending by category	sum	2026-08-23	2026-11-21
+how much did I spend this month alone	sum	2026-11-01	2026-12-01
+how much did I spend in october alone	sum	2026-10-01	2026-11-01
+how much did I spend today alone	sum	2026-11-20	2026-11-21
+how much did I even spend	sum	2026-08-23	2026-11-21
+how much did I even spend this month	sum	2026-11-01	2026-12-01
+how much have I spent right now	sum	2026-08-23	2026-11-21
+how much have I spent as of right now	sum	2026-08-23	2026-11-21
+how much did I spend after all	sum	2026-08-23	2026-11-21
+how much the heck did I spend	sum	2026-08-23	2026-11-21
+how much did I spend, yeah?	sum	2026-08-23	2026-11-21
+how much did I spend, no?	sum	2026-08-23	2026-11-21
+how much did I spend, you know	sum	2026-08-23	2026-11-21
+how much did I spend, out of curiosity	sum	2026-08-23	2026-11-21
+out of curiosity, how much did I spend	sum	2026-08-23	2026-11-21
+out of curiosity how much have I spent this month	sum	2026-11-01	2026-12-01
+how much did I spend tbh	sum	2026-08-23	2026-11-21
+idk how much I spent	sum	2026-08-23	2026-11-21
+wonder how much I spent	sum	2026-08-23	2026-11-21
+assistant, how much did I spend	sum	2026-08-23	2026-11-21
+hey assistant how much did I spend this month	sum	2026-11-01	2026-12-01
+what're my total expenses	sum	2026-08-23	2026-11-21
+what've I spent this month	sum	2026-11-01	2026-12-01
+how many quid did I spend	sum	2026-08-23	2026-11-21
+how much did I spend this calendar year	sum	2026-01-01	2026-11-21
+how much did I spend the last seven days	sum	2026-11-13	2026-11-21
+how much did I spend in the previous 30 days	sum	2026-10-21	2026-11-21
+how much did I spend throughout 2026	sum	2026-01-01	2027-01-01
+how much did I spend in the year 2026	sum	2026-01-01	2027-01-01
+how much did I spend at the moment	sum	2026-08-23	2026-11-21
+how much has my spending totaled this month	sum	2026-11-01	2026-12-01
+how much has my spending totalled this month	sum	2026-11-01	2026-12-01
+how much have my expenses totaled	sum	2026-08-23	2026-11-21
+how much did my spending come to	sum	2026-08-23	2026-11-21
+how much did my spending come to last month	sum	2026-10-01	2026-11-01
+how much did my spending amount to	sum	2026-08-23	2026-11-21
+how much does my spending amount to	sum	2026-08-23	2026-11-21
+how much does everything come to	sum	2026-08-23	2026-11-21
+how much did everything come to last month	sum	2026-10-01	2026-11-01
+how much did everything add up to	sum	2026-08-23	2026-11-21
+how much did everything total	sum	2026-08-23	2026-11-21
+how much did all my purchases cost	sum	2026-08-23	2026-11-21
+how much did all of my purchases cost	sum	2026-08-23	2026-11-21
+how much did I spend in total, combined	sum	2026-08-23	2026-11-21
+how much did I spend, period	sum	2026-08-23	2026-11-21
+what's my spend at	sum	2026-08-23	2026-11-21
+what's my total at	sum	2026-08-23	2026-11-21
+what is my total at now	sum	2026-08-23	2026-11-21
+what total am I at	sum	2026-08-23	2026-11-21
+what's the total tally	sum	2026-08-23	2026-11-21
+what's the sum	sum	2026-08-23	2026-11-21
+what's the sum of my spending	sum	2026-08-23	2026-11-21
+what's the sum of my purchases	sum	2026-08-23	2026-11-21
+what's the sum total	sum	2026-08-23	2026-11-21
+whats the total amount	sum	2026-08-23	2026-11-21
+whats my total amt	sum	2026-08-23	2026-11-21
+total amt spent	sum	2026-08-23	2026-11-21
+total $ spent	sum	2026-08-23	2026-11-21
+total $$ spent this month	sum	2026-11-01	2026-12-01
+$ spent this month total	sum	2026-11-01	2026-12-01
+how much $ this month	sum	2026-11-01	2026-12-01
+how much $$$ did I spend	sum	2026-08-23	2026-11-21
+how much money did I go through this month	sum	2026-11-01	2026-12-01
+how much did I outlay	sum	2026-08-23	2026-11-21
+how much have I expended	sum	2026-08-23	2026-11-21
+how much did I expend this month	sum	2026-11-01	2026-12-01
+Banko, can you tell me how much I spent last month?	sum	2026-10-01	2026-11-01
+hey Banko, can you tell me how much I spent	sum	2026-08-23	2026-11-21
+Banko can you tell me my total spending	sum	2026-08-23	2026-11-21
+Banko, tell me how much I spent	sum	2026-08-23	2026-11-21
+Banko please tell me how much I spent	sum	2026-08-23	2026-11-21
+hi Banko, could you tell me how much I've spent this month	sum	2026-11-01	2026-12-01
+Banko, I'd like to know how much I spent	sum	2026-08-23	2026-11-21
+Banko, give me my total spending	sum	2026-08-23	2026-11-21
+Banko, do you know how much I spent last week	sum	2026-11-09	2026-11-16
+hey Banko, how much did I spend	sum	2026-08-23	2026-11-21
+thanks, how much did I spend last month?	sum	2026-10-01	2026-11-01
+thanks! how much did I spend this month	sum	2026-11-01	2026-12-01
+thank you, and how much did I spend in total	sum	2026-08-23	2026-11-21
+ok thanks, how much did I spend last month	sum	2026-10-01	2026-11-01
+ok great, what's my total for the year	sum	2026-01-01	2026-11-21
+great, how much did I spend	sum	2026-08-23	2026-11-21
+cool, how much did I spend this month	sum	2026-11-01	2026-12-01
+cool, and my total?	sum	2026-08-23	2026-11-21
+nice, what's my total	sum	2026-08-23	2026-11-21
+perfect, how much did I spend	sum	2026-08-23	2026-11-21
+got it, how much did I spend	sum	2026-08-23	2026-11-21
+yes, how much did I spend	sum	2026-08-23	2026-11-21
+no, how much did I spend in total	sum	2026-08-23	2026-11-21
+sorry, how much did I spend	sum	2026-08-23	2026-11-21
+sure, how much did I spend	sum	2026-08-23	2026-11-21
+awesome, how much did I spend	sum	2026-08-23	2026-11-21
+one more, how much did I spend this year	sum	2026-01-01	2026-11-21
+last question, how much did I spend this year	sum	2026-01-01	2026-11-21
+another question, how much did I spend	sum	2026-08-23	2026-11-21
+next question: how much did I spend	sum	2026-08-23	2026-11-21
+and one more thing, how much did I spend	sum	2026-08-23	2026-11-21
+good, now how much did I spend	sum	2026-08-23	2026-11-21
+fine, how much did I spend	sum	2026-08-23	2026-11-21
+interesting, how much did I spend last month	sum	2026-10-01	2026-11-01
+I see, how much did I spend last month	sum	2026-10-01	2026-11-01
+hmm ok, how much did I spend	sum	2026-08-23	2026-11-21
+oh ok how much did I spend	sum	2026-08-23	2026-11-21
+ah, how much did I spend	sum	2026-08-23	2026-11-21
+lol how much did I spend	sum	2026-08-23	2026-11-21
+yikes how much did I spend	sum	2026-08-23	2026-11-21
+dang how much did I spend this month	sum	2026-11-01	2026-12-01
+damn how much did I spend	sum	2026-08-23	2026-11-21
+omg how much did I spend	sum	2026-08-23	2026-11-21
+geez how much did I spend	sum	2026-08-23	2026-11-21
+jeez, how much did I spend this month	sum	2026-11-01	2026-12-01
+whoa how much did I spend	sum	2026-08-23	2026-11-21
+about how much did I spend	sum	2026-08-23	2026-11-21
+approximately how much did I spend	sum	2026-08-23	2026-11-21
+roughly how much did I spend last month	sum	2026-10-01	2026-11-01
+around how much did I spend	sum	2026-08-23	2026-11-21
+how much have I already spent	sum	2026-08-23	2026-11-21
+how much have I already spent this month	sum	2026-11-01	2026-12-01
+how much did I spend altogether	sum	2026-08-23	2026-11-21
+how much did I spend all together	sum	2026-08-23	2026-11-21
+did I spend anything today	sum	2026-11-20	2026-11-21
+how much did I really spend	sum	2026-08-23	2026-11-21
+how much did I really spend last month	sum	2026-10-01	2026-11-01
+how much was I billed this month	sum	2026-11-01	2026-12-01
+how much have I been billed	sum	2026-08-23	2026-11-21
+give me a breakdown of my total spending	sum	2026-08-23	2026-11-21
+what's our total spending	sum	2026-08-23	2026-11-21
+how much did we spend this month	sum	2026-11-01	2026-12-01
+hi, how much did I spend this month	sum	2026-11-01	2026-12-01
+what's my average purchase	average	2026-08-23	2026-11-21
+what is my average purchase	average	2026-08-23	2026-11-21
+average purchase	average	2026-08-23	2026-11-21
+average transaction amount	average	2026-08-23	2026-11-21
+what's my average spending	average	2026-08-23	2026-11-21
+how much did I spend on average	average	2026-08-23	2026-11-21
+I mean how much did I spend	sum	2026-08-23	2026-11-21
+I'm not sure how much I spent this month	sum	2026-11-01	2026-12-01
+I don't know how much I've spent this month	sum	2026-11-01	2026-12-01
+I have no idea how much I spent last month	sum	2026-10-01	2026-11-01
+I forgot how much I spent last month	sum	2026-10-01	2026-11-01
+I'm trying to figure out how much I spent last month	sum	2026-10-01	2026-11-01
+just checking how much I spent this month	sum	2026-11-01	2026-12-01
+how much did I spend across all my accounts	sum	2026-08-23	2026-11-21
+how much did I spend across all my cards	sum	2026-08-23	2026-11-21
+how much money went out of my account	sum	2026-08-23	2026-11-21
+how much money left my account	sum	2026-08-23	2026-11-21
+how much did I spend for each category	sum	2026-08-23	2026-11-21
+how much did I spend only this month	sum	2026-11-01	2026-12-01
+how much did I spend this month only	sum	2026-11-01	2026-12-01
+how much did I spend earlier today	sum	2026-11-20	2026-11-21
+how much did I spend this month to date	sum	2026-11-01	2026-12-01
+how much did I spend this year to date	sum	2026-01-01	2026-11-21
+how much did I spend this past month	sum	2026-10-21	2026-11-21
+how much did I spend in the last month	sum	2026-10-21	2026-11-21
+how much did I spend in the last week	sum	2026-11-13	2026-11-21
+how much did I spend these past 30 days	sum	2026-10-21	2026-11-21
+how much did I spend over the course of the last 30 days	sum	2026-10-21	2026-11-21
+how much have I spent since january 1	sum	2026-01-01	2026-11-21
+what's this months total	sum	2026-11-01	2026-12-01
+what's last months total	sum	2026-10-01	2026-11-01
+how much did I spend in the current calendar year	sum	2026-01-01	2026-11-21
+what was last month's total	sum	2026-10-01	2026-11-01
+how much did I spend at all last month	sum	2026-10-01	2026-11-01
+what's my avg purchase	average	2026-08-23	2026-11-21

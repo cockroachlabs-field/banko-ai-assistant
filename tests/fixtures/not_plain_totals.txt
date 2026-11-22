@@ -1,0 +1,148 @@
+# Questions with a word of a total in them that ask for something a total of all spending does not answer:
+# a balance, income, one purchase, a rate, a comparison, a time no window reads. tests/test_totals_subject.py
+how much did that cost
+how much was that
+how much is that
+how much is this
+how much were those
+how much did those cost
+how much did these cost
+how much did I spend there
+how much did I spend on that
+how much did I pay for that
+how much did I pay for those
+how much did I pay for this
+how much of that was coffee
+how much of that was at starbucks
+how much is there
+how much money is there
+how much is in there
+how much money do I have
+how much was I paid
+how much am I paid
+how much have I been paid
+how much was I paid this month
+how much did I get paid
+how much do I get paid
+how much was my last purchase
+how much was my last transaction
+how much was my last charge
+how much was my last payment
+how much was the last purchase
+how much was my previous purchase
+how much is my next payment
+how much is my next charge
+how much was my purchase yesterday
+how much is my payment
+how much is my monthly payment
+how much are my payments
+how much are my monthly payments
+how much are my monthly charges
+how much do I pay monthly
+how much do I spend per day
+how much do I spend per week
+how much do I spend per month
+how much do I spend a day
+how much do I spend a week
+how much do I spend each week
+how much do I spend every day
+how much do I spend daily
+how much do I spend weekly
+how much do I spend yearly
+how much do I spend annually
+how much do I spend a year
+how much do I spend in a month
+how much do I spend in a week
+how much do I spend in a day
+how much do I spend in a typical month
+how much do I usually spend in a month
+how much do I normally spend
+how much do I typically spend each month
+what do I spend per month
+what do I spend each month
+what's my spend per month
+how much did I spend by month
+how much did I spend by week
+how much did I spend by day
+total spending by month
+total by month
+total per month
+total each month
+total for each month
+how much per month
+how much a month
+how much each month
+how much did I spend each day this week
+how much did I spend every day last week
+how much have I ever spent
+what's the most I ever spent
+how much did I spend all time
+how much did I spend all year
+how much did I spend all week
+how much did I spend this month and last month
+how much did I spend today and yesterday
+did I spend as much as last month
+did I spend as much this month as last month
+how much did I spend then
+how much did I spend at the time
+how much did I spend that day
+how much did I spend that week
+how much did I spend that month
+how much did I spend that year
+how much was spent on that day
+how much did I spend the next day
+how much did I spend the day after
+how much did I spend at that time
+how much do you charge
+how much do you cost
+how much does this cost
+how much does that cost
+how much will that cost
+how much is it going to cost
+how much is each purchase
+how much was each purchase
+how much was each transaction
+how much per purchase
+how much per transaction
+how many transactions per day
+how many purchases per week
+how many purchases a day
+how many transactions each month
+how many days did I spend money
+how many days this month did I spend money
+how many months did I spend
+how many weeks
+how many times a week do I spend money
+count of days
+number of days I spent money
+what is the mean
+what do you mean by total
+what do you mean
+what does total mean
+mean spend
+what's my average spend per day
+what's my average daily spend
+what's my average weekly spending
+what's my average monthly spending
+average per day
+average per week
+average per month
+average daily spend
+average monthly expenses
+average weekly spend
+average a month
+average each month
+my monthly average
+my daily average
+what's my daily average
+how much on average per day
+how much on average do I spend a day
+average amount per transaction
+average cost per purchase
+what is the average amount I spend per purchase
+sum and count
+total and count of my purchases
+how much and how many
+how much did I spend or save
+how many
+count

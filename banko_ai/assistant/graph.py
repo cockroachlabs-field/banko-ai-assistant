@@ -206,8 +206,50 @@ def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                last_search=state.get("last_search"))
     if r.kind == "offtopic" and _names_own_merchant(state, runtime.context):
         r = Route("plan", "one of your merchants")
+    elif r.kind == "offtopic" and (total := _total_at_own_merchant(state, runtime.context)) is not None:
+        r = Route("aggregate", f"{total.operation} answered by SQL", intent=total)
     _step("Intent routing", f"{r.kind}: {r.detail}", ms=(time.perf_counter() - t0) * 1000)
     return {"route": r.as_dict()}
+
+
+def _loose(state: TurnState, deps: TurnDeps, subject: str) -> tuple[str | None, str | None]:
+    """(category, merchant) for the words a total could not place, or (None,
+    None), which is the planner's. Whole and exactly (aggregations.
+    loose_subject), over the merchants the process keeps for this state of
+    the user's money, so the purchases are read again only for a merchant's
+    stored name.
+
+    Two kinds of name are no subject when they stand alone, as in the answer
+    cache: a category that is a thing with a page of its own ("how much are
+    my bills" is not the Utilities total), and a merchant named like one of
+    Banko's own things ("target total" may be about a savings target). Said
+    outright, behind on, for or at, both are read as they always were."""
+    from ..utils.aggregations import loose_subject, name_words
+    user_id, url = state["user_id"], deps.url or get_config().database_url
+    known = caches.merchant_names(user_id, ledger.data_version(user_id, deps.url), deps.url)
+    category, merchant = loose_subject(state["message"], subject, user_id, url, known)
+    if category is not None and caches.a_thing_of_its_own(" ".join(name_words(subject))):
+        return None, None
+    if merchant is not None and caches.holds_bankos_own_word(" ".join(name_words(merchant))):
+        return None, None
+    return category, merchant
+
+
+def _total_at_own_merchant(state: TurnState, deps: TurnDeps):
+    """ "total spotify" says nothing about money to the router either. A
+    total whose words left over are one of the user's merchants is a total,
+    and only the user's purchases can say so. Asked only for a message that
+    is a total by its words and was turned away, and answered from the
+    merchants the process keeps."""
+    from ..utils.intent_classifier import classify_aggregation
+    try:
+        intent = classify_aggregation(state["message"], today=deps.day)
+        if intent is None or not intent.loose or not intent.subject:
+            return None
+        return intent if _loose(state, deps, intent.subject)[1] else None
+    except Exception as exc:  # the reply it had before
+        note_skipped(log, "merchant lookup", exc)
+        return None
 
 
 def _names_own_merchant(state: TurnState, deps: TurnDeps) -> bool:
@@ -250,10 +292,22 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     url = deps.url or get_config().database_url
     i = state["route"]["intent"]
     intent = AggregationIntent(i["operation"], i["subject"], date.fromisoformat(i["window_start"]),
-                               date.fromisoformat(i["window_end"]), int(i.get("limit") or 1))
+                               date.fromisoformat(i["window_end"]), int(i.get("limit") or 1), bool(i.get("loose")))
     by_size = intent.operation in SIZE_ORDER
     merchant = None
-    if intent.subject and resolve_category(intent.subject, url) is None:
+    if intent.loose and intent.subject:
+        # Words the total could not place ("coffee total", "how much do I
+        # have"). They are its subject when they are, whole and exactly, a
+        # category money is spent on or one of the user's merchants.
+        # Anything else is the planner's: a total over everything would
+        # answer a question nobody asked, and so would a near miss.
+        t0 = time.perf_counter()
+        category, merchant = _loose(state, deps, intent.subject)
+        if category is None and merchant is None:
+            _step("Category lookup", f"no category or merchant called '{intent.subject}'; asking the planner",
+                  ms=(time.perf_counter() - t0) * 1000, status="warning")
+            return _to_planner(state, f"'{intent.subject}' is no category and none of your merchants")
+    elif intent.subject and resolve_category(intent.subject, url) is None:
         t0 = time.perf_counter()
         merchant = resolve_merchant(intent.subject, user_id, url)
         if merchant is None and by_size:
@@ -279,9 +333,11 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
     agg = run_aggregation(intent, user_id, url, region=region, merchant=merchant)
     db_ms = _since(t0)
-    if by_size and not agg.count and (agg.merchant or agg.category):
+    if (by_size or intent.loose) and not agg.count and (agg.merchant or agg.category):
         # "My largest income transaction": a category no purchase carries.
         # "No matching transactions on Income" would read as no income at all.
+        # The same for a word a total could not place ("how much electronics"
+        # with nothing bought there): it may not have been the subject.
         _step("Aggregation SQL", f"no purchases {'at ' + agg.merchant if agg.merchant else 'on ' + str(agg.category)} "
               "in that window; searching by meaning instead", ms=db_ms, status="warning", key="sql")
         return _to_planner(state, f"no purchases under '{intent.subject}'")
@@ -1035,6 +1091,9 @@ def run_turn(user_id: str, thread_id: str, message: str, *, language_code: str |
     them the turn runs on the deployment's."""
     graph = graph or get_graph()
     deps = TurnDeps(chat=chat or ProviderChat(), url=url, prefs=prefs or preferences.defaults())
+    # Half an emoji (a lone surrogate) fits in JSON and in no encoding: the
+    # embedding model raised on it, and the turn ended in an error.
+    message = message.encode("utf-8", "ignore").decode("utf-8")
     inputs: dict[str, Any] = {"user_id": user_id, "thread_id": thread_id, "message": message[:4000],
                               "language": answers.language_name(language_code)}
     if context is not None:  # otherwise the thread keeps the context it was opened with
