@@ -6,6 +6,10 @@
 <link rel="icon" type="image/svg+xml" href="{{ tab_icon_url() }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 <script>(function(){var t=localStorage.getItem("banko.theme")||{{ theme|tojson }};var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=d?"dark":"light";})();</script>
+{# "How this was answered" may be open in a window of its own (pages/trace_window.html), showing the last
+   answer of whoever was signed in. With nobody signed in, say so on its channel and it goes blank. The
+   session is what knows, behind IAP as well: a request no assertion vouches for is signed out of it. #}
+{% if not session.get("user_id") %}<script>if ("BroadcastChannel" in window) new BroadcastChannel("banko-trace").postMessage({ type: "user", user: null });</script>{% endif %}
 </head>
 <body>
 <main style="max-width:880px;margin:6vh auto;padding:0 16px;display:flex;flex-direction:column;gap:18px">

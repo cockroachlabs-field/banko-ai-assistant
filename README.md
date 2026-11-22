@@ -30,7 +30,8 @@ Every page also has a dark theme ([dashboard](https://github.com/cockroachlabs-f
   every provider. Visit questions ("when did I last go to Costco?") come
   straight from SQL, with no model call in English. Open questions go to a
   planner that calls tools. Answers stream, and each one shows how it was
-  built: the steps, the database time and the EXPLAIN ANALYZE plan.
+  built: the steps, the database time and the EXPLAIN ANALYZE plan. That
+  view opens in a window of its own, for a second screen.
 - **Read receipts.** Drop an image or PDF anywhere: OCR and field
   extraction, a duplicate check, a posting through the ledger, then the
   fraud and budget agents, each step shown as it finishes. Ask about the

@@ -34,7 +34,10 @@
   {# Only a message in the conversation on screen: New conversation clears
      the panel, and an answer that lands for a thread put away never shows. #}
   <aside class="b-trace" x-data="tracePanel">
-    <h3>How this was answered</h3>
+    <div class="b-row">
+      <h3>How this was answered</h3>
+      <button class="b-iconbtn" style="width:26px;height:26px" type="button" @click="popOut()" title="Open in a window of its own" aria-label="Open in a window of its own">{{ icon('external-link') }}</button>
+    </div>
     {# Which answer: two answers to one question have the same steps, and a click that changes nothing looks dead. #}
     <div class="b-muted b-asked" x-show="message && messages.includes(message) && asked()" x-text="'“' + asked() + '”'"></div>
     <div class="b-muted" x-show="!(message && messages.includes(message))">Ask something and each step shows up here: the route, the index, the region and the timings.</div>

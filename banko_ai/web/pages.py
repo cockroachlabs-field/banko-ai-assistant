@@ -58,6 +58,15 @@ def assistant():
     return render_template("pages/assistant.html", thread_id=None)
 
 
+@pages.get("/assistant/trace")
+def assistant_trace():
+    """ "How this was answered" in a window of its own, for a second screen:
+    the steps beside a query plan that keeps its lines. No shell around it
+    and no data of its own: the Assistant it was opened from sends it each
+    answer's trace."""
+    return render_template("pages/trace_window.html")
+
+
 @pages.get("/assistant/<thread_id>")
 def assistant_thread(thread_id: str):
     if threads_service.get_thread(session["user_id"], thread_id) is None:

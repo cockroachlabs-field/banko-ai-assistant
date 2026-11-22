@@ -137,6 +137,43 @@ def test_assistant_page(monkeypatch, member):
         drop_user(other)
 
 
+def test_how_this_was_answered_has_a_page_for_a_window_of_its_own(monkeypatch, member):
+    """The side panel is 320 px wide, and a query plan in it is a column of
+    wrapped lines. This page is what the panel opens in a window of its own:
+    no shell around it, nothing external, and no data of its own. The
+    Assistant it was opened from tells it what to show."""
+    client = signed_in(monkeypatch, member)
+    resp = client.get("/assistant/trace")
+    assert resp.status_code == 200
+    html = resp.get_data(as_text=True)
+    assert 'x-data="traceWindow"' in html and "js/pages/trace_window.js" in html
+    assert "How this was answered" in html
+    assert 'class="b-side' not in html and "data-page=" not in html      # no nav, no shell
+    assert 'id="banko-shell"' not in html and "tester" not in html       # and nothing about who is signed in
+    assert not re.search(r'(src|href)="https?://', html)
+    assert re.search(r'<link rel="icon" type="image/svg\+xml" href="/static/[^"]+"', html)
+    # The panel on the Assistant page is where it opens from, and the nav does not list it.
+    assistant = client.get("/assistant").get_data(as_text=True)
+    assert 'aria-label="Open in a window of its own"' in assistant
+    assert 'href="/assistant/trace"' not in assistant
+
+
+def test_the_window_of_its_own_needs_a_sign_in_like_any_page(monkeypatch):
+    resp = app_client(monkeypatch).get("/assistant/trace")
+    assert resp.status_code == 302 and "/login" in resp.headers["Location"]
+
+
+def test_the_sign_in_page_tells_the_window_that_nobody_is_signed_in(monkeypatch, member):
+    """Left open on a second screen, the window keeps a user's last answer.
+    Signed out, the sign-in page says so on the window's channel and the
+    window goes blank. The same page looked at while still signed in says
+    nothing: nobody left."""
+    out = app_client(monkeypatch).get("/login").get_data(as_text=True)
+    assert 'new BroadcastChannel("banko-trace").postMessage({ type: "user", user: null })' in out
+    still_in = signed_in(monkeypatch, member).get("/login").get_data(as_text=True)
+    assert "Pick a persona" in still_in and "banko-trace" not in still_in
+
+
 def test_nav_highlights_correct_section(monkeypatch, member):
     client = signed_in(monkeypatch, member)
     acct = client.get("/api/v1/accounts").get_json()["accounts"][0]["account_id"]

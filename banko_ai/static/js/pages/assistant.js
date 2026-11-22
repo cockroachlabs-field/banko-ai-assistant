@@ -41,6 +41,14 @@ document.addEventListener("alpine:init", () => {
       await this.loadMemories();
     },
     async loadMemories() { try { this.memories = (await Banko.api("/api/v1/memories")).memories; } catch (e) { this.memories = []; } },
+    // The panel in a window of its own, for a second screen. One window: the
+    // same button brings it forward again. It asks for the last answer's
+    // trace when it has loaded, and follows the conversation from there.
+    popOut() {
+      const opened = window.open("/assistant/trace", "banko-trace", "popup=yes,width=1280,height=860");
+      if (opened) opened.focus();
+      else Alpine.store("toasts").push({ title: "Assistant", text: "Your browser kept the window from opening. Allow pop-ups for this page and try again.", kind: "error" });
+    },
     steps() {
       const m = this.message;
       return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps;
