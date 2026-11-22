@@ -272,3 +272,55 @@ def test_purchases_at_the_restaurant_on_the_receipt_are_the_receipts():
     dinner = {"document_id": "d3", "merchant": "Luigi's", "items": ["Restaurant dinner", "Tiramisu"], "amount": 62.0}
     assert route("purchases at the restaurant", active_receipt=dinner, last_route="receipt", today=TODAY).kind == "receipt"
     assert route("restaurant purchases", active_receipt=dinner, last_route="receipt", today=TODAY).kind == "plan"
+
+
+def test_a_question_about_a_line_on_the_receipt_stays_with_the_receipt():
+    """ "how much was the coffee" beside a receipt with a coffee on it is
+    about that line. A total keeps a word it cannot place now, and that word
+    must not make this a total of ninety days of coffee."""
+    line = {"document_id": "d2", "merchant": "Corner Bakery", "items": ["Drip Coffee", "Bagel"], "amount": 7.5}
+    assert route("how much was the coffee", active_receipt=line, last_route="receipt", today=TODAY).kind == "receipt"
+    assert route("how much was the bill?", active_receipt=RECEIPT, last_route="receipt", today=TODAY).kind == "receipt"
+    assert route("how much was the wine?", active_receipt=RECEIPT, last_route="receipt", today=TODAY).kind == "receipt"
+    # A subject named outright, or dates, still make it a new question.
+    assert route("how much did I spend on wine last month", active_receipt=RECEIPT, last_route="receipt",
+                 today=TODAY).kind == "aggregate"
+
+
+@pytest.mark.parametrize("name", ["phone", "rideshare", "transit", "health", "medical", "hardware", "takeout",
+                                  "streaming", "electronics", "entertainment", "movies", "concerts"])
+def test_a_total_of_a_category_is_a_money_question(name):
+    """ "total electronics", "movies total" and "how much movies" were "not a
+    money question": no word in them says money to the check that decides."""
+    for question in (f"{name} total", f"total {name}", f"how much {name}", f"how much {name} this month"):
+        asked = route(question, today=TODAY)
+        assert asked.kind == "aggregate" and asked.intent.subject == name and asked.intent.loose, question
+    for other in ("total eclipse of the heart", "average rainfall in seattle", "what is the sum of 2 and 2"):
+        assert route(other, today=TODAY).kind == "offtopic", other
+
+
+def test_inside_a_conversation_a_short_total_the_money_check_rejects_still_leans_on_it():
+    later = route("total electronics", has_history=True, today=TODAY)
+    assert later.kind == "plan" and later.follow_up
+
+
+def test_a_total_the_totals_decline_is_not_a_question_about_the_receipt():
+    """ "how much do I spend at starbucks a month" with a Starbucks receipt on
+    the table: the merchant's name is in it, and the totals decline it for
+    its "a month". The receipt cannot answer it either."""
+    starbucks = {"document_id": "d4", "merchant": "Starbucks", "items": ["Latte"], "amount": 5.25}
+    for question in ("how much do I spend at starbucks a month", "how much did I spend at starbucks compared to last month",
+                     "How much did I spend at starbucks, and what was my biggest purchase there?"):
+        assert route(question, active_receipt=starbucks, last_route="receipt", today=TODAY).kind == "plan", question
+    # The total it does read, and the question about the receipt, are where they were.
+    assert route("how much did I spend at starbucks last month", active_receipt=starbucks, last_route="receipt",
+                 today=TODAY).kind == "aggregate"
+    assert route("how much was the latte", active_receipt=starbucks, last_route="receipt", today=TODAY).kind == "receipt"
+
+
+def test_a_long_run_of_spaces_does_not_keep_the_router_busy():
+    """The visits pattern took sixteen minutes over ten thousand spaces."""
+    import time
+    t0 = time.perf_counter()
+    route("did i go to x" + " " * 20000 + "y", today=TODAY)
+    assert time.perf_counter() - t0 < 5

@@ -157,6 +157,26 @@ def test_the_other_words_check_is_skipped_when_there_is_nothing_it_could_replay(
     assert _in_other_words(monkeypatch, _answer([_WORKED, _DECLINED])).other_words().startswith("skipped")
 
 
+def test_the_subject_check_wants_the_total_of_what_was_named(monkeypatch):
+    """ "groceries total last month" answered with the total of everything
+    is a failure, however well it reads, and so is any other total than the
+    one "on groceries last month" got."""
+    card = "You spent **$502.72** on Groceries from 2026-10-01 to 2026-10-31 (8 transactions)."
+    kept = _answer([], route="aggregate", answer=card + "\n\n- Steady.")
+    s = _smoke_answering(monkeypatch, kept, kept, kept)
+    assert "on Groceries" in s.totals() and s.groceries == card
+    assert "on Groceries" in s.subject_kept()
+    s.groceries = card.replace("502.72", "552.80")         # asked outright, it was another figure
+    with pytest.raises(AssertionError, match="not the total 'on groceries last month' got"):
+        s.subject_kept()
+    dropped = _answer([], route="aggregate", answer="You spent **$7,631.76** on all categories from 2026-10-01 to 2026-10-31.")
+    with pytest.raises(AssertionError, match="not a total of groceries"):
+        _smoke_answering(monkeypatch, dropped).subject_kept()
+    planned = _answer([], route="plan", answer="Your groceries came to about $500.")
+    with pytest.raises(AssertionError, match="route 'plan'"):
+        _smoke_answering(monkeypatch, planned).subject_kept()
+
+
 def _smoke_uploading(monkeypatch, *statuses):
     """A Smoke whose receipt uploads end with these statuses, in order; every question is answered."""
     s = smoke.Smoke("http://banko.test", "maya", None)

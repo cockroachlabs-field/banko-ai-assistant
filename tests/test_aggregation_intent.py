@@ -7,7 +7,7 @@ from datetime import date
 
 import pytest
 
-from banko_ai.utils.intent_classifier import classify_aggregation
+from banko_ai.utils.intent_classifier import classify_aggregation, extract_window
 
 TODAY = date(2026, 7, 24)
 
@@ -50,9 +50,19 @@ def test_a_window_or_filler_after_for_or_at_is_not_a_subject():
     """"for this month" is the window and "at all" is emphasis: both mean
     every category, never a category called "this month"."""
     for q in ("how much did I spend for this month?", "how much did I spend at all last month",
-              "how much did I spend on average per month?", "how much did I spend for the year"):
+              "how much did I spend on average?", "how much did I spend for the year"):
         assert classify_aggregation(q, today=TODAY).subject is None, q
     assert classify_aggregation("how much did I spend on dining last month", today=TODAY).subject == "dining"
+
+
+def test_a_rate_is_not_a_total_of_everything():
+    """ "on average per month" got the average purchase, and "how much do I
+    spend a month" the sum of ninety days: neither is a month's spending.
+    The words of the rate are kept, and the planner gets the question
+    (tests/test_totals_subject.py)."""
+    for q in ("how much did I spend on average per month?", "how much do I spend a month", "average monthly spending"):
+        intent = classify_aggregation(q, today=TODAY)
+        assert intent is None or (intent.loose and intent.subject), q
 
 
 def test_non_aggregation_returns_none():
@@ -115,11 +125,13 @@ def test_may_and_march_are_months_only_after_in_or_during():
         intent = classify_aggregation(q, today=date(2026, 11, 20))
         return (intent.window_end - intent.window_start).days
 
-    assert days("how much may I spend on coffee") == 90            # a verb, so no window: the default
+    assert extract_window("how much may I spend on coffee", today=date(2026, 11, 20)) is None   # a verb
     assert days("how much did I spend on the march to the stadium") == 90
     assert days("how much did I spend in may") == 31
     assert days("how much did I spend during march") == 31
     assert days("how much did I spend in 2500 words") == 90        # not a year anyone banked in
+    assert days("total expenses for may") == 31                    # after for, the month in full
+    assert extract_window("what do I pay for apr", today=date(2026, 11, 20)) is None   # a rate, not April
 
 
 # The largest or smallest purchase is a fact SQL has. It used to go to the
@@ -157,6 +169,7 @@ def _size(question: str, today: date = ASKED):
     (11, "my top twelve purchases", "largest", 12, None, _DEFAULT),                         # the card lists ten
     (16, "What was my biggest purchase in October?", "largest", 1, None, _OCTOBER),
     (17, "biggest purchase in 2025", "largest", 1, None, (date(2025, 1, 1), date(2026, 1, 1))),
+    (17, "biggest purchase in the last six months", "largest", 1, None, (date(2026, 5, 24), date(2026, 11, 21))),
     (36, "most expensive subscription charge", "largest", 1, "subscription", _DEFAULT),
     # Taken here with a subject the graph looks up. One that is no category
     # and none of the user's merchants, or has no purchases, goes on to the
@@ -197,7 +210,6 @@ def test_a_size_question_it_fully_understands_is_an_sql_question(row, question, 
     (14, "my highest monthly bill"),
     (15, "my biggest weekend purchase"),                                 # a window it cannot read
     (17, "what's my largest purchase ever?"),
-    (17, "biggest purchase in the last six months"),
     (17, "biggest purchase last quarter"),
     (17, "biggest purchase two months ago"),
     (18, "largest purchase each month this year"),
@@ -276,19 +288,24 @@ def test_the_biggest_purchase_leans_on_the_conversation_when_there_is_one():
         assert intent is not None and intent.operation == "largest", question
 
 
-def test_what_the_size_route_leaves_reads_as_it_did_before():
-    """Not taken means untouched: the totals still answer a question that
-    asks for one, and the rest still goes to the planner."""
+def test_what_the_size_route_leaves_reads_as_a_total_or_goes_to_the_planner():
+    """Not taken by the size route, a question that asks for a total is still
+    read as one, and the rest still goes to the planner. A total keeps the
+    words it cannot place ("top 5", "large") instead of dropping them:
+    dropped, "total of my top 5 purchases" was answered with all spending.
+    Kept, the graph finds no category or merchant of that name and hands the
+    question to the planner (tests/test_totals_subject.py). A second
+    question behind a total's subject is the planner's from the start."""
     def read(question):
         intent = classify_aggregation(question, today=ASKED)
-        return (intent.operation, intent.subject) if intent else None
+        return (intent.operation, intent.subject, intent.loose) if intent else None
 
-    assert read("what's my total spending and top 3 purchases this month") == ("sum", None)
-    assert read("How much did I spend on groceries, and what was my biggest purchase?") == ("sum", "groceries")
-    assert read("total of my top 5 purchases") == ("sum", None)
-    assert read("average of my largest purchases") == ("average", "of my largest")
-    assert read("how many large purchases did I make") == ("count", None)
-    assert read("how much did I spend on Top Golf purchases last month?") == ("sum", "top golf purchases")
+    assert read("what's my total spending and top 3 purchases this month") == ("sum", "top 3", True)
+    assert read("How much did I spend on groceries, and what was my biggest purchase?") is None
+    assert read("total of my top 5 purchases") == ("sum", "top 5", True)
+    assert read("average of my largest purchases") == ("average", "largest", True)
+    assert read("how many large purchases did I make") == ("count", "large", True)
+    assert read("how much did I spend on Top Golf purchases last month?") == ("sum", "top golf purchases", False)
     for planner in ("What's my biggest expense?", "and the biggest purchase?", "what was my biggest recent purchase?",
                     "what were my biggest and smallest purchases last month?", "what was my largest deposit?",
                     "show me my recent coffee purchases", "which one was the biggest?"):

@@ -184,6 +184,16 @@ def test_other_users_thread_is_404(client, monkeypatch):
         _drop(other)
 
 
+def test_half_an_emoji_does_not_fail_the_turn(client):
+    """JSON can carry a lone surrogate, no encoding can: the embedding model
+    raised on it and the turn ended in "Something went wrong"."""
+    tid = _thread(client)
+    body = json.dumps({"message": "tell me about \ud83d the moon"})
+    evs = events(client.post(f"/api/v1/assistant/threads/{tid}/messages", data=body, content_type="application/json"))
+    kinds = [kind for kind, _ in evs]
+    assert "error" not in kinds and "answer" in kinds and kinds[-1] == "done", kinds
+
+
 def test_empty_message_is_400(client):
     tid = _thread(client)
     assert client.post(f"/api/v1/assistant/threads/{tid}/messages", json={"message": "  "}).status_code == 400

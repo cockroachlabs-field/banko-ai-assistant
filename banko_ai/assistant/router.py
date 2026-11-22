@@ -11,6 +11,7 @@ from ..utils.intent_classifier import (
     classify_aggregation,
     extract_window,
     is_financial_query,
+    more_than_a_total,
 )
 
 _REMEMBER = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(?!to\s)(?!that\s*$)(.{3,})$", re.I)
@@ -87,7 +88,8 @@ class Route:
         if self.intent is not None:
             out["intent"] = {"operation": self.intent.operation, "subject": self.intent.subject,
                              "window_start": str(self.intent.window_start),
-                             "window_end": str(self.intent.window_end), "limit": self.intent.limit}
+                             "window_end": str(self.intent.window_end), "limit": self.intent.limit,
+                             "loose": self.intent.loose}
         return out
 
 
@@ -158,13 +160,25 @@ def _a_category_asked_for(message: str) -> bool:
     return category is not None and category.key != "other"
 
 
+def _a_total_of_a_category(intent: AggregationIntent | None) -> bool:
+    """ "total electronics", "movies total", "how much movies": a total
+    whose words left over are a category of the catalog."""
+    if intent is None or not intent.loose or not intent.subject:
+        return False
+    from ..config.catalog import get_catalog
+    category = get_catalog().find(intent.subject)
+    return category is not None and category.key != "other"
+
+
 def route(message: str, *, active_receipt: dict | None = None, context: dict | None = None,
           today: date | None = None, last_route: str | None = None, has_history: bool = False,
           last_search: dict | None = None) -> Route:
     """last_route is the route of the thread's previous turn ("receipt" right
     after an upload); has_history says whether the thread has messages;
     last_search is the search the previous turn showed, if it ran one."""
-    text = (message or "").strip()
+    # One space between words: nothing here reads a run of them, and the
+    # patterns below took minutes over ten thousand.
+    text = " ".join((message or "").split())
     if (m := _REMEMBER.match(text)):
         return Route("remember", "memory command", payload=m.group(1).strip().rstrip("."))
     if (m := _FORGET.match(text)):
@@ -178,10 +192,17 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         # Strong references always win
         if _STRONG_REF.search(text):
             return Route("receipt", "follow-up about the active receipt")
-        # An aggregation with its own explicit subject or window is a new question
+        # An aggregation with its own explicit subject or window is a new question.
+        # A word the total could not place is no such subject: "how much was
+        # the coffee" beside a receipt with a coffee on it is about that line.
         has_window = extract_window(text, today=today) is not None
-        if intent and (intent.subject or has_window):
+        if intent and ((intent.subject and not intent.loose) or has_window):
             return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)
+        # A total of something named outright that the totals declined ("how
+        # much do I spend at starbucks a month"): the receipt cannot answer
+        # it either, whatever the merchant on it is called.
+        if intent is None and more_than_a_total(text, today=today):
+            return Route("plan", "more is asked than a total")
         # Otherwise it's about the receipt
         return Route("receipt", "follow-up about the active receipt")
     if (m := _VISIT.match(text)):
@@ -194,7 +215,7 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         # "which one was the biggest?", "thanks!": not off topic mid-conversation.
         if has_history and (len(text.split()) <= _SHORT_WORDS or reads_as_follow_up(text)):
             return Route("plan", "follow-up in this conversation", follow_up=True)
-        if not _a_category_asked_for(text):
+        if not _a_category_asked_for(text) and not _a_total_of_a_category(intent):
             return Route("offtopic", "not a money question")
     if intent is not None:
         return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)

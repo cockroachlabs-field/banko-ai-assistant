@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
 from functools import lru_cache
@@ -97,17 +98,21 @@ def resolve_category(subject: str | None, database_url: str) -> str | None:
     return None
 
 
+def _merchants_of(user_id: str, database_url: str) -> list[str]:
+    from ..db.engine import get_engine, routed
+    with get_engine(routed(database_url, user_id)).connect() as c:
+        return [r[0] for r in c.execute(text(
+            "SELECT DISTINCT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL"),
+            {"u": user_id}) if r[0]]
+
+
 def resolve_merchant(subject: str | None, user_id: str, database_url: str) -> str | None:
     """Map a question phrase ("starbucks", "blue bottle coffee") to one of
     this user's merchants, or None. Exact match first, then containment for
     phrases of four letters or more, then a close fuzzy match."""
     if not subject:
         return None
-    from ..db.engine import get_engine, routed
-    with get_engine(routed(database_url, user_id)).connect() as c:
-        names = [r[0] for r in c.execute(text(
-            "SELECT DISTINCT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL"),
-            {"u": user_id}) if r[0]]
+    names = _merchants_of(user_id, database_url)
     want = subject.lower().replace("'", "").strip()
     flat = {n.lower().replace("'", ""): n for n in names}
     if want in flat:
@@ -118,6 +123,62 @@ def resolve_merchant(subject: str | None, user_id: str, database_url: str) -> st
                 return name
     close = difflib.get_close_matches(want, list(flat), n=1, cutoff=0.8)
     return flat[close[0]] if close else None
+
+
+def spending_category(subject: str | None) -> str | None:
+    """The label of the category a word names, when money is spent there:
+    not Income, not Transfer, not Other."""
+    from ..config.catalog import get_catalog
+    found = get_catalog().find(subject) if subject else None
+    return found.label if found is not None and found.grp in ("needs", "wants") and found.key != "other" else None
+
+
+def name_words(name: str | None) -> list[str]:
+    """A name's words as a question's are read: lowercase, no apostrophe, letters and digits."""
+    return re.findall(r"[^\W_]+", (name or "").lower().replace("'", "").replace("’", ""))
+
+
+def loose_subject(question: str, subject: str, user_id: str, database_url: str,
+                  known: Iterable[str] | None = None) -> tuple[str | None, str | None]:
+    """What the words a total could not place name: (category, None), (None,
+    merchant), or (None, None), which is the planner's.
+
+    They name something only whole and exactly: a category money is spent
+    on, by its key, label or alias (not Income, not Transfer, not Other:
+    "the other day" is no total on Other), or one of the user's merchants by
+    its name. Never a near miss ("shipping" is not Shopping, "card" is not
+    Hallmark Cards), and never a name beside other words ("including
+    amazon", "savings target"): those ask for more than its total.
+
+    One case is not the words alone. A merchant's name may hold a word of a
+    total's own, which was taken for the total: "best buy total" leaves
+    "best". So a merchant of two words or more named whole in the question
+    counts when its name has every word left over, and it comes first:
+    "total wine total" is the shop, not the wine.
+
+    known: the user's merchants as the caller has them (any spelling of the
+    names will do: only their words are compared). With it the user's
+    purchases are read only when a merchant is the answer, for its name as
+    it is stored."""
+    left, asked = name_words(subject), f" {' '.join(name_words(question))} "
+    names = None if known is not None else _merchants_of(user_id, database_url)
+
+    def stored(match: list[str]) -> str | None:
+        """The merchant with these words, as its purchases name it. A leading the or my may be missing."""
+        for name in (names if names is not None else _merchants_of(user_id, database_url)):
+            words = name_words(name)
+            if words == match or (words[:1] in (["the"], ["my"]) and words[1:] == match):
+                return name
+        return None
+
+    candidates = [name_words(n) for n in (known if known is not None else names or ())]
+    whole = [n for n in candidates if len(n) > 1 and set(left) <= set(n) and f" {' '.join(n)} " in asked]
+    if whole:
+        return None, stored(max(whole, key=len))
+    category = spending_category(subject)
+    if category is not None:
+        return category, None
+    return None, stored(left) if left in candidates else None
 
 
 def _where_and_params(intent: AggregationIntent, user_id: str,

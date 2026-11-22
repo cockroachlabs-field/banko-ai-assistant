@@ -388,6 +388,24 @@ def merchants_of(user_id: str, version: int | Callable[[], int], url: str | None
     return is_merchant
 
 
+def merchant_names(user_id: str, version: int, url: str | None = None) -> frozenset[str]:
+    """This user's merchants as the shape reads names (_as_asked), kept as
+    merchants_of keeps them: read once for each state of the user's money."""
+    return _merchants(user_id, int(version), url, None, None)
+
+
+def a_thing_of_its_own(name: str) -> bool:
+    """A category's name that is no spending kind when it stands alone:
+    "bills", "phone", "subscriptions" (_THINGS)."""
+    return name in _THINGS
+
+
+def holds_bankos_own_word(name: str) -> bool:
+    """A merchant's name with a word Banko has for a thing of its own
+    ("target", "cash app": _OWN). Named alone it may not be the shop."""
+    return bool(_OWN.intersection(name.split()))
+
+
 def _merchants(user_id: str, version: int, url: str | None, conn: Any, region: str | None) -> frozenset[str]:
     url = request_url(url)
     key = (url or "", str(user_id))
