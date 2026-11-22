@@ -273,7 +273,10 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
         if intent.operation in SIZE_ORDER:
             rows = _by_amount(c, where, params, SIZE_ORDER[intent.operation], _listed(intent))
         else:
-            rows = [{"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
+            # A category's purchases, listed: whoever asked lists them a page
+            # at a time the way Show more goes on, so none are read here.
+            rows = [] if intent.operation == "purchases" else [
+                {"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
                 SELECT expense_date, merchant, expense_amount
                 FROM expenses {where}
                 ORDER BY expense_date DESC, expense_id

@@ -1,4 +1,5 @@
-"""Which earlier question's answer the assistant may replay.
+"""Which earlier question's answer the assistant may replay, and how a
+question is read as a category or a merchant asked for.
 
 "coffee" and then "coffee expenses" used to be two questions to the answer
 cache: only the same words replayed an answer. Similarity cannot tell the two
@@ -7,14 +8,16 @@ apart from questions that are not the same: "coffee" and "coffee expenses" are
 under $100" and "purchases over $100" are 95% similar. Nor can a list of
 words to ignore: "show my savings account" is not "show my savings account
 transactions". One shape can: a spending category or one of the user's own
-merchants, asked for bare or as its purchases, for the same dates. Every
-other question is matched word for word.
+merchants, asked for bare or as its purchases, for the same dates.
 
-So there are three ways to match (CACHE_MATCH, and each person's own choice
-in Settings): exact, the same question; words, also a category or merchant
-in other words; similar, also, for a conversation's first question, any question at
-least as similar as the similarity setting, unless it names other dates or
-numbers or differs in a word that turns a question around."""
+That shape is what the router sends to SQL now (subject_asked): such a
+question is answered by the database on every model, and never reaches a
+model or the cache. So the product matches two ways (CACHE_MATCH, and each
+person's own choice in Settings): exact, the same question; similar, also,
+for a conversation's first question, any question at least as similar as the
+similarity setting, unless it names other dates or numbers or differs in a
+word that turns a question around. get_answer can still match the shape
+(match="words"), which nothing asks it to."""
 
 import os
 
@@ -237,6 +240,39 @@ def test_a_merchants_dates_are_part_of_the_question_too():
     asked_for = C.subject_ask("show my starbucks purchases for last month", is_merchant=_mine)
     assert bare[0] == asked_for[0] and bare[0].startswith("@starbucks ") and (bare[1], asked_for[1]) == (True, False)
     assert bare[0] != C.subject_ask("starbucks", is_merchant=_mine)[0]
+
+
+# The shape as a route reads it: what is asked for, how, and for which days.
+
+def test_the_shape_says_what_is_asked_for_how_and_for_which_days():
+    from datetime import date
+    today = date(2026, 11, 22)
+    found = C.subject_asked("my coffee expenses", today)
+    assert (found.kind, found.name, found.bare, found.window, found.shown_only) == ("category", "coffee", False, None,
+                                                                                    False)
+    assert C.subject_asked("Coffee?", today).bare
+    assert C.subject_asked("dining out expenses", today).name == "dining out"       # as typed: the catalog knows the label
+    october = (date(2026, 10, 1), date(2026, 11, 1))
+    assert C.subject_asked("coffee expenses for october", today).window == october
+    shop = C.subject_asked("purchases at Starbucks last month", today, _mine)
+    assert (shop.kind, shop.name, shop.bare, shop.window) == ("merchant", "starbucks", False, october)
+    assert C.subject_asked("show me movies", today).shown_only                      # the thing itself, not one's own
+    assert not C.subject_asked("show me my movies", today).shown_only
+    for nothing in ("bills", "how much coffee", "starbucks", "coffee and tea", "other", "purchases at the restaurant"):
+        assert C.subject_asked(nothing, today) is None, nothing
+
+
+@pytest.mark.parametrize("question", ["coffee", "my coffee expenses", "coffee this month", "starbucks",
+                                      "purchases at Starbucks last month", "show me movies", "bills", "how much coffee",
+                                      "my target", "target purchases"])
+def test_what_the_cache_matches_by_is_that_reading_written_as_a_key(question):
+    _everything = {*_MINE, "target"}
+    found = C.subject_asked(question, is_merchant=_everything.__contains__)
+    key = C.subject_ask(question, is_merchant=_everything.__contains__)
+    if found is None:
+        assert key is None
+    else:
+        assert key == (("@" if found.kind == "merchant" else "") + found.name + found.when, found.bare)
 
 
 @pytest.mark.parametrize("question", [
@@ -475,17 +511,29 @@ def test_exact_matching_takes_the_same_question_only(user):
 
 
 @needs_db
-def test_words_are_the_way_to_match_unless_told_otherwise(user, monkeypatch):
+def test_the_same_question_is_the_way_to_match_unless_told_otherwise(user, monkeypatch):
+    """A category or merchant in other words is read from SQL and never
+    reaches the cache, so matching by it is no setting any more. A
+    deployment that still says words gets the same question, as everyone."""
+    from banko_ai.config.settings import get_config, reset_config
     version = _keep(user, "coffee")
-    assert _ask(user, version, "coffee expenses")["match"] == "words"
-    monkeypatch.setenv("CACHE_MATCH", "exact")
-    from banko_ai.config.settings import reset_config
+    assert get_config().cache_match == "exact"
+    assert _ask(user, version, "coffee expenses") is None
+    assert _ask(user, version, "Coffee?")["match"] == "exact"
+    monkeypatch.setenv("CACHE_MATCH", "words")
     reset_config()
     try:
+        assert get_config().cache_match == "exact"
         assert _ask(user, version, "coffee expenses") is None
     finally:
         monkeypatch.undo()
         reset_config()
+    with pytest.raises(ValueError, match="CACHE_MATCH"):
+        monkeypatch.setenv("CACHE_MATCH", "fuzzy")
+        reset_config()
+        get_config()
+    monkeypatch.undo()
+    reset_config()
 
 
 @needs_db
@@ -781,7 +829,7 @@ def test_an_answer_kept_before_settings_were_recorded_counts_under_the_deploymen
     usual, mine = "page=10", "page=3"
     assert _ask(user, version, "coffee expenses", shape=usual) is None
     assert _ask(user, version, "coffee expenses", shape=usual, unshaped=True)["answer"] == "Kept before the upgrade."
-    assert _ask(user, version, "show my coffee purchases", shape=usual, unshaped=True)["match"] == "words"
+    assert _ask(user, version, "show my coffee purchases", match="words", shape=usual, unshaped=True)["match"] == "words"
     assert _ask(user, version, "coffee expenses", shape=mine) is None
     _keep(user, "coffee expenses", "Shaped by three a page.", shape=mine)
     assert _ask(user, version, "coffee expenses", shape=usual, unshaped=True)["answer"] == "Kept before the upgrade."
@@ -796,7 +844,7 @@ def test_an_answer_shaped_by_other_settings_is_not_replayed(user):
     assert _ask(user, version, "coffee", shape="page=10") is None
     assert _ask(user, version, "coffee expenses", shape="page=10") is None
     assert _ask(user, version, "coffee") is None                                  # no shape named is not this shape
-    assert _ask(user, version, "coffee expenses", shape="page=3")["answer"] == "Three of them."
+    assert _ask(user, version, "coffee expenses", match="words", shape="page=3")["answer"] == "Three of them."
     _keep(user, "coffee", "Ten of them.", shape="page=10")
     assert _ask(user, version, "coffee", shape="page=10")["answer"] == "Ten of them."
     assert _ask(user, version, "coffee", shape="page=3")["answer"] == "Three of them."

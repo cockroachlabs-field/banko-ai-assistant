@@ -271,6 +271,7 @@ class Asked(NamedTuple):
     mine: bool         # "my" stood before the name
     rows: str | None   # the word for the purchases
     at: str | None     # the word between the purchases and the name ("purchases at starbucks")
+    window: tuple[date, date] | None = None   # the dates as days, end exclusive (when is how the cache writes them)
 
     @property
     def shown_only(self) -> bool:
@@ -282,13 +283,13 @@ def asked_subject(question: str, today: date | None = None) -> Asked | None:
     """The shape alone, whatever the name names: [can you] [show [me]] [my]
     <name> [expenses] [for <dates>], or [my] expenses on <name>. None when
     a word is left over. today: the day it was asked."""
-    asked, when, shown = normalize_question(question), "", False
+    asked, when, shown, window = normalize_question(question), "", False, None
     dates = find_window(asked, today)
     if dates:
         start, end, (i, j) = dates
         head = asked[:i]
         asked = f"{head[:_BEFORE_DATES.search(head).start()]} {asked[j:]}"  # type: ignore[union-attr]
-        when = f" {start.isoformat()} {end.isoformat()}"
+        when, window = f" {start.isoformat()} {end.isoformat()}", (start, end)
     words = asked.split()
     if words and words[-1] == "please":
         words = words[:-1]
@@ -313,7 +314,7 @@ def asked_subject(question: str, today: date | None = None) -> Asked | None:
         subject, bare = words, True
     if not subject or len(subject) > 4:
         return None
-    return Asked(" ".join(subject), bare, when, shown, mine, rows, at)
+    return Asked(" ".join(subject), bare, when, shown, mine, rows, at, window)
 
 
 def _only_the_shop(found: Asked) -> bool:
@@ -322,31 +323,53 @@ def _only_the_shop(found: Asked) -> bool:
     return found.at in ("at", "from") or (found.at is None and found.rows in _SHOP_ROWS)
 
 
-def subject_ask(question: str, today: date | None = None,
-                is_merchant: Callable[[str], bool] | None = None) -> tuple[str, bool] | None:
-    """For a question that is a request for one thing's purchases and
-    nothing else, what its wordings share and whether it is bare (no word
-    for the purchases). None for any other question.
+class Subject(NamedTuple):
+    """What a question in the shape asks for, as a route needs it."""
+    kind: str                               # "category" or "merchant"
+    name: str                               # as typed: "coffee", "dining out", "starbucks"
+    bare: bool                              # no word for the purchases
+    window: tuple[date, date] | None        # the days it names, end exclusive
+    when: str                               # the same days as the cache writes them
+    shown_only: bool                        # "show me movies": the thing itself, not one's own and not its purchases
 
-    The thing is a spending category ("coffee": the name as typed, with the
-    dates), or, when is_merchant says so, one of the user's own merchants
-    ("@starbucks"). A bare one ("coffee", "groceries?") is a whole question
-    when it opens a conversation. After "how much did I spend on restaurants
-    last month?" it is the short form of another question, so whoever
-    matches by this must know where a bare one was asked (see get_answer)."""
+
+def subject_asked(question: str, today: date | None = None,
+                  is_merchant: Callable[[str], bool] | None = None) -> Subject | None:
+    """For a question that is a request for one thing's purchases and
+    nothing else: the thing, whether it was named bare, and its dates. None
+    for any other question.
+
+    The thing is a spending category ("coffee", as typed), or, when
+    is_merchant says so, one of the user's own merchants. A bare one
+    ("coffee", "groceries?") is a whole question when it opens a
+    conversation. After "how much did I spend on restaurants last month?"
+    it is the short form of another question, so whoever acts on this must
+    know where a bare one was asked."""
     found = asked_subject(question, today)
     if found is None:
         return None
-    name, bare, when = found.name, found.bare, found.when
+    name = found.name
     category = get_catalog().find(name)
     if category is not None:
         # At and from are a merchant's: "purchases at the restaurant" names one restaurant.
         spending = (category.grp in ("needs", "wants") and category.key != "other" and name not in _THINGS
                     and found.at not in ("at", "from"))
-        return (name + when, bare) if spending else None
+        return Subject("category", name, found.bare, found.window, found.when, found.shown_only) if spending else None
     if is_merchant is None or (_OWN.intersection(name.split()) and not _only_the_shop(found)) or not is_merchant(name):
         return None
-    return f"@{name}{when}", bare
+    return Subject("merchant", name, found.bare, found.window, found.when, found.shown_only)
+
+
+def subject_ask(question: str, today: date | None = None,
+                is_merchant: Callable[[str], bool] | None = None) -> tuple[str, bool] | None:
+    """subject_asked as the answer cache keys it: what the wordings of one
+    such question share ("coffee" with its dates, "@starbucks" for a
+    merchant) and whether it is bare. See get_answer for where a bare one
+    counts."""
+    found = subject_asked(question, today, is_merchant)
+    if found is None:
+        return None
+    return ("@" if found.kind == "merchant" else "") + found.name + found.when, found.bare
 
 
 def category_ask(question: str, today: date | None = None) -> tuple[str, bool] | None:

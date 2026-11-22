@@ -396,30 +396,53 @@ def test_the_release_smoke_reads_the_answers_this_api_really_sends(client, chat,
 
 
 def test_a_persons_settings_shape_the_answers_they_get(client, chat, member):
-    """Asked the way the page asks. "coffee", then "coffee expenses": the
-    same question in other words, so the second comes from the cache with no
-    model call and says whose answer it is. Whoever sets the cache to the
-    same question only is asked for again."""
+    """Asked the way the page asks. A question asked again comes from the
+    cache with no model call. A similar one is asked for properly, until
+    the person sets the cache to take similar questions too: then it is
+    replayed and says whose answer it is."""
     from banko_ai.assistant import background
     with get_engine().begin() as c:
         c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
 
     def ask(question):
-        chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
-                                    '{"steps": []}', "Your coffee purchases.")
+        chat["chat"] = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "unusual"}}]}',
+                                    '{"steps": []}', "Nothing unusual.")
         resp = client.post(f"/api/v1/assistant/threads/{_thread(client)}/messages", json={"message": question})
         answer = next(data for event, data in events(resp) if event == "answer")
         assert background.drain()
         return answer
 
     try:
-        first = ask("coffee")
+        first = ask("any unusual charges lately")
         assert not first["cached"] and first["meta"]["model_calls"] == 3
-        again = ask("coffee expenses")
+        again = ask("Any unusual charges lately?")
         assert again["cached"] and again["answer"] == first["answer"] and again["meta"]["model_calls"] == 0
-        assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}
-        assert client.post("/api/v1/me/settings", json={"values": {"cache_match": "exact"}}).status_code == 200
-        exact = ask("show my coffee expenses")
-        assert not exact["cached"] and exact["meta"]["model_calls"] == 3
+        similar = "have there been any strange charges recently"
+        asked = ask(similar)
+        assert not asked["cached"] and asked["meta"]["model_calls"] == 3
+        with get_engine().begin() as c:
+            c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID) AND query_text = :q"),
+                      {"u": member, "q": similar})
+        assert client.post("/api/v1/me/settings", json={"values": {"cache_match": "similar"}}).status_code == 200
+        replayed = ask(similar)
+        assert replayed["cached"] and replayed["meta"]["model_calls"] == 0
+        assert replayed["meta"]["cache"]["question"] == "any unusual charges lately"
+        assert replayed["meta"]["cache"]["match"] == "similar"
     finally:
         client.post("/api/v1/me/settings", json={"values": {}})
+
+
+def test_a_category_named_alone_costs_no_model_call_however_it_is_worded(client, chat, member):
+    """Asked the way the page asks: "coffee", "coffee expenses" and "show my
+    coffee purchases" are read from SQL. No model is called for any of them,
+    and nothing about them is cached or replayed."""
+    chat["chat"] = ScriptedChat("no model is asked")
+    answers = []
+    for question in ("coffee", "coffee expenses", "show my coffee purchases"):
+        resp = client.post(f"/api/v1/assistant/threads/{_thread(client)}/messages", json={"message": question})
+        answer = next(data for event, data in events(resp) if event == "answer")
+        assert answer["route"] == "aggregate" and not answer["cached"], question
+        assert answer["meta"]["model_calls"] == 0 and answer["meta"]["explain"], question
+        answers.append(answer["answer"])
+    assert len(set(answers)) == 1 and answers[0].startswith("You spent **$")
+    assert chat["chat"].calls == []

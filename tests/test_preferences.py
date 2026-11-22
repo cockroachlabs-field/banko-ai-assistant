@@ -87,6 +87,9 @@ def test_every_setting_says_what_it_is_in_words_the_page_can_show():
             assert s["min"] <= s["default"] <= s["max"], s
     similarity = next(s for s in listed["settings"] if s["key"] == "cache_similarity_threshold")
     assert similarity["only_with"] == {"key": "cache_match", "value": "similar"}    # the page greys it out otherwise
+    # The same question, or a similar one. A category or merchant in other words is read from SQL: nothing to match.
+    match = next(s for s in listed["settings"] if s["key"] == "cache_match")
+    assert [c["value"] for c in match["choices"]] == ["exact", "similar"] and match["default"] == "exact"
 
 
 def test_the_settings_that_shape_an_answer_have_one_fingerprint():
@@ -318,11 +321,11 @@ def test_settings_belong_to_the_person_not_to_the_account_on_screen(monkeypatch)
         client.post("/view-as", data={"who": "maya"}, headers=signed)
         with client.session_transaction() as session:
             assert session["user_id"] == maya and session["me"] == me
-        saved = client.post("/api/v1/me/settings", json={"values": {"cache_match": "exact"}}, headers=signed)
+        saved = client.post("/api/v1/me/settings", json={"values": {"cache_match": "similar"}}, headers=signed)
         assert saved.status_code == 200, saved.get_data(as_text=True)
-        assert P.of(me).own == {"cache_match": "exact"} and P.of(maya).own == {}
+        assert P.of(me).own == {"cache_match": "similar"} and P.of(maya).own == {}
         listed = client.get("/api/v1/me/settings", headers=signed).get_json()
-        assert {s["key"]: s["value"] for s in listed["settings"]}["cache_match"] == "exact"
+        assert {s["key"]: s["value"] for s in listed["settings"]}["cache_match"] == "similar"
         assert "Yours alone" in client.get("/settings", headers=signed).get_data(as_text=True)
     finally:
         stop_apps()

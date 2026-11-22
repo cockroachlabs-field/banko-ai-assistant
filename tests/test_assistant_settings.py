@@ -1,11 +1,14 @@
 """A person's settings shape their own turn of the assistant.
 
-"coffee", then "coffee expenses": the second used to cost a planner call and
-an answer all over again. It is the same question in other words, and by
-default the cache now takes it for that; the answer says which question it
-was written for. How questions are matched, how long a search page is and
-what is remembered are each person's to set (services/preferences.py); a
-turn started without any uses the deployment's."""
+How questions are matched to cached answers, how long a page of purchases is
+and what is remembered are each person's to set (services/preferences.py); a
+turn started without any uses the deployment's.
+
+"coffee", then "coffee expenses", was this module's first test: the second
+question came from the answer cache, as the same question in other words.
+Those questions are read from SQL now and never reach a model or its cache
+(tests/test_named_alone_from_sql.py), so the cache is tested here with
+questions the planner still answers."""
 
 import json
 import os
@@ -105,86 +108,25 @@ def conversation(g, member):
 
 # How the answer cache matches.
 
-def test_the_same_question_in_other_words_is_answered_from_the_cache(g, member):
-    first = _answered(g, member, "coffee", "coffee", "Eight coffee purchases at Blue Bottle.")
-    unused = ScriptedChat("unused")
-    again, events = _ask(g, member, "coffee expenses", unused)
-    assert again["cached"] and again["answer"] == first["answer"] and again["saved_tokens"] > 0
-    assert unused.calls == []                                          # no planner, no answer: nothing was asked
-    assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}   # the chat says whose answer this is
-    step = _cache_step(events)
-    assert step["status"] == "hit" and "“coffee”" in step["detail"] and "in other words" in step["detail"]
-    third, _ = _ask(g, member, "Show my coffee expenses, please", ScriptedChat("unused"))
-    assert third["cached"] and third["meta"]["cache"]["question"] == "coffee"
-
-
-def test_in_one_conversation_the_same_question_in_other_words_is_answered_from_the_cache(conversation):
-    """ "coffee", then "coffee expenses" right below it: the way it was first
-    asked for. The second is this conversation's own question again."""
-    here = conversation()
-    first, _ = here.ask("coffee", ScriptedChat(SEARCH % "coffee", DONE, "Eight coffee purchases at Blue Bottle."))
-    unused = ScriptedChat("unused")
-    again, events = here.ask("coffee expenses", unused)
-    assert again["cached"] and again["answer"] == first["answer"] and unused.calls == []
-    assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}
-    assert _cache_step(events)["status"] == "hit"
-
-
-def test_a_category_in_other_words_is_answered_from_the_cache_in_any_conversation(g, member, conversation):
-    """A category question says all it asks, so it is the same question
-    after anything else was talked about."""
-    _answered(g, member, "coffee", "coffee", "Eight coffee purchases at Blue Bottle.")
-    here = conversation()
-    here.ask("do I have any subscriptions", ScriptedChat(DONE, DONE, "Two subscriptions."))
-    unused = ScriptedChat("unused")
-    again, _ = here.ask("coffee purchases", unused)
-    assert again["cached"] and again["answer"] == "Eight coffee purchases at Blue Bottle." and unused.calls == []
-    assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}
-
-
-def test_a_bare_category_then_its_purchases_right_after_is_answered_from_the_cache(conversation):
-    """The way it was asked for: somewhere in a conversation "coffee", then
-    "coffee expenses". The question just asked, in other words."""
-    here = conversation()
-    here.ask("do I have any subscriptions", ScriptedChat(DONE, DONE, "Two subscriptions."))
-    first, _ = here.ask("coffee", ScriptedChat(SEARCH % "coffee", DONE, "Eight coffee purchases at Blue Bottle."))
-    assert not first["cached"]
-    unused = ScriptedChat("unused")
-    again, _ = here.ask("coffee expenses", unused)
-    assert again["cached"] and again["answer"] == first["answer"] and unused.calls == []
-    assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}
-
-
-def test_a_bare_category_after_another_question_is_asked_not_replayed(g, member, conversation):
+def test_a_bare_category_after_another_question_is_asked_and_its_answer_kept_nowhere(g, member, conversation):
     """ "groceries?" right after a question about restaurants in the last 30
-    days asks that about groceries. It is not "show my groceries purchases",
-    which another conversation asked, and what it is told never answers that
-    question either."""
-    everything = _answered(g, member, "show my groceries purchases", "groceries", "All the groceries.")
+    days asks that about groceries. It takes the conversation to read, so
+    the planner is asked, and what it is told answers no other question:
+    nothing is kept under these words, and the cache is not even looked in."""
     here = conversation()
     spent, _ = here.ask("How much did I spend on restaurants in the last 30 days?", ScriptedChat("- Steady."))
     assert spent["route"]["kind"] == "aggregate"
     asked = ScriptedChat(SEARCH % "groceries last 30 days", DONE, "Groceries in the last 30 days.")
     short, events = here.ask("groceries?", asked)
     assert short["route"]["kind"] == "plan" and not short["cached"] and asked.calls
-    assert short["answer"] == "Groceries in the last 30 days." and _cache_step(events)["status"] == "miss"
-    elsewhere, _ = _ask(g, member, "groceries expenses", ScriptedChat("unused"))
-    assert elsewhere["cached"] and elsewhere["answer"] == everything["answer"]
-
-
-def test_the_question_right_before_has_to_be_this_conversations_own(member, conversation):
-    """This conversation opened with "coffee". A purchase later, another
-    conversation asked "coffee" after a question about the last 30 days, and
-    that is the "coffee" now kept: the same words, about something else.
-    "coffee expenses" here is asked, not answered with it."""
-    here, other = conversation(), conversation()
-    here.ask("coffee", ScriptedChat(SEARCH % "coffee", DONE, "All coffee."))
-    card_purchase(member, "Blue Bottle Coffee", "5.25")                # a new purchase retires what was kept
-    other.ask("How much did I spend on restaurants in the last 30 days?", ScriptedChat("- Steady."))
-    other.ask("coffee", ScriptedChat(SEARCH % "coffee last 30 days", DONE, "Coffee in the last 30 days."))
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "All coffee, with the new one.")
-    mine, _ = here.ask("coffee expenses", asked)
-    assert not mine["cached"] and mine["answer"] == "All coffee, with the new one." and asked.calls
+    assert short["answer"] == "Groceries in the last 30 days."
+    assert "Answer cache" not in [e.get("label") for e in events]
+    with get_engine().connect() as c:
+        assert c.execute(text("SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID)"),
+                         {"u": member}).scalar() == 0
+    again = ScriptedChat(SEARCH % "groceries last 30 days", DONE, "Asked again.")
+    repeat, _ = here.ask("groceries?", again)
+    assert not repeat["cached"] and repeat["answer"] == "Asked again."
 
 
 def test_an_answer_is_kept_as_of_the_day_its_question_was_asked(g, member, monkeypatch):
@@ -193,15 +135,15 @@ def test_an_answer_is_kept_as_of_the_day_its_question_was_asked(g, member, monke
 
     from banko_ai.utils import clock
     monkeypatch.setattr(clock, "today", lambda: date(2026, 10, 31))
-    _answered(g, member, "coffee this month", "coffee", "October's coffee.")
+    _answered(g, member, "any unusual charges this month", "unusual charges", "October's oddities.")
     with get_engine().connect() as c:
         kept = c.execute(text("SELECT created_at FROM answer_cache WHERE user_id = CAST(:u AS UUID) "
-                              "AND query_text = 'coffee this month'"), {"u": member}).scalar()
+                              "AND query_text = 'any unusual charges this month'"), {"u": member}).scalar()
     assert kept.astimezone(timezone.utc).date() == date(2026, 10, 31)
     monkeypatch.setattr(clock, "today", lambda: date(2026, 11, 1))
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "November's coffee.")
-    next_day, _ = _ask(g, member, "coffee this month", asked)
-    assert not next_day["cached"] and next_day["answer"] == "November's coffee."
+    asked = ScriptedChat(SEARCH % "unusual charges", DONE, "November's oddities.")
+    next_day, _ = _ask(g, member, "any unusual charges this month", asked)
+    assert not next_day["cached"] and next_day["answer"] == "November's oddities."
 
 
 def test_a_question_that_is_no_category_is_asked_in_any_other_wording(g, member, conversation):
@@ -224,28 +166,17 @@ def test_a_question_that_is_no_category_is_asked_in_any_other_wording(g, member,
     assert not other["cached"] and reworded.calls
 
 
-def test_the_same_question_again_says_nothing_about_other_words(g, member):
-    _answered(g, member, "coffee expenses", "coffee")
-    again, events = _ask(g, member, "Coffee expenses?", ScriptedChat("unused"))
-    assert again["cached"] and "cache" not in again["meta"]
+def test_the_same_question_again_is_answered_from_the_cache(g, member):
+    first = _answered(g, member, "any unusual charges lately", "unusual charges", "Nothing unusual.")
+    unused = ScriptedChat("unused")
+    again, events = _ask(g, member, "Any unusual charges lately?", unused)
+    assert again["cached"] and again["answer"] == first["answer"] and again["saved_tokens"] > 0
+    assert unused.calls == []                                          # no planner, no answer: nothing was asked
+    assert "cache" not in again["meta"]                                # its own words: nothing to say about whose
     assert _cache_step(events)["detail"].startswith("hit, about ")
-
-
-def test_another_subject_is_another_question(g, member):
-    _answered(g, member, "coffee expenses", "coffee")
-    other, events = _ask(g, member, "tea expenses", ScriptedChat(SEARCH % "tea", DONE, "No tea."))
-    assert not other["cached"] and other["answer"] == "No tea."
-    assert _cache_step(events)["status"] == "miss"
-
-
-def test_someone_who_wants_the_same_question_only_gets_exactly_that(g, member):
-    _answered(g, member, "coffee", "coffee")
-    exact = Preferences({"cache_match": "exact"})
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "Asked again.")
-    again, _ = _ask(g, member, "coffee expenses", asked, prefs=exact)
-    assert not again["cached"] and again["answer"] == "Asked again." and asked.calls
-    same, _ = _ask(g, member, "Coffee?", ScriptedChat("unused"), prefs=exact)
-    assert same["cached"]
+    reworded = ScriptedChat(SEARCH % "unusual charges", DONE, "Asked.")
+    other, _ = _ask(g, member, "unusual charges lately", reworded)     # other words are another question
+    assert not other["cached"] and reworded.calls
 
 
 def test_a_similar_question_is_answered_from_the_cache_and_says_how_similar(g, member):
@@ -281,27 +212,16 @@ def test_inside_a_conversation_a_similar_question_is_asked(g, member, conversati
 
 
 def test_a_similar_question_about_other_dates_is_asked_and_the_trace_says_why(g, member):
-    """92% similar, and about another month: similarity alone would have
-    replayed this month's answer for last month."""
-    _answered(g, member, "coffee purchases this month", "coffee", "This month's coffee.")
+    """Nearly the same words, and about another month: similarity alone
+    would have replayed this month's answer for last month."""
+    _answered(g, member, "any unusual charges this month", "unusual charges", "This month's oddities.")
     similar = Preferences({"cache_match": "similar", "cache_similarity_threshold": 0.75})
-    other, events = _ask(g, member, "coffee purchases last month",
-                         ScriptedChat(SEARCH % "coffee", DONE, "Last month's coffee."), prefs=similar)
-    assert not other["cached"] and other["answer"] == "Last month's coffee."
+    other, events = _ask(g, member, "any unusual charges last month",
+                         ScriptedChat(SEARCH % "unusual charges", DONE, "Last month's oddities."), prefs=similar)
+    assert not other["cached"] and other["answer"] == "Last month's oddities."
     step = _cache_step(events)
-    assert step["status"] == "miss" and "“coffee purchases this month”" in step["detail"]
+    assert step["status"] == "miss" and "“any unusual charges this month”" in step["detail"]
     assert "other dates" in step["detail"] and "% similar" in step["detail"]
-
-
-def test_a_merchant_asked_for_in_other_words_is_answered_from_the_cache(member, conversation):
-    """ "blue bottle coffee", then "blue bottle coffee purchases": one of the user's own merchants."""
-    here = conversation()
-    first, _ = here.ask("blue bottle coffee", ScriptedChat(SEARCH % "blue bottle", DONE, "Eight at Blue Bottle Coffee."))
-    assert first["route"]["kind"] == "plan" and not first["cached"]
-    unused = ScriptedChat("unused")
-    again, _ = here.ask("blue bottle coffee purchases", unused)
-    assert again["cached"] and again["answer"] == "Eight at Blue Bottle Coffee." and unused.calls == []
-    assert again["meta"]["cache"] == {"question": "blue bottle coffee", "match": "words"}
 
 
 def test_a_name_that_is_none_of_ones_merchants_is_asked_in_any_other_wording(conversation):
@@ -314,21 +234,20 @@ def test_a_name_that_is_none_of_ones_merchants_is_asked_in_any_other_wording(con
     assert not stranger["cached"] and other.calls and stranger["answer"] == "Still nothing at Red Bottle Coffee."
 
 
-def test_a_merchant_of_ones_own_named_alone_is_a_money_question(g, member):
+def test_a_merchant_of_ones_own_named_alone_is_read_from_sql(g, member):
     """ "zorblat" says nothing about money, and whoever never bought there
     is told so. For someone who has, it asks for those purchases, in any of
-    the wordings a category has."""
+    the wordings a category has, and SQL answers: no model is asked."""
     unused = ScriptedChat("unused")
     before, _ = _ask(g, member, "zorblat", unused)
     assert before["route"]["kind"] == "offtopic" and unused.calls == []
     card_purchase(member, "Zorblat", "18.40", category="Restaurant")
-    mine, events = _ask(g, member, "zorblat", ScriptedChat(SEARCH % "zorblat", DONE, "One evening at Zorblat."))
-    assert mine["route"]["kind"] == "plan" and mine["answer"] == "One evening at Zorblat."
-    assert "one of your merchants" in next(e for e in events if e["type"] == "step"
-                                           and e["label"] == "Intent routing")["detail"]
-    for wording in ("my zorblat", "Zorblat this month", "show my zorblat"):
-        out, _ = _ask(g, member, wording, ScriptedChat(SEARCH % "zorblat", DONE, "Here."))
-        assert out["route"]["kind"] == "plan", wording
+    for wording in ("zorblat", "my zorblat", "Zorblat this month", "show my zorblat", "zorblat purchases"):
+        mine, events = _ask(g, member, wording, unused)
+        assert mine["route"]["kind"] == "visits" and unused.calls == [], wording
+        assert mine["answer"].startswith("You went to **Zorblat** 1 time "), wording
+        assert "one of your merchants" in next(e for e in events if e["type"] == "step"
+                                               and e["label"] == "Intent routing")["detail"]
     # Asked to be shown the thing itself, as "show me movies" is: no more a money question than before.
     for wording in ("show me zorblat", "zebra crossing"):
         other, _ = _ask(g, member, wording, unused)
@@ -357,12 +276,13 @@ def test_an_answer_kept_before_the_upgrade_is_still_replayed(g, member):
     """It carries no settings. Whoever has the deployment's gets it; someone with a page of three asks again."""
     from banko_ai.services import caches, ledger
     from banko_ai.services._vector import embed
-    caches.put_answer(member, version=ledger.data_version(member), language="English", query="coffee expenses",
-                      qvec=embed("coffee expenses"), answer="Kept before the upgrade.", tokens=10)
-    usual, _ = _ask(g, member, "coffee expenses", ScriptedChat("unused"))
+    question = "any unusual charges lately"
+    caches.put_answer(member, version=ledger.data_version(member), language="English", query=question,
+                      qvec=embed(question), answer="Kept before the upgrade.", tokens=10)
+    usual, _ = _ask(g, member, question, ScriptedChat("unused"))
     assert usual["cached"] and usual["answer"] == "Kept before the upgrade."
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "Three of them.")
-    short, _ = _ask(g, member, "coffee expenses", asked, prefs=Preferences({"search_page_size": 3}))
+    asked = ScriptedChat(SEARCH % "unusual charges", DONE, "Three of them.")
+    short, _ = _ask(g, member, question, asked, prefs=Preferences({"search_page_size": 3}))
     assert not short["cached"] and short["answer"] == "Three of them."
 
 
@@ -372,26 +292,27 @@ def test_an_answer_is_not_replayed_for_someone_whose_settings_would_shape_it_dif
     """Two people showing the same persona: one has three purchases a page.
     Their three-row answer is theirs; the other gets ten rows, asked for
     properly, and then each has their own."""
-    short = Preferences({"search_page_size": 3})
-    _answered(g, member, "coffee expenses", "coffee", "Three of them.", prefs=short)
-    usual, _ = _ask(g, member, "coffee expenses", ScriptedChat(SEARCH % "coffee", DONE, "Ten of them."))
+    question, short = "any unusual charges lately", Preferences({"search_page_size": 3})
+    _answered(g, member, question, "unusual charges", "Three of them.", prefs=short)
+    usual, _ = _ask(g, member, question, ScriptedChat(SEARCH % "unusual charges", DONE, "Ten of them."))
     assert not usual["cached"] and usual["answer"] == "Ten of them."
-    mine, _ = _ask(g, member, "coffee", ScriptedChat("unused"), prefs=short)
+    mine, _ = _ask(g, member, question, ScriptedChat("unused"), prefs=short)
     assert mine["cached"] and mine["answer"] == "Three of them."
-    theirs, _ = _ask(g, member, "coffee", ScriptedChat("unused"))
+    theirs, _ = _ask(g, member, question, ScriptedChat("unused"))
     assert theirs["cached"] and theirs["answer"] == "Ten of them."
 
 
 def test_after_a_setting_that_shapes_answers_changes_the_same_question_is_asked_again(g, member):
     """The Settings page says the next question uses what was saved."""
-    _answered(g, member, "coffee expenses", "coffee", "Ten of them.")
+    question = "any unusual charges lately"
+    _answered(g, member, question, "unusual charges", "Ten of them.")
     one_memory = Preferences({"assistant_memory_recall_k": 1})
-    again, _ = _ask(g, member, "coffee expenses", ScriptedChat(SEARCH % "coffee", DONE, "With one memory."),
+    again, _ = _ask(g, member, question, ScriptedChat(SEARCH % "unusual charges", DONE, "With one memory."),
                     prefs=one_memory)
     assert not again["cached"] and again["answer"] == "With one memory."
     # How questions are matched shapes no answer: changing that keeps what was cached.
-    exact, _ = _ask(g, member, "coffee expenses", ScriptedChat("unused"), prefs=Preferences({"cache_match": "exact"}))
-    assert exact["cached"] and exact["answer"] == "Ten of them."
+    similar, _ = _ask(g, member, question, ScriptedChat("unused"), prefs=Preferences({"cache_match": "similar"}))
+    assert similar["cached"] and similar["answer"] == "Ten of them."
 
 
 # With a receipt on the table.
@@ -409,42 +330,22 @@ def _receipt_on_the_table(g, member, thread, doc=None) -> str:
     return doc
 
 
-def test_beside_a_receipt_the_conversations_own_question_in_other_words_is_answered_from_the_cache(g, conversation):
+def test_beside_a_receipt_a_categorys_purchases_come_from_sql_and_the_bare_word_is_asked(g, conversation):
     """The demo as it is given: a receipt goes up, then "coffee", then
-    "coffee expenses" in the same conversation."""
+    "coffee expenses" in the same conversation. Beside a receipt the bare
+    word may be a line on it, so the planner is asked and nothing is kept
+    under it. With a word for its purchases it is the category, from SQL."""
     here = conversation()
     _receipt_on_the_table(g, here.member, here.thread)
     first, events = here.ask("coffee", ScriptedChat(SEARCH % "coffee", DONE, "Eight coffee purchases."))
-    assert first["route"]["kind"] == "plan" and not first["cached"] and _cache_step(events)["status"] == "miss"
+    assert first["route"]["kind"] == "plan" and not first["cached"]
+    again, _ = here.ask("coffee", ScriptedChat(SEARCH % "coffee", DONE, "Asked again."))
+    assert not again["cached"] and again["answer"] == "Asked again."
     unused = ScriptedChat("unused")
-    again, events = here.ask("coffee expenses", unused)
-    assert again["cached"] and again["answer"] == "Eight coffee purchases." and unused.calls == []
-    assert again["meta"]["cache"] == {"question": "coffee", "match": "words"}
-    assert "“coffee”" in _cache_step(events)["detail"]
-    same, events = here.ask("Coffee?", ScriptedChat("unused"))
-    assert same["cached"] and "cache" not in same["meta"]                     # the same question: nothing to add
-    exact = Preferences({"cache_match": "exact"})
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "Asked again.")
-    strict, _ = here.ask("my coffee spending", asked, prefs=exact)
-    assert not strict["cached"] and asked.calls
-
-
-def test_beside_a_receipt_a_bare_category_counts_only_beside_the_question_next_to_it(g, conversation):
-    here = conversation()
-    _receipt_on_the_table(g, here.member, here.thread)
-    here.ask("any unusual charges lately", ScriptedChat(SEARCH % "unusual", DONE, "Nothing unusual."))
-    here.ask("coffee", ScriptedChat(SEARCH % "coffee", DONE, "Eight coffee purchases."))      # bare, not the opener
-    next_to_it, _ = here.ask("my coffee spending", ScriptedChat("unused"))
-    assert next_to_it["cached"] and next_to_it["meta"]["cache"] == {"question": "coffee", "match": "words"}
-    here.ask("Any unusual charges lately?", ScriptedChat("unused"))
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "Asked again.")
-    later, _ = here.ask("coffee purchases", asked)                     # "coffee" is not the question before any more
-    assert not later["cached"] and asked.calls
-    here.ask("show my groceries purchases", ScriptedChat(SEARCH % "groceries", DONE, "All the groceries."))
-    here.ask("Any unusual charges lately?", ScriptedChat("unused"))
-    short = ScriptedChat(SEARCH % "groceries", DONE, "Asked, it may mean something else here.")
-    bare, _ = here.ask("groceries", short)                             # bare, and not next to its own question
-    assert not bare["cached"] and short.calls
+    for whole in ("coffee expenses", "my coffee spending", "show my coffee purchases"):
+        listed, _ = here.ask(whole, unused)
+        assert listed["route"]["kind"] == "aggregate" and unused.calls == [], whole
+        assert listed["answer"].startswith("You spent **$") and " on Coffee since " in listed["answer"], whole
 
 
 def test_beside_a_receipt_this_month_kept_last_month_is_asked_again(g, conversation, monkeypatch):
@@ -455,13 +356,13 @@ def test_beside_a_receipt_this_month_kept_last_month_is_asked_again(g, conversat
     here = conversation()
     _receipt_on_the_table(g, here.member, here.thread)
     monkeypatch.setattr(clock, "today", lambda: date(2026, 10, 31))
-    here.ask("coffee this month", ScriptedChat(SEARCH % "coffee", DONE, "October's coffee."))
-    same_day, _ = here.ask("coffee this month", ScriptedChat("unused"))
+    here.ask("any unusual charges this month", ScriptedChat(SEARCH % "unusual", DONE, "October's oddities."))
+    same_day, _ = here.ask("any unusual charges this month", ScriptedChat("unused"))
     assert same_day["cached"]
     monkeypatch.setattr(clock, "today", lambda: date(2026, 11, 1))
-    asked = ScriptedChat(SEARCH % "coffee", DONE, "November's coffee.")
-    next_day, _ = here.ask("coffee this month", asked)
-    assert not next_day["cached"] and next_day["answer"] == "November's coffee."
+    asked = ScriptedChat(SEARCH % "unusual", DONE, "November's oddities.")
+    next_day, _ = here.ask("any unusual charges this month", asked)
+    assert not next_day["cached"] and next_day["answer"] == "November's oddities."
 
 
 def test_beside_a_receipt_a_question_that_is_no_category_is_matched_word_for_word(g, conversation):
@@ -508,12 +409,12 @@ def _results(g, member, question, chat, **how):
 
 
 def test_a_search_page_is_as_long_as_the_person_set(g, member):
-    short = Preferences({"search_page_size": 3})
-    state = _results(g, member, "coffee expenses", ScriptedChat(SEARCH % "coffee", DONE, "Three of them."), prefs=short)
+    question, short = "where do I get my coffee before work", Preferences({"search_page_size": 3})
+    state = _results(g, member, question, ScriptedChat(SEARCH % "coffee", DONE, "Three of them."), prefs=short)
     assert len(_found(state)) == 3
     assert state["meta"]["search"]["size"] == 3 and state["meta"]["search"]["next"]     # Show more goes on by threes
-    # The same question in other words, from someone with the usual page: asked, not served the short answer.
-    usual = _results(g, member, "coffee purchases", ScriptedChat(SEARCH % "coffee", DONE, "Ten of them."))
+    # The same question from someone with the usual page: asked, not served the short answer.
+    usual = _results(g, member, question, ScriptedChat(SEARCH % "coffee", DONE, "Ten of them."))
     assert len(_found(usual)) > 3
 
 
@@ -526,16 +427,18 @@ def test_a_page_size_the_model_asks_for_itself_still_counts(g, member):
 
 def test_show_more_pages_by_the_persons_size(g, member):
     short = Preferences({"search_page_size": 3})
-    thread = threads.create_thread(member)["thread_id"]
-    try:
-        G.run_turn(member, thread, "coffee expenses", chat=ScriptedChat(SEARCH % "coffee", DONE, "Three."), graph=g,
-                   prefs=short)
-        more = G.run_turn(member, thread, "show more", chat=ScriptedChat("unused"), graph=g, prefs=short)
-        assert more["route"]["kind"] == "more" and len(more["meta"]["search"]["items"]) == 3
-        assert more["meta"]["search"]["size"] == 3
-    finally:
-        background.drain()
-        threads.delete_thread(member, thread)
+    for question, chat in (("where do I get my coffee before work", ScriptedChat(SEARCH % "coffee", DONE, "Three.")),
+                           ("coffee expenses", ScriptedChat("unused"))):          # a search, and a list from SQL
+        thread = threads.create_thread(member)["thread_id"]
+        try:
+            first = G.run_turn(member, thread, question, chat=chat, graph=g, prefs=short)
+            assert first["meta"]["search"]["size"] == 3 and first["meta"]["search"]["next"], question
+            more = G.run_turn(member, thread, "show more", chat=ScriptedChat("unused"), graph=g, prefs=short)
+            assert more["route"]["kind"] == "more" and len(more["meta"]["search"]["items"]) == 3, question
+            assert more["meta"]["search"]["size"] == 3
+        finally:
+            background.drain()
+            threads.delete_thread(member, thread)
 
 
 def test_someone_who_turned_remembering_off_is_not_remembered(g, member):
@@ -568,12 +471,18 @@ def test_memories_come_to_a_question_as_the_person_set(g, member):
 
 def test_a_turn_started_without_settings_uses_the_deployments(g, member, monkeypatch):
     from banko_ai.config.settings import reset_config
-    _answered(g, member, "coffee", "coffee")
-    monkeypatch.setenv("CACHE_MATCH", "exact")
+    first = _answered(g, member, "any unusual charges lately", "unusual charges", "Nothing unusual.")
+    asked = "have there been any strange charges recently"
+    plain, _ = _ask(g, member, asked, ScriptedChat(SEARCH % "strange charges", DONE, "Nothing strange."))
+    assert not plain["cached"]                                        # the deployment matches the same question only
+    with get_engine().begin() as c:
+        c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID) AND query_text = :q"),
+                  {"u": member, "q": asked})
+    monkeypatch.setenv("CACHE_MATCH", "similar")
     reset_config()
     try:
-        again, _ = _ask(g, member, "coffee expenses", ScriptedChat(SEARCH % "coffee", DONE, "Asked again."))
-        assert not again["cached"]
+        again, _ = _ask(g, member, asked, ScriptedChat("unused"))
+        assert again["cached"] and again["answer"] == first["answer"]
     finally:
         monkeypatch.undo()
         reset_config()

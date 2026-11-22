@@ -47,7 +47,7 @@ services:
       - MONTHLY_BUDGET_DEFAULT=${MONTHLY_BUDGET_DEFAULT:-10000}
       
       # Cache configuration (production defaults)
-      - CACHE_MATCH=${CACHE_MATCH:-words}
+      - CACHE_MATCH=${CACHE_MATCH:-exact}
       - CACHE_SIMILARITY_THRESHOLD=${CACHE_SIMILARITY_THRESHOLD:-0.75}
       - CACHE_TTL_HOURS=${CACHE_TTL_HOURS:-24}
       - CACHE_STRICT_MODE=${CACHE_STRICT_MODE:-true}

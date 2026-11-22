@@ -7,6 +7,8 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 
+from ..utils.intent_classifier import EVER
+
 LANGUAGES = {
     "en-US": "English", "es-ES": "Spanish", "fr-FR": "French", "de-DE": "German",
     "it-IT": "Italian", "pt-PT": "Portuguese", "ja-JP": "Japanese", "ko-KR": "Korean",
@@ -25,6 +27,9 @@ def language_name(code: str | None) -> str:
 
 
 def _window(agg) -> str:
+    if agg.window_start == EVER:
+        # No days were asked for: everything there is, from the first purchase on.
+        return f"since {agg.first_date}"
     # window_end is exclusive (the day after the last one counted), so the
     # card names the last day the sum includes.
     return f"from {agg.window_start} to {agg.window_end - timedelta(days=1)}"
@@ -76,6 +81,8 @@ def render_aggregation_markdown(agg) -> str:
         # other category to try.
         one_day = agg.window_end - agg.window_start == timedelta(days=1)
         return f"You have no purchases {f'on {agg.window_start}' if one_day else window}."
+    if not agg.count and agg.window_start == EVER:
+        return f"You have no purchases {scope}."      # no window to widen: there is nothing under it at all
     if not agg.count:
         return (f"No matching transactions {scope} {window}. "
                 f"Try a wider window or a different category.")

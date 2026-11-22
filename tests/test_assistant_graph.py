@@ -859,7 +859,7 @@ def test_when_every_lookup_raised_the_reply_says_so(g, member, thread, monkeypat
     _search_raises(monkeypatch)
     chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
                         '{"steps": []}', "I don't have any information about your coffee purchases.")
-    out, events = _turn(g, member, thread, "show me my coffee purchases", chat)
+    out, events = _turn(g, member, thread, "where do I get my coffee before work?", chat)
     assert out["route"]["kind"] == "plan" and out["answer"] == G.LOOKUP_FAILED
     assert "".join(e["text"] for e in events if e["type"] == "token") == out["answer"]
     assert not [kind for kind, _ in chat.calls if kind == "stream"]
@@ -1370,10 +1370,11 @@ def test_a_new_purchase_retires_what_was_cached_about_a_receipt(g, member, threa
 
 
 def test_an_open_question_beside_a_receipt_is_cached_with_it(g, member, thread):
-    """"coffee expenses" twice, with a coffee receipt on the table: an open
-    question the planner answers, and the second ask comes from the cache."""
+    """"where do I get my coffee before work" twice, with a coffee receipt
+    on the table: an open question the planner answers, and the second ask
+    comes from the cache."""
     _receipt_on_the_table(g, member, thread)
-    q = "coffee expenses"
+    q = "where do I get my coffee before work"
     plan = ('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}', '{"steps": []}')
     first, events = _turn(g, member, thread, q, ScriptedChat(*plan, "You bought coffee a few times."))
     assert first["route"]["kind"] == "plan" and not first["cached"] and _cache_steps(events) == ["miss"]

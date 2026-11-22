@@ -126,7 +126,7 @@ def test_a_failed_turn_keeps_its_trace_and_names_nothing_internal(client, monkey
     monkeypatch.setattr(assistant_api, "_chat", lambda: Down())
     tid = client.post("/api/v1/assistant/threads", json={}).get_json()["thread_id"]
     resp = client.post(f"/api/v1/assistant/threads/{tid}/messages",
-                       json={"message": "show me my coffee purchases please"})
+                       json={"message": "where do I get my coffee before work?"})
     body = resp.get_data(as_text=True)
     for leak in ("secret-token", "11434", "Cannot reach", "localhost"):
         assert leak not in body, leak
@@ -134,6 +134,12 @@ def test_a_failed_turn_keeps_its_trace_and_names_nothing_internal(client, monkey
     labels = [s["label"] for s in failed["trace"]]
     assert labels[-2:] == ["Answer stopped", "Total request time"]
     assert any(s["kind"] == "llm" and s["status"] == "warning" for s in failed["trace"])
+    # What SQL answers needs no model: with the provider out of reach it is answered all the same.
+    for question in ("show me my coffee purchases please", "my grocery expenses"):
+        resp = client.post(f"/api/v1/assistant/threads/{tid}/messages", json={"message": question})
+        answered = dict(_events(resp))
+        assert "error" not in answered and answered["answer"]["route"] == "aggregate", question
+        assert answered["answer"]["meta"]["model_calls"] == 0, question
 
 
 def test_voice_controls_are_feature_detected():
