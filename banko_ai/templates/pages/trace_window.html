@@ -1,0 +1,47 @@
+{# "How this was answered" in a window of its own. It holds nothing the
+   Assistant did not send it (static/js/pages/trace_window.js), so there is
+   no shell here and the page says nothing about who is signed in. #}
+<!DOCTYPE html>
+<html lang="en" style="--ac: {{ shell.brand.accent }}">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How this was answered · {{ shell.brand.name }}</title>
+<link rel="icon" type="image/svg+xml" href="{{ tab_icon_url() }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+<script>window.bankoTheme=function(){var t=localStorage.getItem("banko.theme")||{{ shell.theme|tojson }};var d=t==="dark"||(t==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=d?"dark":"light";};window.bankoTheme();</script>
+</head>
+<body class="b-tw" x-data="traceWindow" :style="'--tw-size: ' + size + 'px'">
+<header class="b-tw-top">
+  <div class="b-logo"><span class="b-mark"></span>{{ shell.brand.name }}</div>
+  <h1>How this was answered</h1>
+  <span class="sp"></span>
+  {# For the back of the room: the steps and the plan, larger. #}
+  <button class="b-btn sm" type="button" @click="resize(-1)" :disabled="size <= 11" aria-label="Smaller text" title="Smaller text">A−</button>
+  <button class="b-btn sm" type="button" @click="resize(1)" :disabled="size >= 26" aria-label="Larger text" title="Larger text">A+</button>
+</header>
+<div class="b-muted b-tw-empty" x-show="!shown">Ask something in the Assistant, or click “How this was answered” under an answer there. Each step shows up here: the route, the index, the region, the timings and the query plan.</div>
+<template x-if="shown">
+  <main class="b-tw-body">
+    <section class="b-tw-steps" aria-label="Steps">
+      <div class="b-tw-asked" x-show="shown.asked" x-text="'“' + shown.asked + '”'"></div>
+      <div class="b-muted" x-show="shown.line" x-text="shown.line"></div>
+      <div class="b-muted" x-show="shown.region" x-text="'Served from ' + shown.region + (shown.db_ms ? ' · ' + shown.db_ms + ' ms in the database' : '')"></div>
+      <div class="b-tl">
+        <template x-for="(s, i) in shown.steps" :key="i"><div :class="s.status === 'warning' ? 'warn' : s.status === 'error' ? 'error' : ''"><b x-text="s.label"></b><span x-text="line(s)"></span></div></template>
+      </div>
+    </section>
+    <section class="b-tw-plan" aria-label="Query plan">
+      <div class="b-row">
+        <div class="b-lbl">How CockroachDB ran it<span x-show="shown.explain_cut"> · plan shortened</span></div>
+        <button class="b-btn sm" type="button" x-show="shown.explain" @click="copyPlan()" x-text="copied ? 'Copied' : 'Copy the plan'"></button>
+      </div>
+      <pre x-show="shown.explain" x-text="shown.explain"></pre>
+      {# No more than that: an answer without a plan may still have run queries (a next page, a balance, the cache). #}
+      <div class="b-muted" x-show="!shown.explain">No query plan came with this answer.</div>
+    </section>
+  </main>
+</template>
+<script src="{{ url_for('static', filename='js/pages/trace_window.js') }}"></script>
+<script defer src="{{ url_for('static', filename='vendor/alpine.min.js') }}"></script>
+</body>
+</html>

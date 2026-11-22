@@ -1004,6 +1004,207 @@ def test_how_this_was_answered_says_which_answer_it_is_about(server, browser):
         ctx.close()
 
 
+def _watched(window) -> list:
+    """A window the test did not open itself: its console errors, collected like a page's."""
+    errors = []
+    window.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    window.on("pageerror", lambda e: errors.append(str(e)))
+    return errors
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_how_this_was_answered_opens_in_a_window_of_its_own(server, browser, theme):
+    """The side panel is 320 px wide: a query plan in it is a column of
+    wrapped lines. In a window of its own it has the whole screen, keeps its
+    lines, and follows the conversation: the newest answer, or the one whose
+    "How this was answered" was clicked."""
+    ctx, page, errors = _page(browser, theme)
+    try:
+        api = _PanelApi(page, answer=PLANNED)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        box = page.locator(".b-assist-page .b-comp textarea")
+        box.fill("how much did I spend on dining?")
+        page.keyboard.press("Enter")
+        expect(page.locator(".b-assist-page .b-meta")).to_have_count(1)
+        page.wait_for_function("() => !Alpine.$data(document.querySelector('.b-assist-page')).streaming")
+        with page.expect_popup() as opened:
+            page.locator("aside.b-trace").get_by_role("button", name="Open in a window of its own").click()
+        window = opened.value
+        window_errors = _watched(window)
+        window.wait_for_load_state()
+        assert urllib.parse.urlparse(window.url).path == "/assistant/trace"
+        expect(window.locator(".b-tw-asked")).to_have_text("“how much did I spend on dining?”")
+        rows = window.locator(".b-tw-steps .b-tl > div")
+        expect(rows).to_have_count(3)
+        expect(rows.nth(0)).to_contain_text("Aggregation SQL")
+        expect(rows.nth(0)).to_contain_text("$42.10 across 3 transactions · 24 ms")
+        expect(window.locator(".b-tw-steps")).to_contain_text("3 model calls · 2,950 tokens")
+        expect(window.locator(".b-tw-steps")).to_contain_text("Served from us-east-1 · 23 ms in the database")
+        plan = window.locator(".b-tw-plan pre")
+        expect(plan).to_contain_text("table: expenses@idx_expenses_user_date")
+        expect(window.locator(".b-tw-plan")).to_contain_text("plan shortened")
+        assert plan.evaluate("el => getComputedStyle(el).whiteSpace") == "pre"          # its lines stay lines
+        assert plan.evaluate("el => el.getBoundingClientRect().width") > 600            # with room to read them
+        assert window.evaluate("document.documentElement.dataset.theme") == theme
+        assert window.locator(".b-side, [data-page]").count() == 0                     # a window, not another app
+
+        # It follows the conversation: the next answer, which came from the cache with no plan. The window
+        # says that much and no more: an answer without a plan may well have run queries.
+        api.answer = CACHED
+        box.fill("and coffee?")
+        page.keyboard.press("Enter")
+        expect(page.locator(".b-assist-page .b-meta")).to_have_count(2)
+        expect(window.locator(".b-tw-asked")).to_have_text("“and coffee?”")
+        expect(window.locator(".b-tw-steps .b-tl > div")).to_have_count(1)
+        expect(plan).to_be_hidden()
+        expect(window.locator(".b-tw-plan")).to_contain_text("No query plan came with this answer.")
+        expect(window.locator(".b-tw-plan")).not_to_contain_text("ran no query")
+
+        # And the answer that is picked: the first one's plan is back.
+        page.wait_for_function("() => !Alpine.$data(document.querySelector('.b-assist-page')).streaming")
+        page.locator(".b-assist-page .b-msg-bot").nth(0).get_by_role("button", name="How this was answered").click()
+        expect(window.locator(".b-tw-asked")).to_have_text("“how much did I spend on dining?”")
+        expect(plan).to_contain_text("• group (scalar)")
+        assert not errors and not window_errors, (errors, window_errors)
+    finally:
+        ctx.close()
+
+
+def test_the_window_opened_before_anything_is_asked_fills_in_with_the_first_answer(server, browser):
+    """It can be put on the second screen first. Reloaded, it asks the
+    Assistant for what it was showing."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=PLANNED)
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        with page.expect_popup() as opened:
+            page.locator("aside.b-trace").get_by_role("button", name="Open in a window of its own").click()
+        window = opened.value
+        window_errors = _watched(window)
+        window.wait_for_load_state()
+        expect(window.locator(".b-tw-empty")).to_be_visible()
+        expect(window.locator(".b-tw-empty")).to_contain_text("Ask something in the Assistant")
+        expect(window.locator(".b-tw-asked")).to_have_count(0)
+        box = page.locator(".b-assist-page .b-comp textarea")
+        box.fill("how much did I spend on dining?")
+        page.keyboard.press("Enter")
+        expect(window.locator(".b-tw-asked")).to_have_text("“how much did I spend on dining?”")
+        expect(window.locator(".b-tw-empty")).to_be_hidden()
+        # For the back of the room the text grows, and stays that size.
+        plan = window.locator(".b-tw-plan pre")
+        size = "el => parseFloat(getComputedStyle(el).fontSize)"
+        assert plan.evaluate(size) == 13 and window.locator(".b-tw-steps .b-tl b").first.evaluate(size) == 13
+        for _ in range(3):
+            window.get_by_role("button", name="Larger text").click()
+        assert plan.evaluate(size) == 16 and window.locator(".b-tw-steps .b-tl b").first.evaluate(size) == 16
+        window.reload()
+        window_errors += _watched(window)
+        expect(window.locator(".b-tw-asked")).to_have_text("“how much did I spend on dining?”")
+        expect(plan).to_contain_text("• group (scalar)")
+        assert plan.evaluate(size) == 16
+        window.get_by_role("button", name="Smaller text").click()
+        assert plan.evaluate(size) == 15
+        # The same button again brings the window it has, not a second one.
+        page.locator("aside.b-trace").get_by_role("button", name="Open in a window of its own").click()
+        page.wait_for_timeout(300)
+        assert len(ctx.pages) == 2
+        assert not errors and not window_errors, (errors, window_errors)
+    finally:
+        ctx.close()
+
+
+def test_an_answer_for_a_conversation_put_away_does_not_reach_the_window(server, browser):
+    """The panel never shows an answer that lands after New conversation: it
+    is on no screen. The window keeps the answer it had, as the panel would."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=TRACED, thread_ids=[NEW_THREAD, LATER_THREAD])
+        _login(page, server, "sam")
+        page.goto(server + "/assistant")
+        page.wait_for_load_state("networkidle")
+        page.locator(".b-comp textarea").fill(TITLED.lower())
+        page.keyboard.press("Enter")
+        expect(page.locator("aside.b-trace .b-tl > div").filter(has_text="Aggregation SQL")).to_be_visible()
+        with page.expect_popup() as opened:
+            page.locator("aside.b-trace").get_by_role("button", name="Open in a window of its own").click()
+        window = opened.value
+        window_errors = _watched(window)
+        expect(window.locator(".b-tw-asked")).to_have_text("“" + TITLED.lower() + "”")
+
+        push, close = _hold_the_stream(page)
+        page.locator(".b-comp textarea").fill("and the month before?")
+        page.keyboard.press("Enter")
+        page.get_by_role("button", name="New conversation").click()
+        push("answer", {"answer": "You spent $38.00 on dining.", "citations": [], "proposals": [], "cached": False,
+                        "route": "aggregate", "meta": {"trace": [{"label": "Late SQL", "detail": "", "ms": 9.0,
+                                                                  "status": "success", "kind": "sql"}]}})
+        push("done", {})
+        close()
+        page.wait_for_timeout(300)
+        expect(window.locator(".b-tw-steps")).not_to_contain_text("Late SQL")
+        expect(window.locator(".b-tw-asked")).to_have_text("“" + TITLED.lower() + "”")
+        expect(window.locator(".b-tw-steps .b-tl > div").filter(has_text="Aggregation SQL")).to_be_visible()
+        assert not errors and not window_errors, (errors, window_errors)
+    finally:
+        ctx.close()
+
+
+def _a_window_showing_an_answer(page, server, persona):
+    """Sign in, ask, and open "How this was answered" in a window of its own."""
+    _PanelApi(page, answer=PLANNED)
+    _login(page, server, persona)
+    page.goto(server + "/assistant")
+    page.wait_for_load_state("networkidle")
+    box = page.locator(".b-assist-page .b-comp textarea")
+    box.fill("how much did I spend on dining?")
+    page.keyboard.press("Enter")
+    expect(page.locator(".b-assist-page .b-meta")).to_have_count(1)
+    with page.expect_popup() as opened:
+        page.locator("aside.b-trace").get_by_role("button", name="Open in a window of its own").click()
+    window = opened.value
+    window_errors = _watched(window)
+    expect(window.locator(".b-tw-asked")).to_have_text("“how much did I spend on dining?”")
+    return window, window_errors
+
+
+def test_the_window_goes_blank_when_somebody_else_signs_in(server, browser):
+    """A query plan names the user it ran for. Left open on a second screen,
+    it does not outlive that user's turn at the keyboard."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        window, window_errors = _a_window_showing_an_answer(page, server, "sam")
+        for path in ("/transactions", "/login"):            # the same user on another page, or at the picker: it stays
+            page.goto(server + path)
+            page.wait_for_load_state("networkidle")
+            expect(window.locator(".b-tw-asked")).to_have_text("“how much did I spend on dining?”")
+        page.locator('form:has(input[name="username"][value="maya"]) button').click()
+        page.wait_for_url(server + "/")
+        expect(window.locator(".b-tw-empty")).to_be_visible()
+        expect(window.locator(".b-tw-asked")).to_have_count(0)
+        assert not errors and not window_errors, (errors, window_errors)
+    finally:
+        ctx.close()
+
+
+def test_the_window_goes_blank_when_its_user_signs_out(server, browser):
+    """Signing out ends the turn at the keyboard as well: the sign-in page
+    that follows says nobody is signed in, and the window lets the plan go."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        window, window_errors = _a_window_showing_an_answer(page, server, "sam")
+        page.goto(server + "/logout")
+        expect(page.get_by_role("heading", name="Pick a persona")).to_be_visible()
+        expect(window.locator(".b-tw-empty")).to_be_visible()
+        expect(window.locator(".b-tw-asked")).to_have_count(0)
+        assert not errors and not window_errors, (errors, window_errors)
+    finally:
+        ctx.close()
+
+
 def _paged_answer(text, route, search):
     return _sse(("token", {"text": text}),
                 ("answer", {"answer": text, "citations": [], "proposals": [], "cached": False, "route": route,

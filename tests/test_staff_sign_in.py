@@ -196,6 +196,17 @@ def test_personas_are_a_view_away_and_so_is_the_way_back(hosted):
     assert back.status_code in (302, 303) and _who(client) == _id(ana)
 
 
+def test_only_the_notice_tells_the_window_of_its_own_that_nobody_is_signed_in(hosted):
+    """ "How this was answered" in a window of its own goes blank when the
+    sign-in page says nobody is signed in. Behind IAP that is the notice;
+    the view-as page is shown to someone who is."""
+    client, visitor, _ = hosted
+    ana = visitor("ana.b")
+    client.get("/", headers=_as(ana))
+    assert b"banko-trace" not in client.get("/login", headers=_as(ana)).data
+    assert b'new BroadcastChannel("banko-trace").postMessage({ type: "user", user: null })' in client.get("/login").data
+
+
 def test_view_as_reaches_personas_only(hosted):
     client, visitor, _ = hosted
     ana, ben = visitor("ana.b"), visitor("ben.c")

@@ -27,6 +27,21 @@ document.addEventListener("alpine:init", () => {
     window.DOMPurify.sanitize(window.marked.parse(Banko.stripCitations(text), { breaks: true }), PURIFY);
   // One trace row's detail and timing, with a separator only when both exist.
   Banko.traceLine = (s) => [s.detail, s.ms ? Math.round(s.ms) + " ms" : ""].filter(Boolean).join(" · ");
+  // "How this was answered" in a window of its own (pages/trace_window.html)
+  // follows the conversation: each answer's trace goes out on a channel that
+  // only this browser's Banko windows hear, and a window that opens or is
+  // reloaded asks for the last one. Every page says who is signed in (and
+  // the sign-in page when nobody is), so a window still showing somebody
+  // else's answer goes blank.
+  const traceChannel = "BroadcastChannel" in window ? new BroadcastChannel("banko-trace") : null;
+  if (traceChannel) traceChannel.postMessage({ type: "user", user: Banko.shell.user.user_id });
+  let lastTrace = null;
+  Banko.sendTrace = (trace) => { lastTrace = trace; if (traceChannel) traceChannel.postMessage({ type: "trace", trace }); };
+  if (traceChannel) {
+    traceChannel.onmessage = (e) => {
+      if (e.data && e.data.type === "hello" && lastTrace) traceChannel.postMessage({ type: "trace", trace: lastTrace });
+    };
+  }
   const duration = (ms) => (!ms ? "" : ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms) + " ms");
   const count = (n) => Number(n || 0).toLocaleString("en-US");
   const RECEIPT_TYPES = /^(image\/|application\/pdf$)/;
@@ -302,6 +317,9 @@ document.addEventListener("alpine:init", () => {
       this.traced = bot;
       this.scroll();
       Banko.emit("banko:answered", { thread: tid, bot });
+      // The window of its own gets what the panel would show: not an answer
+      // that landed for a conversation put away, which is on no screen.
+      if (this.messages.includes(bot)) Banko.sendTrace(this.traceOf(bot));
     },
 
     // The server titles a thread from its first question, so read the
@@ -443,7 +461,25 @@ document.addEventListener("alpine:init", () => {
       return m.role === "user" ? this.copyText(m.text, "The question is")
                                : this.copyText(Banko.stripCitations(m.answer), "The answer is");
     },
-    toggleTrace(m) { m.showTrace = !m.showTrace; this.traced = m; Banko.emit("banko:trace", { message: m }); },
+    toggleTrace(m) {
+      m.showTrace = !m.showTrace; this.traced = m;
+      Banko.emit("banko:trace", { message: m });
+      Banko.sendTrace(this.traceOf(m));
+    },
+    // One answer's trace for the window of its own: the question it was
+    // given to, the meta line, the steps, the region and the plan. Plain
+    // data: a reactive object does not cross to another window.
+    traceOf(m) {
+      const at = this.messages.indexOf(m);
+      const asked = at < 0 ? null : this.messages.slice(0, at).reverse().find((x) => x.role === "user");
+      const meta = m.meta || {};
+      return JSON.parse(JSON.stringify({
+        asked: asked ? asked.text : "", line: this.metaLine(m),
+        steps: this.traceSteps(m).map((s) => ({ label: s.label, detail: s.detail || "", ms: s.ms || 0, status: s.status || "" })),
+        region: meta.region || "", db_ms: meta.db_ms || 0, explain: meta.explain || "", explain_cut: !!meta.explain_cut,
+        user: Banko.shell.user.user_id,
+      }));
+    },
     togglePlans() { this.plansOpen = !this.plansOpen; localStorage.setItem("banko.plans", this.plansOpen ? "open" : "closed"); },
     traceSteps(m) { return m.meta && m.meta.trace && m.meta.trace.length ? m.meta.trace : m.steps; },
     stepClass(s) {
