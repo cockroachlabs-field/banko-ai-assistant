@@ -17,6 +17,7 @@ from pydantic import BaseModel, BeforeValidator, Field, StringConstraints, Valid
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
+from ..db.regions import read_region
 from ..services import (
     accounts,
     actions,
@@ -182,7 +183,9 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
         if resolve_category(a.category, url) is None:
             raise ToolError(f"No category called '{a.category}'")
     intent = AggregationIntent("sum", a.category if not merchant else None, start, end)
-    agg = run_aggregation(intent, ctx.user_id, url, merchant=merchant, top=3)
+    # Named where a read may, as the SQL route names it: on REGIONAL BY ROW a
+    # total that names no region looks in every one of them.
+    agg = run_aggregation(intent, ctx.user_id, url, region=read_region(ctx.user_id, url), merchant=merchant, top=3)
     # rows are the most recent purchases; largest says which were the biggest,
     # so a model asked about the largest one never picks it from recent rows.
     # The breakdowns cover the whole window, so it never adds rows up either.
@@ -190,6 +193,20 @@ def _spend(ctx: ToolContext, a: SpendArgs) -> dict:
             "merchant": agg.merchant, "from": str(start), "to": str(end - timedelta(days=1)),
             "rows": agg.rows[:10], "largest": agg.largest,
             "top_merchants": agg.top_merchants, "top_categories": agg.top_categories}
+
+
+def spend_plan(ctx: ToolContext, result: dict) -> str:
+    """EXPLAIN ANALYZE of the total a spend_summary result reports: the same
+    statement over the same window, for its category or its merchant, in
+    the same region. The answer shows it as how CockroachDB ran it."""
+    from ..utils.aggregations import explain_aggregation
+    from ..utils.intent_classifier import AggregationIntent
+    url = ctx.url or get_config().database_url
+    # A result has a category or a merchant, never both.
+    intent = AggregationIntent("sum", result.get("category"), date.fromisoformat(result["from"]),
+                               date.fromisoformat(result["to"]) + timedelta(days=1))
+    return explain_aggregation(intent, ctx.user_id, url, region=read_region(ctx.user_id, url),
+                               merchant=result.get("merchant"))
 
 
 def _receipt(ctx: ToolContext, a: ReceiptArgs) -> dict | None:

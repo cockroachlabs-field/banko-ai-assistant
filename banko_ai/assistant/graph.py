@@ -48,7 +48,7 @@ from .planner import first_object, parse_plan, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
 from .router import Route, reads_as_follow_up
 from .router import route as decide
-from .tools import SearchArgs, ToolContext, run_tool
+from .tools import SearchArgs, ToolContext, run_tool, spend_plan
 
 log = logging.getLogger("banko.assistant")
 _IMPLICIT = re.compile(r"\b(i'?m saving for|i am saving for|my goal is|i prefer|i usually|i always|i never)\b", re.I)
@@ -814,22 +814,46 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             "meta": {"region": home, "db_ms": int(db_ms), "search": {**page, "items": items}}}
 
 
-def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
-    """The region badge and EXPLAIN details for the chat page, from the
-    turn's semantic search when there was one."""
-    db_ms = int(sum(r.get("ms") or 0 for r in results))
+def _plan_of(state: TurnState, deps: TurnDeps, results: list[dict]) -> Callable[[], str] | None:
+    """The statement an answer from the planner shows the plan of, as the
+    call that reads it. The turn's semantic search when there was one: it
+    is the search "show more" continues. Else the last lookup that can say
+    how it ran, which is the one the planner settled on: a total from
+    spend_summary, or a merchant's visits. None when no such lookup ran.
+
+    Which tool a short question gets is the model's choice ("coffee" was
+    the search on one model and a total on the next), so the plan cannot
+    depend on it."""
     query = next(((r.get("args") or {}).get("query") for r in results
                   if r["tool"] == "search_transactions" and r["ok"]), None)
+    if query:
+        return lambda: txns.explain_semantic(state["user_id"], query, url=deps.url)
+    for r in reversed(results):
+        found = r.get("result")
+        if not found:       # declined or failed, or a merchant nobody went to: there is no statement to show
+            continue
+        if r["tool"] == "spend_summary":
+            return lambda: spend_plan(_ctx(state, deps), found)
+        if r["tool"] == "merchant_history":
+            return lambda: txns.explain_merchant_visits(state["user_id"], found["merchant"], url=deps.url)
+    return None
+
+
+def _search_meta(state: TurnState, deps: TurnDeps, results: list[dict]) -> dict:
+    """The region badge and EXPLAIN details for the chat page, from the
+    lookup of this turn that can say how it ran (_plan_of)."""
+    db_ms = int(sum(r.get("ms") or 0 for r in results))
+    read_plan = _plan_of(state, deps, results)
     home = home_region_of(state["user_id"], deps.url)
-    if not query:
+    if read_plan is None:
         return {"region": home, "db_ms": db_ms}
     _running("explain", "Reading the query plan")
     t0 = time.perf_counter()
     try:
-        explain = txns.explain_semantic(state["user_id"], query, url=deps.url)
+        explain = read_plan()
         _step("EXPLAIN ANALYZE", "plan captured", ms=_since(t0), key="explain")
     except Exception:
-        log.warning("semantic EXPLAIN skipped", exc_info=True)
+        log.warning("EXPLAIN skipped", exc_info=True)
         _step("EXPLAIN ANALYZE", "plan not captured", ms=_since(t0), status="warning", key="explain")
         return {"region": home, "db_ms": db_ms}
     return {"region": serving_regions(explain) or home, "db_ms": db_ms, "explain": explain}

@@ -113,6 +113,39 @@ def test_planner_prompt_is_grounded(monkeypatch):
     assert "spend_summary(date_from: datetime.date | None" in system
 
 
+TOOL_LIST = """\
+- search_transactions(query: str (required), category: str | None, date_from: datetime.date | None, date_to: datetime.date | None, limit: int | None): find purchases by meaning (e.g. 'late night food', 'pizza')
+- spend_summary(date_from: datetime.date | None, date_to: datetime.date | None, category: str | None, merchant: str | None): exact totals from SQL for a window, optionally one category or merchant; rows are the most recent purchases and largest the three biggest, so name the biggest from largest
+- receipt_details(document_id: str | None): the active receipt (or one by document_id): merchant, total, items, linked expense
+- similar_transactions(expense_id: str (required), limit: int): purchases most like one expense
+- duplicate_check(expense_id: str (required), limit: int): possible duplicates of one expense: same amount, nearby date, similar description
+- merchant_history(merchant: str (required)): visits, total, average and recent purchases at one merchant
+- budget_status(): this month's budgets with spent and remaining per category
+- recurring_bills(): detected bills and subscriptions with cadence, next due and price changes
+- goals_status(): savings goals with progress and projected completion
+- balances(): accounts with balances, credit utilization and net worth
+- cash_flow(months: int): income and spending by month
+- recall(query: str (required)): the user's saved memories relevant to a question
+- remember(content: str (required)): save a durable fact the user stated about themselves
+- propose_recategorize(expense_id: str (required), category: str (required)): propose moving an expense to another category (runs only after Confirm)
+- propose_budget(category: str (required), amount: Decimal (required)): propose a monthly budget for a category (runs only after Confirm)"""
+
+
+def test_the_tool_list_the_planner_reads_changes_on_purpose_only():
+    """Every character of this list is part of the planner's prompt. Seven
+    of them once changed what gpt-4.1 does with "coffee": limit: int became
+    limit: int | None when the page size became a setting, and the planner
+    asked for spend_summary where it had picked nothing and the search had
+    run. No test saw it, because a scripted model plans what it is told to.
+
+    So a change to an argument, a type or a description fails here first.
+    Make it on purpose: update this copy, then ask the model the hosted
+    instance runs a few short questions again ("coffee", "my coffee
+    expenses", "starbucks", "groceries") and look at which tools it picks."""
+    from banko_ai.assistant.tools import describe_tools
+    assert describe_tools() == TOOL_LIST
+
+
 def test_planner_prompt_lists_tools_memories_and_context():
     from banko_ai.assistant.prompts import planner_messages
     msgs = planner_messages("q", history=[{"role": "user", "content": "earlier"}],
