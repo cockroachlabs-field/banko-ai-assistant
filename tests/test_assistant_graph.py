@@ -997,6 +997,188 @@ def test_the_biggest_purchase_in_another_language_is_translated_not_rewritten(g,
     assert "Your biggest purchase" in chat.prompts()[-1]            # the card it was asked to translate
 
 
+# ── a total from the planner's tool brings its plan ─────────────────────
+# Which tool a short question gets is the model's choice. "coffee" was the
+# search on one model and spend_summary on the next, and on gpt-4.1 seven
+# characters of the tool list moved it from one to the other. The search
+# brought its plan; a total from the tool brought none.
+
+TOTAL_OF_DINING = '{"steps": [{"tool": "spend_summary", "args": {"category": "dining out"}}]}'
+
+
+def _planned(g, member, thread, message, chat):
+    """A turn the planner answered. A question the router sends elsewhere
+    would pass these tests for nothing."""
+    out, events = _turn(g, member, thread, message, chat)
+    assert out["route"]["kind"] == "plan", out["route"]
+    return out, events
+
+
+def _plans_asked(monkeypatch, plan="• group (scalar)\n") -> list:
+    """Every totals statement whose plan was asked for, and a fixed plan back."""
+    from banko_ai.utils import aggregations
+    asked = []
+
+    def plan_of(intent, user_id, database_url, region=None, merchant=None):
+        asked.append((intent.operation, intent.subject, intent.window_start, intent.window_end, merchant, user_id))
+        return plan
+    monkeypatch.setattr(aggregations, "explain_aggregation", plan_of)
+    return asked
+
+
+def test_an_answer_from_the_totals_tool_carries_its_plan(g, member, thread):
+    _cold_answer_cache(member)
+    chat = ScriptedChat(TOTAL_OF_DINING, '{"steps": []}', "Most of it went to the bistro.")
+    out, events = _planned(g, member, thread, "where does my dining money tend to go?", chat)
+    assert out["route"]["kind"] == "plan" and out["answer"] == "Most of it went to the bistro."
+    plan = out["meta"]["explain"]
+    assert plan and "group (scalar)" in plan and "expenses@" in plan
+    done = {e["key"]: e for e in events if e["type"] == "step" and e.get("key") and e["status"] != "running"}
+    assert [e["label"] for e in done.values()] == ["Memory recall", "Answer cache", "Planner", "Tool spend_summary",
+                                                   "Planner", "EXPLAIN ANALYZE", "LLM answer"]
+    assert done["explain"]["detail"] == "plan captured"
+    assert _phases(events)[-2:] == ["Reading the query plan", "Writing the answer"]
+
+
+def test_the_plan_is_of_the_last_total_the_planner_asked_for(g, member, thread, monkeypatch):
+    """gpt-4.1 asks for everything first, and for the category once it has
+    seen that. The answer is written about the second."""
+    asked = _plans_asked(monkeypatch)
+    _cold_answer_cache(member)
+    start, end = date.today() - timedelta(days=40), date.today() - timedelta(days=10)
+    chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {}}]}',
+                        '{"steps": [{"tool": "spend_summary", "args": {"category": "dining out", '
+                        f'"date_from": "{start}", "date_to": "{end}"}}}}]}}', "Dining came to a fair sum.")
+    out, _ = _planned(g, member, thread, "dining in broad strokes, please", chat)
+    assert asked == [("sum", "Restaurant", start, end + timedelta(days=1), None, member)]
+    assert out["meta"]["explain"] == "• group (scalar)\n"
+
+
+def test_a_total_at_a_merchant_shows_the_plan_of_that_statement(g, member, thread, monkeypatch):
+    asked = _plans_asked(monkeypatch)
+    _cold_answer_cache(member)
+    merchant = _a_merchant(member)
+    chat = ScriptedChat(json.dumps({"steps": [{"tool": "spend_summary", "args": {"merchant": merchant.upper()}}]}),
+                        '{"steps": []}', "You are a regular there.")
+    _planned(g, member, thread, "am I a regular at that place by now?", chat)
+    today = date.today()
+    assert asked == [("sum", None, today - timedelta(days=30), today + timedelta(days=1), merchant, member)]
+
+
+def _a_merchant(member) -> str:
+    with get_engine().connect() as c:
+        return c.execute(text("SELECT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) "
+                              "ORDER BY expense_date DESC LIMIT 1"), {"u": member}).scalar()
+
+
+def _visit_plans_asked(monkeypatch, plan="• group (scalar) of visits\n") -> list:
+    """Every merchant whose visits statement was asked for its plan."""
+    asked = []
+    monkeypatch.setattr(G.txns, "explain_merchant_visits",
+                        lambda user_id, name, **kw: asked.append((user_id, name, kw.get("date_from"), kw.get("date_to")))
+                        or plan)
+    return asked
+
+
+def test_a_merchants_visits_from_the_planner_carry_their_plan(g, member, thread):
+    """ "starbucks" on gpt-4.1 ends at merchant_history. The visits route
+    shows the plan of that very statement; from the planner it showed none."""
+    _cold_answer_cache(member)
+    merchant = _a_merchant(member)
+    chat = ScriptedChat(json.dumps({"steps": [{"tool": "merchant_history", "args": {"merchant": merchant.lower()}}]}),
+                        '{"steps": []}', "You go there often.")
+    out, events = _planned(g, member, thread, "tell me about my habit at that place", chat)
+    plan = out["meta"]["explain"]
+    assert plan and "group (scalar)" in plan and "expenses@" in plan
+    assert {e["label"]: e for e in events if e["type"] == "step"}["EXPLAIN ANALYZE"]["detail"] == "plan captured"
+
+
+def test_the_plan_is_of_the_last_lookup_that_has_one(g, member, thread, monkeypatch):
+    """A total of everything, then the merchant's visits: the answer is
+    written about the merchant, so that is the statement to show. And the
+    other way round."""
+    totals, visits = _plans_asked(monkeypatch), _visit_plans_asked(monkeypatch)
+    merchant = _a_merchant(member)
+    history = {"tool": "merchant_history", "args": {"merchant": merchant}}
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {}}]}', json.dumps({"steps": [history]}),
+                        "You go there often.")
+    out, _ = _planned(g, member, thread, "what does that place cost me, in numbers?", chat)
+    assert out["meta"]["explain"] == "• group (scalar) of visits\n"
+    assert (totals, visits) == ([], [(member, merchant, None, None)])
+
+    del visits[:]
+    chat = ScriptedChat(json.dumps({"steps": [history]}), '{"steps": [{"tool": "spend_summary", "args": {}}]}',
+                        "A small part of the whole.")
+    out, _ = _planned(g, member, thread, "how does my spending at that place weigh against the rest?", chat)
+    assert out["meta"]["explain"] == "• group (scalar)\n" and visits == [] and len(totals) == 1
+
+
+def test_a_merchant_nobody_went_to_has_no_visits_to_explain(g, member, thread, monkeypatch):
+    visits = _visit_plans_asked(monkeypatch)
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "merchant_history", "args": {"merchant": "No Such Place"}}]}',
+                        '{"steps": []}', "You have never been there.")
+    out, events = _planned(g, member, thread, "does that place show up in my purchases at all?", chat)
+    assert visits == [] and "explain" not in out["meta"]
+    assert "EXPLAIN ANALYZE" not in [e.get("label") for e in events]
+
+
+def test_a_search_keeps_its_plan_beside_a_total(g, member, thread, monkeypatch):
+    """The search is what "show more" continues, and its plan is the one shown."""
+    asked = _plans_asked(monkeypatch)
+    monkeypatch.setattr(G.txns, "explain_semantic", lambda *a, **k: "• vector search\n")
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {"category": "dining out"}}, '
+                        '{"tool": "search_transactions", "args": {"query": "dinner"}}]}',
+                        '{"steps": []}', "A few dinners stand out.")
+    out, _ = _planned(g, member, thread, "which dinners stand out against the usual?", chat)
+    assert out["meta"]["explain"] == "• vector search\n" and asked == []
+
+
+def test_a_totals_plan_the_database_cannot_give_keeps_the_answer(g, member, thread, monkeypatch):
+    from banko_ai.utils import aggregations
+    monkeypatch.setattr(aggregations, "explain_aggregation", _unreachable)
+    _cold_answer_cache(member)
+    chat = ScriptedChat(TOTAL_OF_DINING, '{"steps": []}', "Most of it went to the bistro.")
+    out, events = _planned(g, member, thread, "where does my dining money usually end up?", chat)
+    assert out["answer"] == "Most of it went to the bistro." and [e for e in events if e["type"] == "error"] == []
+    assert {e["label"]: e for e in events if e["type"] == "step"}["EXPLAIN ANALYZE"]["status"] == "warning"
+    assert "explain" not in out["meta"] and "db_ms" in out["meta"]
+
+
+def test_a_total_that_was_declined_has_no_plan_of_its_own(g, member, thread, monkeypatch):
+    """Nothing ran for it. The search that grounds the answer instead brings its plan."""
+    asked = _plans_asked(monkeypatch)
+    monkeypatch.setattr(G.txns, "explain_semantic", lambda *a, **k: "• vector search\n")
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {"merchant": "NoSuchMerchant"}}]}',
+                        '{"steps": []}', "I found no such place.")
+    out, _ = _planned(g, member, thread, "what do I owe that odd little shop?", chat)
+    assert asked == [] and out["meta"]["explain"] == "• vector search\n"
+
+
+def test_a_declined_total_beside_another_lookup_is_not_asked_for_a_plan(g, member, thread, monkeypatch):
+    """Nothing grounds this answer in a search: another lookup worked. The
+    total that was declined ran no statement, so no plan is read for it."""
+    asked = _plans_asked(monkeypatch)
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {"merchant": "NoSuchMerchant"}}, '
+                        '{"tool": "budget_status", "args": {}}]}', '{"steps": []}', "Your budgets hold.")
+    out, events = _planned(g, member, thread, "is that odd little shop hurting my budgets?", chat)
+    assert asked == [] and "explain" not in out["meta"]
+    assert "EXPLAIN ANALYZE" not in [e.get("label") for e in events]
+
+
+def test_a_lookup_with_no_statement_to_show_brings_no_plan(g, member, thread, monkeypatch):
+    asked = _plans_asked(monkeypatch)
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": [{"tool": "budget_status", "args": {}}]}', '{"steps": []}', "Your budgets hold.")
+    out, events = _planned(g, member, thread, "are my budgets holding up so far?", chat)
+    assert asked == [] and "explain" not in out["meta"]
+    assert "EXPLAIN ANALYZE" not in [e.get("label") for e in events]
+
+
 def test_the_plan_under_a_size_answer_is_of_the_statement_that_ordered_the_purchases(g, member, thread):
     """It was the plan of the totals statement, which the rows in the answer
     did not come from."""

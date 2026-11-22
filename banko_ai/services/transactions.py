@@ -457,8 +457,14 @@ def duplicate_check(user_id: str, expense_id: str, *, window_days: int, max_dist
     return {"candidates": found}
 
 
-def _visits_where(user_id: str, name: str, date_from: date | None, date_to: date | None) -> tuple[str, dict]:
+def _visits_where(user_id: str, name: str, date_from: date | None, date_to: date | None,
+                  region: str | None = None) -> tuple[str, dict]:
+    """One WHERE for the visits, the latest purchases and the plan. With
+    region it reads that region's partition only (see region_pin)."""
     where, params = ["user_id = CAST(:u AS UUID)", "merchant = :m"], {"u": user_id, "m": name}
+    if region:
+        where[0] = region_pin("", region) + where[0]
+        params["region"] = region
     if date_from:
         where.append("expense_date >= :dfrom")
         params["dfrom"] = date_from
@@ -489,7 +495,7 @@ def merchant_history(user_id: str, merchant: str, *, date_from: date | None = No
     if name is None:
         return None
     url = request_url(url)
-    where, params = _visits_where(user_id, name, date_from, date_to)
+    where, params = _visits_where(user_id, name, date_from, date_to, read_region(user_id, url))
     with read_session(user_id, url=url) as conn:
         agg = conn.execute(text(_visits_sql(where)), params).fetchone()
         recent = conn.execute(text(f"""
@@ -511,7 +517,7 @@ def explain_merchant_visits(user_id: str, name: str, *, date_from: date | None =
 
     from ..utils.aggregations import _to_pyformat
     url = request_url(url)
-    where, params = _visits_where(user_id, name, date_from, date_to)
+    where, params = _visits_where(user_id, name, date_from, date_to, read_region(user_id, url))
     with get_engine(routed(url, user_id)).connect() as conn:
         with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
             cur.execute("EXPLAIN ANALYZE " + _to_pyformat(_visits_sql(where)), params)
@@ -523,9 +529,11 @@ def explain_semantic(user_id: str, q: str, *, url: str | None = None) -> str:
 
     from ..utils.aggregations import _to_pyformat
     url = request_url(url)
+    # The region the search names, so the plan is of the statement that ran.
+    region = read_region(user_id, url)
     qvec = _qvec(q)
     with get_engine(routed(url, user_id)).connect() as conn:
         with psycopg.ClientCursor(conn.connection.driver_connection) as cur:
-            cur.execute("EXPLAIN ANALYZE " + _to_pyformat(semantic_sql()),
-                        {"u": user_id, "qvec": qvec, "k": SEARCH_WINDOW})
+            cur.execute("EXPLAIN ANALYZE " + _to_pyformat(semantic_sql(pinned=region is not None)),
+                        {"u": user_id, "qvec": qvec, "k": SEARCH_WINDOW, "region": region})
             return "\n".join(str(r[0]) for r in cur.fetchall())

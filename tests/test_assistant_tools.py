@@ -108,6 +108,67 @@ def test_spend_summary_matches_sql(ctx, member):
     assert out["total"] == pytest.approx(float(total), abs=0.01)
 
 
+def _statements(monkeypatch, pretend_region=None) -> list:
+    """The WHERE and parameters of every totals statement and of every plan
+    asked for: one builder writes both. With pretend_region, the statement
+    runs without the region it was given (this database has one region and
+    no such column) and the list keeps the region that was named."""
+    from banko_ai.utils import aggregations
+    seen, real = [], aggregations._where_and_params
+
+    def spy(intent, user_id, category, region, merchant=None):
+        if pretend_region:
+            seen.append(region)
+            return real(intent, user_id, category, None, merchant)
+        seen.append(real(intent, user_id, category, region, merchant))
+        return seen[-1]
+    monkeypatch.setattr(aggregations, "_where_and_params", spy)
+    return seen
+
+
+@pytest.mark.parametrize("args", [{}, {"category": "dining"}, {"date_from": "2026-10-01", "date_to": "2026-10-31"}])
+def test_the_plan_of_a_spend_summary_is_of_the_statement_it_ran(ctx, monkeypatch, args):
+    """What the answer shows under "How CockroachDB ran it" has to be the
+    statement the figure came from: the same window, the same category."""
+    seen = _statements(monkeypatch)
+    out = T.run_tool("spend_summary", args, ctx)
+    assert out["ok"] and len(seen) == 1
+    plan = T.spend_plan(ctx, out["result"])
+    assert len(seen) == 2 and seen[0] == seen[1]
+    assert "execution time" in plan and "group (scalar)" in plan and "expenses@" in plan
+
+
+def test_the_plan_of_a_total_at_a_merchant_names_the_merchant(ctx, member, monkeypatch):
+    seen = _statements(monkeypatch)
+    with get_engine().connect() as c:
+        merchant = c.execute(text("SELECT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) LIMIT 1"),
+                             {"u": member}).scalar()
+    out = T.run_tool("spend_summary", {"merchant": merchant.lower()}, ctx)
+    T.spend_plan(ctx, out["result"])
+    assert len(seen) == 2 and seen[0] == seen[1] and seen[0][1]["m"] == merchant
+
+
+def test_spend_summary_names_the_home_region_where_a_read_may(ctx, monkeypatch):
+    """On REGIONAL BY ROW a total that names no region looks in all of them:
+    about 750 ms a call on the hosted cluster. The tool names the region
+    the SQL route names for the same statement, and so does its plan."""
+    monkeypatch.setattr(T, "read_region", lambda user_id, url: "eu-west-1")
+    named = _statements(monkeypatch, pretend_region=True)
+    out = T.run_tool("spend_summary", {}, ctx)
+    assert out["ok"] and named == ["eu-west-1"]
+    T.spend_plan(ctx, out["result"])
+    assert named == ["eu-west-1", "eu-west-1"]
+
+
+def test_spend_summary_names_no_region_where_a_read_may_not(ctx, monkeypatch):
+    """One region, row-level security, or rows that are not all at home."""
+    monkeypatch.setattr(T, "read_region", lambda user_id, url: None)
+    named = _statements(monkeypatch, pretend_region=True)
+    out = T.run_tool("spend_summary", {}, ctx)
+    T.spend_plan(ctx, out["result"])
+    assert named == [None, None]
+
+
 def test_merchant_history_and_similar_stay_with_the_user(ctx, member):
     with get_engine().connect() as c:
         merchant, expense_id = c.execute(text(
@@ -202,6 +263,67 @@ def test_explain_semantic_shows_the_vector_index(member):
     from banko_ai.services.transactions import explain_semantic
     plan = explain_semantic(member, "pizza")
     assert "idx_expenses_user_embedding" in plan
+
+
+def test_the_plan_under_a_search_is_of_the_search_that_ran(member, monkeypatch):
+    """The search names the home region where a read may. Its plan never
+    did: under an answer that read one region, "How CockroachDB ran it"
+    showed a statement that read all of them, and the answer said it was
+    served from three regions."""
+    from banko_ai.services import transactions as txns
+    named, real = [], txns.semantic_sql
+
+    def spy(filters="", *, pinned=False):
+        named.append(pinned)
+        return real(filters)                      # one region here: no such column
+    monkeypatch.setattr(txns, "semantic_sql", spy)
+    monkeypatch.setattr(txns, "read_region", lambda user_id, url: "eu-west-1")
+    assert "idx_expenses_user_embedding" in txns.explain_semantic(member, "pizza")
+    assert named == [True]
+    monkeypatch.setattr(txns, "read_region", lambda user_id, url: None)
+    txns.explain_semantic(member, "pizza")
+    assert named == [True, False]
+
+
+def _visits_named(monkeypatch) -> list:
+    """The region each visits statement was given. It runs without it: this
+    database has one region and no such column."""
+    from banko_ai.services import transactions as txns
+    named, real = [], txns._visits_where
+
+    def spy(user_id, name, date_from, date_to, region=None):
+        named.append(region)
+        return real(user_id, name, date_from, date_to)
+    monkeypatch.setattr(txns, "_visits_where", spy)
+    return named
+
+
+def test_a_merchants_visits_name_the_home_region_where_a_read_may(member, monkeypatch):
+    """The visits statement named no region, so "when did I last go to
+    Costco" looked in every one, and its plan said so. It names the home
+    region as the other reads do, in the answer and in its plan."""
+    from banko_ai.services import transactions as txns
+    with get_engine().connect() as c:
+        merchant = c.execute(text("SELECT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) LIMIT 1"),
+                             {"u": member}).scalar()
+    named = _visits_named(monkeypatch)
+    monkeypatch.setattr(txns, "read_region", lambda user_id, url: "eu-west-1")
+    assert txns.merchant_history(member, merchant)["visits"] > 0
+    assert "group (scalar)" in txns.explain_merchant_visits(member, merchant)
+    assert named == ["eu-west-1", "eu-west-1"]
+    monkeypatch.setattr(txns, "read_region", lambda user_id, url: None)
+    txns.merchant_history(member, merchant)
+    txns.explain_merchant_visits(member, merchant)
+    assert named == ["eu-west-1", "eu-west-1", None, None]
+
+
+def test_the_visits_statement_keeps_to_the_region_it_is_given():
+    from banko_ai.services import transactions as txns
+    where, params = txns._visits_where("u", "Costco", None, None, "eu-west-1")
+    assert where.startswith("crdb_region = CAST(:region AS crdb_internal_region) AND user_id = ")
+    assert params == {"u": "u", "m": "Costco", "region": "eu-west-1"}
+    where, params = txns._visits_where("u", "Costco", date(2026, 10, 1), date(2026, 10, 31))
+    assert "crdb_region" not in where and "region" not in params and {"dfrom", "dto"} <= set(params)
 
 
 def test_duplicate_check_skips_purchases_beyond_the_window(ctx, member):

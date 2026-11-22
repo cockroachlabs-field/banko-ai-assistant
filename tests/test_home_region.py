@@ -11,7 +11,9 @@ A sign-in account now starts in the database's primary region, and anyone can
 move their own account: the rows go along."""
 
 import os
+import re
 import uuid
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import text
@@ -183,6 +185,97 @@ def test_a_users_merchants_are_read_in_their_home_region(regional, monkeypatch):
                             qvec=embed(f"{name} purchases"), match="words", url=regional)
     assert hit and hit["match"] == "words" and hit["answer"] == "kept"
     assert named == [other, other]
+
+
+def _scanned(plan: str) -> set[str]:
+    """The regions whose rows a plan's scans read, from their spans."""
+    return {region for line in plan.splitlines() if "spans:" in line
+            for region in re.findall(r"/'([a-z]+(?:-[a-z0-9]+)+)'/", line)}
+
+
+@needs_regions
+def test_the_totals_tool_reads_in_the_home_region_and_its_plan_says_so(regional, monkeypatch):
+    """The planner's spend_summary ran its total without naming a region. On
+    REGIONAL BY ROW that looks in every region: about 750 ms a call on the
+    hosted cluster. It names the home region as the SQL route does for the
+    same statement, for an account whose rows all live there, and the plan
+    it hands the answer is of that statement."""
+    from banko_ai.assistant import tools as T
+    from banko_ai.db import regions
+    from banko_ai.services import home_region as home
+    from banko_ai.utils import aggregations
+    from banko_ai.utils.intent_classifier import AggregationIntent
+
+    primary = home.default_region(regional)
+    other = sorted(r for r in home.regions_of(regional) if r != primary)[0]
+    uid = _member(regional, other)
+    assert regions.read_region(uid, regional) == other
+    stated, real = [], aggregations._where_and_params
+    monkeypatch.setattr(aggregations, "_where_and_params",
+                        lambda *a, **k: stated.append(real(*a, **k)) or stated[-1])
+    ctx = T.ToolContext(user_id=uid, url=regional)
+    out = T.run_tool("spend_summary", {}, ctx)
+    assert out["ok"] and out["result"]["count"] > 0
+    plan = T.spend_plan(ctx, out["result"])
+    assert len(stated) == 2 and stated[0] == stated[1]                   # the plan is of the statement that ran
+    assert "crdb_region = :r" in stated[0][0] and stated[0][1]["r"] == other
+    assert _scanned(plan) == {other}, plan                               # and it read one region, the home one
+
+    # The same figures as a read that names no region.
+    result = out["result"]
+    intent = AggregationIntent("sum", None, date.fromisoformat(result["from"]),
+                               date.fromisoformat(result["to"]) + timedelta(days=1))
+    everywhere = aggregations.run_aggregation(intent, uid, regional, top=3)
+    assert (result["total"], result["count"]) == (everywhere.total, everywhere.count)
+    assert "crdb_region" not in stated[-1][0]
+    unnamed = aggregations.explain_aggregation(intent, uid, regional)
+    assert _scanned(unnamed) == set(home.regions_of(regional)), unnamed  # which looks in every region
+
+
+@needs_regions
+def test_a_merchants_visits_are_read_in_the_home_region_and_the_plan_says_so(regional, monkeypatch):
+    """ "When did I last go to Costco" named no region and looked in all of
+    them. For an account whose rows all live at home it reads that region,
+    and counts what a read of every region counts."""
+    from banko_ai.db import regions
+    from banko_ai.services import home_region as home
+    from banko_ai.services import transactions as txns
+    primary = home.default_region(regional)
+    other = sorted(r for r in home.regions_of(regional) if r != primary)[0]
+    uid = _member(regional, other)
+    assert regions.read_region(uid, regional) == other
+    with get_engine(regional).connect() as c:
+        merchant, visits = c.execute(text(
+            "SELECT merchant, count(*) FROM expenses WHERE user_id = CAST(:u AS UUID) GROUP BY 1 ORDER BY 2 DESC LIMIT 1"),
+            {"u": uid}).one()
+    stated, real = [], txns._visits_where
+    monkeypatch.setattr(txns, "_visits_where", lambda *a, **k: stated.append(real(*a, **k)) or stated[-1])
+    found = txns.merchant_history(uid, merchant, url=regional)
+    assert found["visits"] == visits and len(found["recent"]) == min(5, visits)
+    plan = txns.explain_merchant_visits(uid, merchant, url=regional)
+    assert len(stated) == 2 and stated[0] == stated[1] and stated[0][1]["region"] == other   # one statement, one region
+    assert _scanned(plan) == {other}, plan
+    monkeypatch.setattr(txns, "read_region", lambda user_id, url: None)       # as it ran before
+    assert txns.merchant_history(uid, merchant, url=regional)["visits"] == visits
+    everywhere = txns.explain_merchant_visits(uid, merchant, url=regional)
+    assert _scanned(everywhere) == set(home.regions_of(regional)), everywhere
+
+
+@needs_regions
+def test_the_plan_under_a_search_reads_the_region_the_search_read(regional, monkeypatch):
+    """The search kept to the home region and its plan did not: the answer
+    said it was served from every region."""
+    from banko_ai.services import home_region as home
+    from banko_ai.services import transactions as txns
+    primary = home.default_region(regional)
+    other = sorted(r for r in home.regions_of(regional) if r != primary)[0]
+    uid = _member(regional, other)
+    assert txns.semantic_search(uid, "coffee", url=regional)["items"]
+    plan = txns.explain_semantic(uid, "coffee", url=regional)
+    assert "vector search" in plan and _scanned(plan) == {other}, plan
+    monkeypatch.setattr(txns, "read_region", lambda user_id, url: None)       # as its plan was read before
+    everywhere = txns.explain_semantic(uid, "coffee", url=regional)
+    assert _scanned(everywhere) == set(home.regions_of(regional)), everywhere
 
 
 @needs_regions
