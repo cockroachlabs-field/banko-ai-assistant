@@ -120,7 +120,8 @@ def delete_users(ids: Sequence[str], *, url: str | None = None, batch: int = 100
         # marks an account for the idle clock: gone first, a stop between the
         # two statements would leave an account nothing ever removes.
         delete_meta(("seen",))
-        from . import staff  # here, not at the top: staff reaches for this module when an account expires
+        from . import caches, staff  # here, not at the top: staff reaches for this module when an account expires
         for user_id in chunk:
             staff.forget(user_id)  # a signed-in person's account is remembered for as long as the process lives
+        caches.forget_merchants(chunk)  # kept by data version, which starts over for an account made again
     return removed

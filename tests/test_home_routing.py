@@ -95,6 +95,7 @@ def _areas(user: str) -> dict:
         "search cache": lambda: (caches.put_search(user, key, [1]), caches.get_search(user, key)),
         "answer cache": answer_cache,
         "cache counts": lambda: caches.cache_summary(user),
+        "merchants": lambda: (caches.forget_merchants(), caches.merchants_of(user, 0)("starbucks")),
         "memories": memory,
         "receipts": receipt,
         "proposals": proposal,
@@ -104,7 +105,7 @@ def _areas(user: str) -> dict:
 
 @pytest.mark.parametrize("area", ["data version", "totals", "totals plan", "merchant lookup", "search plan",
                                   "visits plan", "region badge", "search cache", "answer cache", "cache counts",
-                                  "memories", "receipts", "proposals", "profile"])
+                                  "merchants", "memories", "receipts", "proposals", "profile"])
 def test_a_users_statements_start_in_their_home_region(user, monkeypatch, area):
     monkeypatch.setattr(regions, "is_regional_deployment", lambda url: True)
     monkeypatch.setattr(regions, "user_home_region", lambda user_id, url=None: "eu-west-1")

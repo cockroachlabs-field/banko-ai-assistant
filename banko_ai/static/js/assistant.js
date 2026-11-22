@@ -348,6 +348,17 @@ document.addEventListener("alpine:init", () => {
       if (s.status === "running") return "";
       return [s.status === "hit" || s.status === "miss" ? s.status : "", duration(s.ms)].filter(Boolean).join(" · ");
     },
+    // A cached answer written for other words than the ones typed says whose
+    // it is: "cached: the answer to “coffee”", and how similar when similarity found it.
+    cachedNote(m) {
+      const meta = m.meta || {};
+      if (!(m.cached || meta.cached)) return "";
+      const from = meta.cache;
+      if (!from || !from.question) return "cached";
+      const asked = from.question.length > 80 ? from.question.slice(0, 79) + "…" : from.question;
+      return "cached: the answer to “" + asked + "”" +
+        (from.similarity ? ", " + Math.round(from.similarity * 100) + "% similar" : "");
+    },
     // "18.2 s · 3 model calls · 2,950 tokens", or "1.2 s · cached · about 350 tokens saved".
     metaLine(m) {
       const meta = m.meta || {};
@@ -356,7 +367,7 @@ document.addEventListener("alpine:init", () => {
       const calls = meta.model_calls || 0;
       const spent = (t.input || 0) + (t.output || 0);
       return [ms ? (ms / 1000).toFixed(1) + " s" : "",
-              m.cached || meta.cached ? "cached" : "",
+              this.cachedNote(m),
               calls ? calls + " model call" + (calls === 1 ? "" : "s") : "",
               spent ? (t.estimated ? "about " : "") + count(spent) + " tokens" : "",
               t.saved ? "about " + count(t.saved) + " tokens saved" : ""].filter(Boolean).join(" · ");
@@ -439,6 +450,8 @@ document.addEventListener("alpine:init", () => {
       return { running: "run", warning: "warn", error: "warn", hit: "hit", miss: "miss" }[s.status] || "ok";
     },
     openCitation(c) { Banko.emit("banko:open-transaction", { id: c.expense_id }); },
+    // A page of matches is as long as the asker set it: the answer's search says so.
+    pageSize(m) { const s = m.meta && m.meta.search; return (s && s.size) || Banko.shell.search_page_size; },
     // The next page of the answer's search, straight from the API: no model,
     // no tokens.
     async showMore(m) {
@@ -446,7 +459,7 @@ document.addEventListener("alpine:init", () => {
       if (!s || !m.next || m.paging) return;
       m.paging = true;
       try {
-        const p = new URLSearchParams({ q: s.q, limit: String(Banko.shell.search_page_size), cursor: m.next });
+        const p = new URLSearchParams({ q: s.q, limit: String(this.pageSize(m)), cursor: m.next });
         if (s.category) p.set("category", s.category);
         if (s.from) p.set("from", s.from);
         if (s.to) p.set("to", s.to);

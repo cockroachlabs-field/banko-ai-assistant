@@ -13,6 +13,8 @@ from flask import current_app, g, request, session, url_for
 
 from ..assistant.answers import LANGUAGES
 from ..config.settings import get_config
+from ..services import preferences
+from ..services.preferences import Preferences
 from ..services.profile import get_profile
 from ..services.transactions import search_page_size
 
@@ -73,6 +75,31 @@ def signed_in_profile() -> dict | None:
         raise found
     profile: dict | None = found
     return profile
+
+
+def person_id() -> str:
+    """Who is asking: the person signed in, whichever account is on screen.
+    Behind IAP that is the account this request's assertion named, also
+    while a persona is being viewed; otherwise the session's user."""
+    me = g.get("_banko_staff")
+    return str(me["user_id"]) if me else (session.get("user_id") or get_config().coach_default_user_id)
+
+
+def person_settings() -> Preferences:
+    """That person's own assistant settings, read once per request. A lookup
+    that fails leaves the deployment's settings: a question is never refused
+    over how its answer was to be shaped."""
+    found = g.get("_banko_settings")
+    if found is None:
+        try:
+            found = preferences.of(person_id())
+        except Exception as exc:
+            # Class name only: the message could carry a connection string.
+            log.warning("personal settings unavailable (%s); using the deployment's", exc.__class__.__name__)
+            found = preferences.defaults()
+        g._banko_settings = found
+    mine: Preferences = found
+    return mine
 
 
 def plain_page() -> None:

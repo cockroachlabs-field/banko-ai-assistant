@@ -303,6 +303,7 @@ def tables() -> tuple[Table, ...]:
             ("demo_user", "BOOL NOT NULL DEFAULT true"),
             ("display_name", "STRING"),
             ("avatar_color", "STRING"),
+            ("preferences", "JSONB"),  # the person's own assistant settings (services/preferences.py); NULL: none
         ), primary_key="user_id", locality="GLOBAL"),
         Table("spending_signals", _c(
             ("signal_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
@@ -467,6 +468,12 @@ def tables() -> tuple[Table, ...]:
             ("hits", "INT8 NOT NULL DEFAULT 0"),
             ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
             ("expires_at", "TIMESTAMPTZ NOT NULL"),
+            # The asker's settings that shaped the answer (page size, memories), whether the question was
+            # its conversation's first, so it leaned on nothing, and which conversation that was. NULL: a
+            # row from before these existed.
+            ("shape", "STRING"),
+            ("standalone", "BOOL"),
+            ("thread_id", "STRING"),
         ), primary_key="cache_id", indexes=(
             Index("answer_cache_user_embedding", "user_id, query_embedding vector_cosine_ops", vector=True),
             Index("answer_cache_user_idx", "user_id, data_version"),

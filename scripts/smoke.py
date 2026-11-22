@@ -9,7 +9,8 @@ Exit code 0 when every check passes.
 
 Each run first posts a receipt with a fresh total. The new purchase moves
 the persona's data version, so no answer is served from a cache an earlier
-run (or another provider) filled; only the deliberate repeat is.
+run (or another provider) filled; only the deliberate repeat is, and the
+search question asked once more in other words, which costs no model call.
 
 The coach check fires signals at the webhook, so it needs the app's
 CDC_WEBHOOK_HMAC_SECRET and DATABASE_URL in this shell; without them it is
@@ -33,6 +34,8 @@ import requests
 
 TIMEOUT = 240  # seconds per request: a local model can take a while on a cold start
 SPANISH = (" el ", " la ", " en ", " de ", " los ", " las ", "gast", " del ")
+SEARCH_QUESTION = "show me my coffee purchases"
+SAME_IN_OTHER_WORDS = "my coffee purchases"  # the same category, asked for in other words
 
 
 def parse_sse(lines: Iterable[str]) -> list[tuple[str, dict]]:
@@ -108,6 +111,7 @@ class Smoke:
         self.failures = 0
         self.user_id: str | None = None
         self.total = new_total()  # a new purchase each run; receipt() picks another if this one was posted lately
+        self.searched: dict | None = None  # the search check's answer, which other_words() asks for again
 
     # -- plumbing -------------------------------------------------------------------------------
 
@@ -230,8 +234,9 @@ class Smoke:
 
     def search_and_more(self) -> str:
         tid = self.thread()
-        a = self.ask(tid, "show me my coffee purchases")
+        a = self.ask(tid, SEARCH_QUESTION)
         self.expect_route(a, "plan")
+        self.searched = a
         if a.get("cached"):  # the receipt check's new purchase should have retired every earlier answer
             raise AssertionError("the answer came from the answer cache, so no search ran")
         searches = [step for step in tool_steps(a, "success") if step.get("label") == "search_transactions"]
@@ -248,6 +253,31 @@ class Smoke:
         if not items:
             raise AssertionError("show more returned no purchases")
         return f"answered, then {len(items)} more from the database"
+
+    def other_words(self) -> str:
+        """The search check's question is a category's purchases. Asked in
+        other words, the cache takes it for the same question (CACHE_MATCH,
+        words by default), replays the answer without a model call and says
+        whose answer it is."""
+        first = self.searched
+        if first is None:
+            return "skipped: the search check left no answer to replay"
+        mine = {s["key"]: s["value"] for s in self.api("GET", "/api/v1/me/settings").json()["settings"]}
+        if mine.get("cache_match") == "exact":
+            return "skipped: this account matches the same question only"
+        if tool_steps(first, "warning"):
+            return "skipped: a tool declined behind the search answer, so that answer was not kept"
+        # The cache write runs behind the search answer. "show more" has been asked since; this is room to spare,
+        # because a miss here would be answered by the model and then cached under these very words.
+        time.sleep(3)
+        a = self.ask(self.thread(), SAME_IN_OTHER_WORDS)
+        calls = (a.get("meta") or {}).get("model_calls")
+        if not a.get("cached") or calls:
+            raise AssertionError(f"asked again instead: cached={a.get('cached')}, {calls} model call(s)")
+        whose = ((a.get("meta") or {}).get("cache") or {}).get("question")
+        if whose != SEARCH_QUESTION:
+            raise AssertionError(f"the answer does not say whose it is: {whose!r}")
+        return f"the answer to {whose!r} replayed, no model call"
 
     def spanish(self) -> str:
         a = self.ask(self.thread(), "How much did I spend on restaurants last month?", language="es-ES")
@@ -334,6 +364,7 @@ class Smoke:
         self.check("cache on a repeat", self.cache)
         self.check("visits from SQL", self.visits)
         self.check("search and show more", self.search_and_more)
+        self.check("same question, other words", self.other_words)
         self.check("answer in Spanish", self.spanish)
         self.check("coach nudge", self.coach)
         print(f"\n{'FAILED' if self.failures else 'All checks passed'}."

@@ -1104,6 +1104,61 @@ def test_the_meta_line_says_what_was_spent_or_saved(server, browser):
         ctx.close()
 
 
+def _cached_from(found: dict) -> str:
+    """A cached answer that was written for other words than the ones typed."""
+    return _sse(("token", {"text": "Nine coffee purchases."}),
+                ("answer", {"answer": "Nine coffee purchases.", "citations": [], "proposals": [], "cached": True,
+                            "route": "plan", "meta": {"trace": [], "cache": found, "model_calls": 0, "answer_ms": 900,
+                                                      "tokens": {"input": 0, "output": 0, "estimated": False,
+                                                                 "saved": 350}, "cached": True}}),
+                ("done", {}))
+
+
+def test_a_cached_answer_written_for_other_words_says_whose_it_is(server, browser):
+    """ "coffee", then "coffee expenses": the second answer is the first
+    one's, and the line under it says so. A similar question's also says how
+    similar the two are."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        api = _PanelApi(page, answer=_cached_from({"question": "coffee", "match": "words"}))
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "coffee expenses")
+        bots = page.locator(".b-panel .b-msg-bot")
+        expect(bots.nth(0).locator(".b-meta")).to_contain_text(
+            "cached: the answer to “coffee” · about 350 tokens saved")
+        api.answer = _cached_from({"question": "any unusual charges lately", "match": "similar", "similarity": 0.9})
+        page.locator(".b-panel textarea").fill("have there been any strange charges recently")
+        page.keyboard.press("Enter")
+        expect(bots.nth(1).locator(".b-meta")).to_contain_text(
+            "cached: the answer to “any unusual charges lately”, 90% similar · about 350 tokens saved")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_show_more_pages_by_the_size_the_answers_search_names(server, browser):
+    """Someone who set five purchases a page gets five more, not the deployment's ten."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=_paged_answer("Here are your coffee stops.", "plan", {
+            "q": "coffee", "category": None, "from": None, "to": None, "next": "bzEw", "size": 5}))
+        asked = []
+
+        def search(route):
+            asked.append(urllib.parse.parse_qs(urllib.parse.urlparse(route.request.url).query))
+            route.fulfill(json={"items": [_match(1), _match(2)], "next_cursor": None})
+
+        page.route("**/api/v1/transactions?q=*", search)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "where do I get coffee?")
+        page.locator(".b-panel .b-msg-bot").get_by_role("button", name="Show 5 more").click()
+        expect(page.locator(".b-panel .b-msg-bot .b-more .b-cite")).to_have_count(2)
+        assert asked[-1]["limit"] == ["5"], asked[-1]
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
 def test_a_reloaded_answer_keeps_its_trace_and_plan(server, browser):
     ctx, page, errors = _page(browser, "light")
     try:
@@ -1647,6 +1702,65 @@ def test_settings_offers_no_move_to_a_persona_or_on_one_region(server, browser):
         page.wait_for_load_state("networkidle")
         expect(page.get_by_text("Spending style")).to_be_visible()
         expect(page.get_by_role("button", name="Move my data")).to_have_count(0)
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_settings_holds_ones_own_assistant_settings(server, browser):
+    """Against the real server: what a person sets is theirs, survives a
+    reload, is refused in a sentence when it does not fit, and goes back to
+    the deployment's with one button."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _sign_up(page, server)
+        page.goto(server + "/settings")
+        page.wait_for_load_state("networkidle")
+        card = page.locator("#assistant-settings")
+        expect(card.locator(".b-prefgroup-h")).to_have_text(["Answer cache", "Search", "Memory"])
+        match, similar = page.get_by_label("Reuse an answer for"), page.get_by_label("How similar")
+        size = page.get_by_label("Purchases per page")
+        save, reset = card.get_by_role("button", name="Save"), card.get_by_role("button", name="Back to the defaults")
+        expect(match).to_have_value("words")
+        expect(card.get_by_text("\"coffee expenses\" and \"show my coffee purchases\" are one question")).to_be_visible()
+        expect(similar).to_be_disabled()                   # it matters only for a similar question
+        expect(save).to_be_disabled()
+        expect(reset).to_be_disabled()                     # nothing of one's own yet
+
+        match.select_option("similar")
+        expect(similar).to_be_enabled()
+        expect(card.get_by_text("unless it names other dates or numbers")).to_be_visible()
+        similar.fill("0.6")
+        expect(card.get_by_text("60%", exact=True)).to_be_visible()
+        size.fill("5")
+        save.click()
+        expect(card.get_by_text("Saved. Your next question uses these.")).to_be_visible()
+
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(match).to_have_value("similar")
+        expect(similar).to_have_value("0.6")
+        expect(size).to_have_value("5")
+        # What was changed says what it would otherwise be; what was not, says nothing.
+        expect(card.locator(".b-pref", has=size).get_by_text("Default: 10", exact=True)).to_be_visible()
+        expect(card.get_by_text("Default: Also a category or merchant in other words", exact=True)).to_be_visible()
+        expect(card.locator(".b-pref", has=page.get_by_label("Memories per question"))
+               .get_by_text("Default:")).to_be_hidden()
+
+        size.fill("99")
+        errors_before = len(errors)
+        save.click()
+        expect(card.get_by_text("Purchases per page takes a whole number between 1 and 25.")).to_be_visible()
+        del errors[errors_before:]                         # the browser logs the 400 it was meant to get
+
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        expect(size).to_have_value("5")                    # the refused value changed nothing
+        reset.click()
+        expect(card.get_by_text("Back to the defaults.")).to_be_visible()
+        expect(match).to_have_value("words")
+        expect(size).to_have_value("10")
+        expect(similar).to_be_disabled()
         assert not errors, errors
     finally:
         ctx.close()

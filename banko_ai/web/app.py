@@ -984,7 +984,9 @@ def create_app() -> Flask:
             from ..assistant import answers
             from ..assistant.graph import run_turn
             from .assistant_api import _chat
-            out = run_turn(current_demo_user(), _turn_thread(), query, language_code=code, chat=_chat())
+            from .shell import person_settings
+            out = run_turn(current_demo_user(), _turn_thread(), query, language_code=code, chat=_chat(),
+                           prefs=person_settings())
             # The identity the persona shows, as this endpoint always reported it.
             shown = _shown()
             return jsonify({'success': True, 'response': answers.strip_citations(out['answer']),
@@ -1730,6 +1732,7 @@ def create_app() -> Flask:
         them marks the schema and the personas not ready, so pages show the
         getting-ready page meanwhile, as they do on a first boot."""
         from ..db.regions import clear_region_caches
+        from ..services.caches import forget_merchants
         from ..services.seeding import forget_statuses
         from ..workers.traffic import stop_simulator
         try:
@@ -1738,6 +1741,7 @@ def create_app() -> Flask:
             boot_log.warning("rebuild: the load simulator did not stop cleanly", exc_info=True)
         clear_region_caches()  # what was known about regions and row homes described the old database
         forget_statuses()
+        forget_merchants()     # kept by data version, and the versions start over
         staff.forget()         # the accounts made for staff went with the database: the next visit makes them again
         with persona_counts_lock:
             persona_counts.clear()

@@ -46,6 +46,7 @@ OPENAI_MODEL=gpt-4o-mini
 # GOOGLE_API_KEY=your_gemini_key
 
 # Cache configuration (optional)
+CACHE_MATCH=words
 CACHE_SIMILARITY_THRESHOLD=0.75
 CACHE_STRICT_MODE=true
 CACHE_TTL_HOURS=24
@@ -203,7 +204,8 @@ All configuration is done via environment variables. See the main [README.md](ht
 - Provider-specific API keys
 
 **Optional:**
-- `CACHE_SIMILARITY_THRESHOLD` - Cache threshold (default: 0.75)
+- `CACHE_MATCH` - Which earlier question's answer may be replayed: `exact`, `words` (also a category or merchant asked for in other words) or `similar` (default: words)
+- `CACHE_SIMILARITY_THRESHOLD` - With `CACHE_MATCH=similar`, how similar a question must be (default: 0.75)
 - `CACHE_STRICT_MODE` - Strict cache matching (default: true)
 - `CACHE_TTL_HOURS` - Cache TTL (default: 24)
 - `DB_POOL_SIZE` - Connection pool size (default: 100)

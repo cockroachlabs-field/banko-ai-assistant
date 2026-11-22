@@ -3,6 +3,8 @@ SQL aggregations, then the planner."""
 
 from datetime import date
 
+import pytest
+
 from banko_ai.assistant.router import route
 
 RECEIPT = {"document_id": "d1", "merchant": "Trader Joe's", "items": ["Pinot Noir wine", "Sourdough bread"],
@@ -207,3 +209,66 @@ def test_a_category_word_in_the_merchants_name_is_not_a_question_about_the_recei
     # And so does everything that pointed at the receipt before.
     assert route("how much was this receipt?", active_receipt=COFFEE_RECEIPT, today=TODAY).kind == "receipt"
     assert route("was the latte on it?", active_receipt=COFFEE_RECEIPT, last_route="receipt").kind == "receipt"
+
+
+# A category of the catalog is a money question, and its purchases are not a line on a receipt.
+
+@pytest.mark.parametrize("name", ["phone", "rideshare", "transit", "health", "medical", "hardware", "takeout",
+                                  "streaming", "electronics", "entertainment", "movies", "concerts"])
+def test_a_category_named_alone_is_a_money_question(name):
+    """Twelve of the catalog's names were "not a money question" when they
+    opened a conversation: no word in "electronics" says money."""
+    for question in (name, f"my {name}", f"{name} this month", f"show my {name} purchases"):
+        opened = route(question, today=TODAY)
+        assert opened.kind == "plan" and not opened.follow_up, question
+
+
+@pytest.mark.parametrize("name", ["electronics", "streaming", "movies"])
+def test_inside_a_conversation_such_a_name_still_leans_on_it(name):
+    """As before: short and in the middle of a conversation, it is a
+    follow-up, and its answer is never kept under that one word."""
+    for question in (name, f"my {name}"):
+        later = route(question, has_history=True, today=TODAY)
+        assert later.kind == "plan" and later.follow_up, question
+
+
+@pytest.mark.parametrize("question", ["show me movies", "list movies", "can you show me movies today?",
+                                      "list concerts this week", "please show streaming"])
+def test_asking_to_be_shown_a_category_word_alone_is_still_no_money_question(question):
+    """ "show me movies" asks for films. With a word for the purchases it was a money question already."""
+    assert route(question, today=TODAY).kind == "offtopic"
+
+
+@pytest.mark.parametrize("question", ["show my electronics", "show me my electronics", "list my streaming",
+                                      "can you show me my movies", "display my electronics please",
+                                      "view my concerts this month"])
+def test_asking_to_be_shown_ones_own_is_a_money_question(question):
+    """ "show me movies" asks for films, "show me my movies" for what I spent on them."""
+    assert route(question, today=TODAY).kind == "plan"
+
+
+def test_words_that_only_happen_to_be_a_category_stay_where_they_were():
+    assert route("other", today=TODAY).kind == "offtopic"                       # no question in it
+    assert route("what movies should I watch tonight?", today=TODAY).kind == "offtopic"
+    assert route("is my phone waterproof", today=TODAY).kind == "offtopic"
+
+
+COFFEE_LINE = {"document_id": "d2", "merchant": "Corner Bakery", "items": ["Drip Coffee", "Bagel"], "amount": 7.5}
+
+
+def test_a_categorys_purchases_are_not_a_line_on_the_receipt():
+    """ "my coffee expenses" went to the receipt because one of its lines is
+    a coffee, while "coffee expenses" went to the planner. A category asked
+    for as its purchases is about the category either way."""
+    for question in ("coffee expenses", "my coffee expenses", "show my coffee purchases", "the coffee transactions"):
+        assert route(question, active_receipt=COFFEE_LINE, last_route="receipt", today=TODAY).kind == "plan", question
+    # The line itself is still the receipt's.
+    for question in ("was the coffee on it?", "how much was the coffee?", "the coffee"):
+        assert route(question, active_receipt=COFFEE_LINE, last_route="receipt", today=TODAY).kind == "receipt", question
+
+
+def test_purchases_at_the_restaurant_on_the_receipt_are_the_receipts():
+    """ "at the restaurant" is one place, the one on the table, not the category."""
+    dinner = {"document_id": "d3", "merchant": "Luigi's", "items": ["Restaurant dinner", "Tiramisu"], "amount": 62.0}
+    assert route("purchases at the restaurant", active_receipt=dinner, last_route="receipt", today=TODAY).kind == "receipt"
+    assert route("restaurant purchases", active_receipt=dinner, last_route="receipt", today=TODAY).kind == "plan"
