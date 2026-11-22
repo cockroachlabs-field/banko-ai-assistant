@@ -58,10 +58,10 @@ SETTINGS: tuple[Setting, ...] = (
             "says which question it was written for.", "choice",
             choices=(("exact", "The same question",
                       "The same words only, give or take capitals and punctuation."),
-                     ("words", "Also a category in other words",
+                     ("words", "Also a category or merchant in other words",
                       "\"coffee\", \"coffee expenses\" and \"show my coffee purchases\" are one question: a spending "
-                      "category, asked for bare or as its purchases, for the same dates. Every other question is "
-                      "matched word for word."),
+                      "category or one of your merchants, asked for bare or as its purchases, for the same dates. "
+                      "Every other question is matched word for word."),
                      ("similar", "Also a similar question",
                       "Also, between the first questions of two conversations, any question as similar as set "
                       "below, unless it names other dates or numbers or differs in a word such as not or under. It "

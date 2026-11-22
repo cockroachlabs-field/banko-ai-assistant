@@ -1743,7 +1743,7 @@ def test_settings_holds_ones_own_assistant_settings(server, browser):
         expect(size).to_have_value("5")
         # What was changed says what it would otherwise be; what was not, says nothing.
         expect(card.locator(".b-pref", has=size).get_by_text("Default: 10", exact=True)).to_be_visible()
-        expect(card.get_by_text("Default: Also a category in other words", exact=True)).to_be_visible()
+        expect(card.get_by_text("Default: Also a category or merchant in other words", exact=True)).to_be_visible()
         expect(card.locator(".b-pref", has=page.get_by_label("Memories per question"))
                .get_by_text("Default:")).to_be_hidden()
 

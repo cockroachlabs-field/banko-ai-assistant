@@ -12,20 +12,23 @@ import logging
 import queue
 import re
 import threading
+import time
 import unicodedata
+from collections import OrderedDict
+from collections.abc import Callable, Iterable
 from datetime import date, datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import text
 
 from ..config.catalog import get_catalog
 from ..config.settings import get_config
 from ..db.engine import get_engine, routed, run_transaction
-from ..db.regions import money_region, region_columns
+from ..db.regions import money_region, read_region, region_columns
 from ..db.rls import request_url
 from ..utils import clock
 from ..utils.intent_classifier import extract_window, find_window
-from ._sql import jsonable
+from ._sql import jsonable, region_pin
 from ._vector import nearest
 
 log = logging.getLogger("banko.caches")
@@ -176,10 +179,12 @@ def normalize_question(question: str) -> str:
 
 CANDIDATES = 25  # questions looked at per lookup, nearest first; one user's cache at one data version is small
 
-# The same question in other words is one shape only: a spending category,
-# asked for bare or as its purchases, optionally for some dates. "coffee",
-# "coffee expenses", "my coffee spending" and "show my coffee purchases" are
-# one question. Like the SQL routes, the shape takes a question only when it
+# The same question in other words is one shape only: a spending category
+# or one of the user's own merchants, asked for bare or as its purchases,
+# optionally for some dates. "coffee", "coffee expenses", "my coffee
+# spending" and "show my coffee purchases" are one question, and so are
+# "starbucks" and "purchases at starbucks" for someone who has bought
+# there. Like the SQL routes, the shape takes a question only when it
 # accounts for every word of it. Dropping "small words" from any question was
 # tried first, and no list of them was small enough: "show my savings account"
 # is not "show my savings account transactions", "my last purchase" not "my
@@ -194,7 +199,20 @@ _SHOW = frozenset("show list display view".split())
 # purchases", "phone purchases" (bought online, by phone). A catalog of one's
 # own (CATEGORIES_FILE) can add names like these; this knows the packaged ones.
 _THINGS = frozenset("subscription subscriptions bills internet phone".split())
-_BEFORE_DATES = re.compile(r"(?:\b(?:in|for|during|over)\s+)?(?:the\s+)?$")
+# What Banko keeps besides purchases, in the words a person has for it. A
+# merchant with one of these in its name is asked for only in words that can
+# mean nothing but the shop (_only_the_shop): "my target" may be a savings
+# target, "spending on target" may ask whether the spending is on target, and
+# "target spending" for the target itself. "target purchases" and "spending
+# at target" are the shop.
+_OWN = frozenset(
+    "target targets goal goals budget budgets balance balances account accounts checking savings saving card cards "
+    "credit debit cash money funds transfer transfers deposit deposits income paycheck salary payment payments "
+    "refund refunds bill bills subscription subscriptions receipt receipts memory memories statement statements "
+    "limit limits fee fees interest loan loans debt debts coach nudge nudges assistant dashboard platform "
+    "settings".split())
+_SHOP_ROWS = frozenset("purchases transactions charges".split())
+_BEFORE_DATES = re.compile(r"(?:\b(?:in|for|during|over)\s+)?(?:\bthe\s+)?$")
 
 # Words that turn a question around or point it somewhere else. Two similar
 # questions that differ in one of these are two questions.
@@ -235,29 +253,36 @@ _TOKEN = re.compile(r"\d+(?:[.,/:-]\d+)*[a-z%]*|[^\W\d_]+|[<>=≤≥≠]")
 _THOUSANDS = re.compile(r",(?=\d{3}(?:\D|$))")
 
 
-def ask_words(question: str, today: date | None = None) -> str:
+def ask_words(question: str, today: date | None = None, is_merchant: Callable[[str], bool] | None = None) -> str:
     """What two wordings of one question have in common: for a spending
-    category asked for bare or as its purchases, the category as it was
-    named and the dates ("coffee", "show my coffee expenses" and "my coffee
-    purchases" all give "coffee"); for every other question, the question
-    itself (normalize_question)."""
-    found = category_ask(question, today)
+    category or one of the user's merchants, asked for bare or as its
+    purchases, the name and the dates ("coffee", "show my coffee expenses"
+    and "my coffee purchases" all give "coffee"); for every other question,
+    the question itself (normalize_question)."""
+    found = subject_ask(question, today, is_merchant)
     return found[0] if found else normalize_question(question)
 
 
-def category_ask(question: str, today: date | None = None) -> tuple[str, bool] | None:
-    """For a question that is a request for one spending category's
-    purchases and nothing else, what its wordings share (the category as
-    named, and the dates as of `today`, the day it was asked) and whether
-    it is bare: no word for the purchases. None for any other question.
+class Asked(NamedTuple):
+    name: str          # what is asked for, as typed: a category, a merchant, or neither
+    bare: bool         # no word for the purchases
+    when: str          # the dates it names, as of the day it was asked
+    shown: bool        # asked to be shown ("show me", "can you list")
+    mine: bool         # "my" stood before the name
+    rows: str | None   # the word for the purchases
+    at: str | None     # the word between the purchases and the name ("purchases at starbucks")
 
-    The shape: [can you] [show [me]] [my] <category> [expenses] [for
-    <dates>], or [my] expenses on <category>. A bare one ("coffee",
-    "groceries?") is a whole question when it opens a conversation. After
-    "how much did I spend on restaurants last month?" it is the short form
-    of another question, so whoever matches by this must know where a bare
-    one was asked (see get_answer)."""
-    asked, when = normalize_question(question), ""
+    @property
+    def shown_only(self) -> bool:
+        """ "show me movies": asked to be shown the thing itself, not one's own and not its purchases."""
+        return self.shown and self.bare and not self.mine
+
+
+def asked_subject(question: str, today: date | None = None) -> Asked | None:
+    """The shape alone, whatever the name names: [can you] [show [me]] [my]
+    <name> [expenses] [for <dates>], or [my] expenses on <name>. None when
+    a word is left over. today: the day it was asked."""
+    asked, when, shown = normalize_question(question), "", False
     dates = find_window(asked, today)
     if dates:
         start, end, (i, j) = dates
@@ -274,23 +299,145 @@ def category_ask(question: str, today: date | None = None) -> tuple[str, bool] |
         if not words or words[0] not in _SHOW:
             return None  # "would you rent": asked for advice, not to be shown
     if words and words[0] in _SHOW:
-        words = words[2:] if words[:2] == ["show", "me"] else words[1:]
+        words, shown = (words[2:] if words[:2] == ["show", "me"] else words[1:]), True
+    mine = words[:1] == ["my"]
     if words and words[0] in ("my", "the"):
         words = words[1:]
-    bare = False
-    if len(words) >= 3 and words[0] in _ROWS and words[1] in ("on", "for", "of"):
+    bare, rows, at = False, None, None
+    if len(words) >= 3 and words[0] in _ROWS and words[1] in ("on", "for", "of", "at", "from"):
+        rows, at = words[0], words[1]
         subject = words[3:] if words[2] in ("my", "the") else words[2:]
     elif words and words[-1] in _ROWS:
-        subject = words[:-1]
+        rows, subject = words[-1], words[:-1]
     else:
         subject, bare = words, True
-    name = " ".join(subject)
-    if not subject or len(subject) > 3 or name in _THINGS:
+    if not subject or len(subject) > 4:
         return None
+    return Asked(" ".join(subject), bare, when, shown, mine, rows, at)
+
+
+def _only_the_shop(found: Asked) -> bool:
+    """Whether the words can mean nothing but purchases at a place of this
+    name: "target purchases", "charges from target", "spending at target"."""
+    return found.at in ("at", "from") or (found.at is None and found.rows in _SHOP_ROWS)
+
+
+def subject_ask(question: str, today: date | None = None,
+                is_merchant: Callable[[str], bool] | None = None) -> tuple[str, bool] | None:
+    """For a question that is a request for one thing's purchases and
+    nothing else, what its wordings share and whether it is bare (no word
+    for the purchases). None for any other question.
+
+    The thing is a spending category ("coffee": the name as typed, with the
+    dates), or, when is_merchant says so, one of the user's own merchants
+    ("@starbucks"). A bare one ("coffee", "groceries?") is a whole question
+    when it opens a conversation. After "how much did I spend on restaurants
+    last month?" it is the short form of another question, so whoever
+    matches by this must know where a bare one was asked (see get_answer)."""
+    found = asked_subject(question, today)
+    if found is None:
+        return None
+    name, bare, when = found.name, found.bare, found.when
     category = get_catalog().find(name)
-    if category is None or category.grp not in ("needs", "wants") or category.key == "other":
+    if category is not None:
+        # At and from are a merchant's: "purchases at the restaurant" names one restaurant.
+        spending = (category.grp in ("needs", "wants") and category.key != "other" and name not in _THINGS
+                    and found.at not in ("at", "from"))
+        return (name + when, bare) if spending else None
+    if is_merchant is None or (_OWN.intersection(name.split()) and not _only_the_shop(found)) or not is_merchant(name):
         return None
-    return name + when, bare
+    return f"@{name}{when}", bare
+
+
+def category_ask(question: str, today: date | None = None) -> tuple[str, bool] | None:
+    """subject_ask for categories only: what the router can know without the user's rows."""
+    return subject_ask(question, today)
+
+
+# A user's merchants as of one data version, kept in this process by
+# database and user: reading them reads the user's purchases, and every
+# purchase raises the version. Kept for a while only: an account another
+# process deleted and made again starts its versions over, and nothing tells
+# this process.
+_MERCHANTS: OrderedDict[tuple[str, str], tuple[int, frozenset[str], float]] = OrderedDict()
+_MERCHANTS_KEPT = 512      # users
+_MERCHANTS_SECONDS = 900.0
+_MERCHANTS_LOCK = threading.Lock()
+_now = time.monotonic
+
+
+def merchants_of(user_id: str, version: int | Callable[[], int], url: str | None = None,
+                 conn: Any = None, region: str | None = None) -> Callable[[str], bool]:
+    """Says whether a name is one of this user's merchants, as the shape
+    reads names (_as_asked). Nothing is read until a name asks, and then
+    once for each state of the user's money: version is the user's data
+    version, or what reads it when a name asks.
+
+    conn: a connection on url to read on, when the caller holds one. Then
+    region is the caller's read_region, asked for before it took the
+    connection: read_region may open one of its own, and a pool that is
+    full would wait on itself."""
+    names: frozenset[str] | None = None
+
+    def is_merchant(name: str) -> bool:
+        nonlocal names
+        if names is None:
+            names = _merchants(user_id, int(version() if callable(version) else version), url, conn, region)
+        return name in names
+
+    return is_merchant
+
+
+def _merchants(user_id: str, version: int, url: str | None, conn: Any, region: str | None) -> frozenset[str]:
+    url = request_url(url)
+    key = (url or "", str(user_id))
+    with _MERCHANTS_LOCK:
+        kept = _MERCHANTS.get(key)
+        if kept is not None and kept[0] == version and _now() - kept[2] <= _MERCHANTS_SECONDS:
+            _MERCHANTS.move_to_end(key)
+            return kept[1]
+    if conn is not None:
+        names = frozenset(_merchant_names(conn, user_id, region))
+    else:
+        region = read_region(user_id, url)
+        with get_engine(routed(url, user_id)).connect() as own:
+            names = frozenset(_merchant_names(own, user_id, region))
+    with _MERCHANTS_LOCK:
+        _MERCHANTS[key] = (version, names, _now())
+        _MERCHANTS.move_to_end(key)
+        while len(_MERCHANTS) > _MERCHANTS_KEPT:
+            _MERCHANTS.popitem(last=False)
+    return names
+
+
+def forget_merchants(user_ids: Iterable[str] | None = None) -> None:
+    """Drop the merchants kept for these users, or for everyone. A deleted
+    account and a database set up again start their versions over, so the
+    version no longer says which purchases the names came from."""
+    with _MERCHANTS_LOCK:
+        if user_ids is None:
+            _MERCHANTS.clear()
+            return
+        gone = {str(user_id) for user_id in user_ids}
+        for key in [key for key in _MERCHANTS if key[1] in gone]:
+            del _MERCHANTS[key]
+
+
+def _as_asked(merchant: str) -> str:
+    """A merchant's name as the shape reads it in a question: normalized,
+    and with no "the" or "my" in front, which the shape takes off a name
+    ("the home depot purchases" asks for "home depot")."""
+    words = normalize_question(merchant).split()
+    return " ".join(words[1:] if len(words) > 1 and words[0] in ("the", "my") else words)
+
+
+def _merchant_names(conn: Any, user_id: str, region: str | None = None) -> set[str]:
+    """Inside the user's home region when a read may name it (region, from
+    read_region): on REGIONAL BY ROW tables a lookup by user alone looks in
+    every region."""
+    return {_as_asked(str(r[0])) for r in conn.execute(text(
+        f"SELECT DISTINCT merchant FROM expenses WHERE {region_pin('', region)}user_id = CAST(:u AS UUID) "
+        "AND merchant IS NOT NULL"), {"u": user_id, "region": region})}
 
 
 def other_ask(cached: str, asked: str) -> str | None:
@@ -352,12 +499,12 @@ def _tokens(question: str) -> list[str]:
 def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: str, match: str | None = None,
                similarity: float | None = None, shape: str | None = None, standalone: bool = True,
                previous: str | None = None, thread_id: str | None = None, refused: list | None = None,
-               url: str | None = None) -> dict | None:
+               unshaped: bool = False, url: str | None = None) -> dict | None:
     """A cached answer this question may replay. The vector index brings the
     user's nearest cached questions; the match says which of them counts:
 
       exact    the same question, give or take case, punctuation and spacing
-      words    also a spending category asked for in other words (category_ask)
+      words    also a category or one of the user's merchants in other words (subject_ask)
       similar  also a question at least `similarity` similar, unless other_ask objects
 
     Similarity alone decides nothing in the first two: "bills due next week"
@@ -367,13 +514,16 @@ def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
     CACHE_SIMILARITY_THRESHOLD.
 
     shape names the asker's settings that shape an answer (page size,
-    memories): only an answer kept under the same shape counts.
+    memories): only an answer kept under the same shape counts. unshaped
+    lets answers kept before shapes were recorded count as well; the caller
+    says so when its shape is the deployment's own, which is what shaped
+    them.
 
     standalone says the question opens its conversation (thread_id), and
     previous is the question that conversation asked just before. They are
     about what a conversation can do to a question's meaning:
-      - a category with a word for its purchases ("coffee expenses") says
-        all it asks, and counts anywhere;
+      - a category or merchant with a word for its purchases ("coffee
+        expenses", "starbucks charges") says all it asks, and counts anywhere;
       - a bare one ("coffee", "groceries?") is a whole question only where
         it opened a conversation. Elsewhere it counts only against the
         question asked right before or after it in the same conversation:
@@ -394,9 +544,10 @@ def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
     match = match or cfg.cache_match
     max_distance = 1.0 - float(cfg.cache_similarity_threshold if similarity is None else similarity)
     today = clock.today()
-    want, asked_for = normalize_question(query), category_ask(query, today)
+    want = normalize_question(query)
     asked_dates, asked_loose = _dates_as_of(query, today)
     just_before = normalize_question(previous) if previous and thread_id else None
+    region = None if match == "exact" else read_region(user_id, url)  # for the merchants, before a connection is held
 
     def fn(conn) -> tuple[dict | None, dict | None]:
         near = nearest(conn, table="answer_cache", index="answer_cache_user_embedding",
@@ -408,9 +559,24 @@ def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
             SELECT cache_id, query_text, COALESCE(standalone, false), created_at, thread_id FROM answer_cache
             WHERE user_id = CAST(:u AS UUID) AND cache_id = ANY(CAST(:ids AS UUID[]))
               AND data_version = :v AND language = :l AND expires_at > now()
-              AND shape IS NOT DISTINCT FROM :shape
-        """), {"u": user_id, "ids": [c for c, _ in near], "v": int(version), "l": language, "shape": shape})}
-        ranked, turned_down = [], None
+              AND (shape IS NOT DISTINCT FROM :shape OR (:unshaped AND shape IS NULL))
+        """), {"u": user_id, "ids": [c for c, _ in near], "v": int(version), "l": language, "shape": shape,
+               "unshaped": bool(unshaped)})}
+        def replayed(ranked: list[tuple]) -> dict | None:
+            for _, distance, cache_id, question, kind in sorted(ranked):
+                row = conn.execute(text("""
+                    UPDATE answer_cache SET hits = hits + 1
+                    WHERE cache_id = CAST(:c AS UUID) AND user_id = CAST(:u AS UUID)
+                      AND data_version = :v AND language = :l AND expires_at > now()
+                    RETURNING answer, tokens
+                """), {"c": cache_id, "u": user_id, "v": int(version), "l": language}).fetchone()
+                if row is not None:
+                    return {"cache_id": cache_id, "answer": row[0], "tokens": int(row[1]), "distance": distance,
+                            "question": question, "match": kind}
+            return None
+
+        # The same words first: they need nothing read about what the question names.
+        the_same, others = [], []
         for cache_id, distance in near:
             if cache_id not in kept:  # another version, language or shape, or expired
                 continue
@@ -419,37 +585,33 @@ def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
             same = normalize_question(question)
             kept_dates, kept_loose = _dates_as_of(question, day)
             other_dates = kept_dates != asked_dates or (day != today and (kept_loose or asked_loose))
+            if same != want:
+                others.append((cache_id, distance, question, bool(opened), day, thread, same, other_dates))
+            elif not other_dates:  # the same words about another day's "today" or "this month" are another question
+                the_same.append((0, distance, cache_id, question, "exact"))
+        if (hit := replayed(the_same)) is not None or match == "exact" or not others:
+            return hit, None
+
+        # The user's merchants are read only when a name that is no category asks, and looked up for
+        # a kept question only when the one asked names a merchant: no category's words are a merchant's.
+        is_merchant = merchants_of(user_id, int(version), url, conn, region)
+        asked_for = subject_ask(query, today, is_merchant)
+        of_kept = is_merchant if asked_for is not None and asked_for[0].startswith("@") else None
+        ranked, turned_down = [], None
+        for cache_id, distance, question, opened, day, thread, same, other_dates in others:
             # Asked right before this one, in this very conversation: the same words elsewhere are not that.
             neighbours = just_before is not None and thread == thread_id and same == just_before
-            if same == want:
-                if other_dates:  # the same words, about another day's "today" or "this month"
-                    continue
-                rank, kind = 0, "exact"
-            elif match == "exact":
-                continue
-            elif same_category(asked_for, standalone, category_ask(question, day), bool(opened), neighbours):
-                rank, kind = 1, "words"
+            if asked_for is not None and same_subject(asked_for, standalone, subject_ask(question, day, of_kept),
+                                                      opened, neighbours):
+                ranked.append((1, distance, cache_id, question, "words"))
             elif match == "similar" and standalone and opened and distance <= max_distance:
                 why = "it names other dates" if other_dates else other_ask(question, query)
                 if why:
                     turned_down = turned_down or {"question": question, "similarity": round(1.0 - distance, 4),
                                                   "why": why}
                     continue
-                rank, kind = 2, "similar"
-            else:
-                continue
-            ranked.append((rank, distance, cache_id, question, kind))
-        for _, distance, cache_id, question, kind in sorted(ranked):
-            row = conn.execute(text("""
-                UPDATE answer_cache SET hits = hits + 1
-                WHERE cache_id = CAST(:c AS UUID) AND user_id = CAST(:u AS UUID)
-                  AND data_version = :v AND language = :l AND expires_at > now()
-                RETURNING answer, tokens
-            """), {"c": cache_id, "u": user_id, "v": int(version), "l": language}).fetchone()
-            if row is not None:
-                return {"cache_id": cache_id, "answer": row[0], "tokens": int(row[1]), "distance": distance,
-                        "question": question, "match": kind}, None
-        return None, turned_down
+                ranked.append((2, distance, cache_id, question, "similar"))
+        return replayed(ranked), turned_down
 
     hit, turned_down = run_transaction(fn, url=url, user_id=user_id)
     if refused is not None and hit is None and turned_down:
@@ -458,12 +620,12 @@ def get_answer(user_id: str, *, version: int, language: str, query: str, qvec: s
     return hit
 
 
-def same_category(asked: tuple[str, bool] | None, asked_opened: bool, kept: tuple[str, bool] | None,
-                  kept_opened: bool, neighbours: bool) -> bool:
-    """Whether two questions are one category question in two wordings
-    (category_ask gave each its category, dates and whether it is bare). A
-    bare one counts where it opened its conversation, or beside the other
-    question in the same conversation (neighbours)."""
+def same_subject(asked: tuple[str, bool] | None, asked_opened: bool, kept: tuple[str, bool] | None,
+                 kept_opened: bool, neighbours: bool) -> bool:
+    """Whether two questions are one question about a category or a
+    merchant in two wordings (subject_ask gave each its name, dates and
+    whether it is bare). A bare one counts where it opened its conversation,
+    or beside the other question in the same conversation (neighbours)."""
     if asked is None or kept is None or asked[0] != kept[0]:
         return False
     return (not asked[1] or asked_opened or neighbours) and (not kept[1] or kept_opened or neighbours)

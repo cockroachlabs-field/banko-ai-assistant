@@ -117,6 +117,13 @@ def _about_receipt(message: str, receipt: dict, last_route: str | None) -> bool:
     # "this month" is a window, not a reference, and rules out the rest.
     if _THIS_THAT_BEFORE_TIME.search(message):
         return False
+    # "my coffee expenses": a category asked for as its purchases is about
+    # that category, whatever the receipt's merchant or lines are called.
+    # Bare, "the coffee" can still be the line.
+    from ..services.caches import category_ask
+    asked_for = category_ask(message)
+    if asked_for is not None and not asked_for[1]:
+        return False
     # Merchant words count bare
     merchant_words = _merchant_words(receipt)
     message_words = set(_WORD.findall(message.lower().replace("'", "")))
@@ -134,6 +141,21 @@ def _about_receipt(message: str, receipt: dict, last_route: str | None) -> bool:
                 continue
             return True
     return False
+
+
+def _a_category_asked_for(message: str) -> bool:
+    """A category of the catalog, named alone or as its purchases:
+    "electronics", "my streaming" and "movies this month" are money
+    questions, though no word in them says money. Not "show me movies",
+    which asks for films: "show me my movies" is one's own, and with a word
+    for the purchases it was a money question already."""
+    from ..config.catalog import get_catalog
+    from ..services.caches import asked_subject
+    found = asked_subject(message)
+    if found is None or found.shown_only:
+        return False
+    category = get_catalog().find(found.name)
+    return category is not None and category.key != "other"
 
 
 def route(message: str, *, active_receipt: dict | None = None, context: dict | None = None,
@@ -172,7 +194,8 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         # "which one was the biggest?", "thanks!": not off topic mid-conversation.
         if has_history and (len(text.split()) <= _SHORT_WORDS or reads_as_follow_up(text)):
             return Route("plan", "follow-up in this conversation", follow_up=True)
-        return Route("offtopic", "not a money question")
+        if not _a_category_asked_for(text):
+            return Route("offtopic", "not a money question")
     if intent is not None:
         return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)
     if in_conversation and classify_aggregation(text, today=today) is not None:

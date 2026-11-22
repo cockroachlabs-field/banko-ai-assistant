@@ -293,6 +293,79 @@ def test_a_similar_question_about_other_dates_is_asked_and_the_trace_says_why(g,
     assert "other dates" in step["detail"] and "% similar" in step["detail"]
 
 
+def test_a_merchant_asked_for_in_other_words_is_answered_from_the_cache(member, conversation):
+    """ "blue bottle coffee", then "blue bottle coffee purchases": one of the user's own merchants."""
+    here = conversation()
+    first, _ = here.ask("blue bottle coffee", ScriptedChat(SEARCH % "blue bottle", DONE, "Eight at Blue Bottle Coffee."))
+    assert first["route"]["kind"] == "plan" and not first["cached"]
+    unused = ScriptedChat("unused")
+    again, _ = here.ask("blue bottle coffee purchases", unused)
+    assert again["cached"] and again["answer"] == "Eight at Blue Bottle Coffee." and unused.calls == []
+    assert again["meta"]["cache"] == {"question": "blue bottle coffee", "match": "words"}
+
+
+def test_a_name_that_is_none_of_ones_merchants_is_asked_in_any_other_wording(conversation):
+    """Nobody here bought at Red Bottle: "red bottle coffee", then its purchases, is two questions."""
+    here = conversation()
+    first, _ = here.ask("red bottle coffee", ScriptedChat(SEARCH % "red bottle", DONE, "Nothing at Red Bottle Coffee."))
+    assert first["route"]["kind"] == "plan" and not first["cached"]
+    other = ScriptedChat(SEARCH % "red bottle", DONE, "Still nothing at Red Bottle Coffee.")
+    stranger, _ = here.ask("red bottle coffee purchases", other)
+    assert not stranger["cached"] and other.calls and stranger["answer"] == "Still nothing at Red Bottle Coffee."
+
+
+def test_a_merchant_of_ones_own_named_alone_is_a_money_question(g, member):
+    """ "zorblat" says nothing about money, and whoever never bought there
+    is told so. For someone who has, it asks for those purchases, in any of
+    the wordings a category has."""
+    unused = ScriptedChat("unused")
+    before, _ = _ask(g, member, "zorblat", unused)
+    assert before["route"]["kind"] == "offtopic" and unused.calls == []
+    card_purchase(member, "Zorblat", "18.40", category="Restaurant")
+    mine, events = _ask(g, member, "zorblat", ScriptedChat(SEARCH % "zorblat", DONE, "One evening at Zorblat."))
+    assert mine["route"]["kind"] == "plan" and mine["answer"] == "One evening at Zorblat."
+    assert "one of your merchants" in next(e for e in events if e["type"] == "step"
+                                           and e["label"] == "Intent routing")["detail"]
+    for wording in ("my zorblat", "Zorblat this month", "show my zorblat"):
+        out, _ = _ask(g, member, wording, ScriptedChat(SEARCH % "zorblat", DONE, "Here."))
+        assert out["route"]["kind"] == "plan", wording
+    # Asked to be shown the thing itself, as "show me movies" is: no more a money question than before.
+    for wording in ("show me zorblat", "zebra crossing"):
+        other, _ = _ask(g, member, wording, unused)
+        assert other["route"]["kind"] == "offtopic" and unused.calls == [], wording
+
+
+def test_most_of_what_is_off_topic_reads_nothing_about_the_users_purchases(g, member, monkeypatch):
+    """Only a few words that could be a name cost a look at the user's
+    merchants: not a longer message, not one that asks to be shown a thing."""
+    from banko_ai.services import caches
+    reads, read_names = [], caches._merchant_names
+    monkeypatch.setattr(caches, "_merchant_names",
+                        lambda conn, user, region=None: reads.append(user) or read_names(conn, user, region))
+    caches.forget_merchants()
+    unused = ScriptedChat("unused")
+    for message in ("what is the weather like in Lisbon right now", "show me movies", "tell me a joke about cats"):
+        out, _ = _ask(g, member, message, unused)
+        assert out["route"]["kind"] == "offtopic" and reads == [], message
+    out, _ = _ask(g, member, "hello", unused)
+    assert out["route"]["kind"] == "offtopic" and len(reads) == 1 and unused.calls == []
+    out, _ = _ask(g, member, "thanks", unused)                    # kept since "hello"
+    assert out["route"]["kind"] == "offtopic" and len(reads) == 1
+
+
+def test_an_answer_kept_before_the_upgrade_is_still_replayed(g, member):
+    """It carries no settings. Whoever has the deployment's gets it; someone with a page of three asks again."""
+    from banko_ai.services import caches, ledger
+    from banko_ai.services._vector import embed
+    caches.put_answer(member, version=ledger.data_version(member), language="English", query="coffee expenses",
+                      qvec=embed("coffee expenses"), answer="Kept before the upgrade.", tokens=10)
+    usual, _ = _ask(g, member, "coffee expenses", ScriptedChat("unused"))
+    assert usual["cached"] and usual["answer"] == "Kept before the upgrade."
+    asked = ScriptedChat(SEARCH % "coffee", DONE, "Three of them.")
+    short, _ = _ask(g, member, "coffee expenses", asked, prefs=Preferences({"search_page_size": 3}))
+    assert not short["cached"] and short["answer"] == "Three of them."
+
+
 # Settings that shape an answer are kept with it.
 
 def test_an_answer_is_not_replayed_for_someone_whose_settings_would_shape_it_differently(g, member):

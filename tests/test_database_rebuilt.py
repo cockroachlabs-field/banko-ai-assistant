@@ -6,6 +6,7 @@ restart Banko: until then every page failed with "relation does not exist"."""
 import os
 import threading
 import time
+import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -224,6 +225,14 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
         client = app.test_client()
         assert client.get("/login").status_code == 200
 
+        # What the process keeps about a user's merchants is kept by data version.
+        from banko_ai.services import caches
+        someone, reads, read_names = str(uuid.uuid4()), [], caches._merchant_names
+        monkeypatch.setattr(caches, "_merchant_names",
+                            lambda conn, user, region=None: reads.append(user) or read_names(conn, user, region))
+        assert not caches.merchants_of(someone, 1, scratch)("starbucks") and len(reads) == 1
+        assert not caches.merchants_of(someone, 1, scratch)("starbucks") and len(reads) == 1
+
         from sqlalchemy.exc import ProgrammingError
 
         from banko_ai.web import app as app_module
@@ -255,6 +264,8 @@ def test_an_app_sets_its_emptied_database_up_again(monkeypatch):
 
         assert readiness.wait_for("schema", 120) and readiness.wait_for("personas", 120)
         assert schema_state(scratch) == "current"
+        # The versions start over with the database, so the merchants kept under them are read again.
+        assert not caches.merchants_of(someone, 1, scratch)("starbucks") and len(reads) == 2
         with create_engine(scratch).connect() as conn:
             assert {r[0] for r in conn.execute(text("SELECT username FROM users"))} == {"maya", "sam", "riley"}
         assert readiness.wait_for("assistant", 120) and saver.setups == 1   # the checkpoint tables went too
