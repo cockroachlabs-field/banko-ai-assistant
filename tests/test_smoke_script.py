@@ -30,7 +30,7 @@ def test_the_generated_receipt_is_a_png():
     assert smoke.receipt_png("12.34")[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-def _answer(trace=(), search=None, route="plan", answer="Here are your coffee purchases.", cached=False):
+def _answer(trace=(), search=None, route="plan", answer="Here are your late night orders.", cached=False):
     meta = {"trace": list(trace), **({"search": search} if search else {})}
     return {"answer": answer, "route": route, "meta": meta, "cached": cached}
 
@@ -77,7 +77,7 @@ def test_an_answer_put_together_after_a_tool_raised_fails_the_check(monkeypatch)
     facts, so an answer alone proves nothing about the tool."""
     s = _smoke_answering(monkeypatch, _answer([_RAISED], answer="I don't have any information about that."))
     with pytest.raises(AssertionError, match="search_transactions failed"):
-        s.ask("t-1", "show me my coffee purchases")
+        s.ask("t-1", smoke.SEARCH_QUESTION)
 
 
 def test_the_search_check_needs_a_search_to_have_run(monkeypatch):
@@ -104,10 +104,52 @@ def test_the_search_check_fails_on_an_answer_from_the_cache(monkeypatch):
 
 
 def test_the_search_check_fails_when_the_search_found_nothing(monkeypatch):
-    # The receipt check has just posted a coffee purchase for this user.
-    s = _smoke_answering(monkeypatch, _answer([_EMPTY], answer="You have no coffee purchases."))
+    # A search by meaning brings the nearest purchases, whatever they are: none means it did not look.
+    s = _smoke_answering(monkeypatch, _answer([_EMPTY], answer="You have no such purchases."))
     with pytest.raises(AssertionError, match="found no purchases"):
         s.search_and_more()
+
+
+def _card(text="You spent **$41.20** on Coffee since 2026-05-23 (9 transactions).", calls=0, route="aggregate",
+          plan="• group (scalar)", search=None, cached=False):
+    """A category's card as the assistant sends it: from SQL, with its plan and no model call."""
+    answer = _answer([], route=route, answer=text, cached=cached, search=search)
+    answer["meta"].update({"model_calls": calls, **({"explain": plan} if plan else {})})
+    return answer
+
+
+def test_a_category_in_three_wordings_must_be_one_card_from_sql(monkeypatch):
+    """ "coffee", "my coffee expenses", "show me my coffee purchases": the
+    database's answer, so the same one each time, with no model call."""
+    ok = _smoke_answering(monkeypatch, _card(), _card(), _card())
+    assert ok.named_alone() == "You spent **$41.20** on Coffee since 2026-05-23 (9 transactions). | one page"
+    planned = _smoke_answering(monkeypatch, _card(), _card(route="plan", calls=3), _card())
+    with pytest.raises(AssertionError, match="route 'plan'"):
+        planned.named_alone()
+    narrated = _smoke_answering(monkeypatch, _card(calls=1), _card(), _card())
+    with pytest.raises(AssertionError, match="1 model call"):
+        narrated.named_alone()
+    replayed = _smoke_answering(monkeypatch, _card(cached=True), _card(), _card())
+    with pytest.raises(AssertionError, match="from a cache"):
+        replayed.named_alone()
+    no_plan = _smoke_answering(monkeypatch, _card(), _card(plan=None), _card())
+    with pytest.raises(AssertionError, match="no query plan"):
+        no_plan.named_alone()
+    other = _smoke_answering(monkeypatch, _card(), _card(), _card(text="You spent **$12.00** on Coffee since 2026-10-23."))
+    with pytest.raises(AssertionError, match="another answer"):
+        other.named_alone()
+
+
+def test_a_categorys_list_goes_on_from_the_database(monkeypatch):
+    listed = {"q": "", "category": "Coffee", "next": "c1"}
+    more = _answer([], route="more", search={**listed, "next": None, "items": [{"expense_id": "e1"}, {"expense_id": "e2"}]})
+    more["meta"]["model_calls"] = 0
+    two = _smoke_answering(monkeypatch, _card(search=listed), _card(search=listed), _card(search=listed), more)
+    assert two.named_alone().endswith("| then 2 more from the database")
+    empty = _answer([], route="more", search={**listed, "next": None, "items": []})
+    none = _smoke_answering(monkeypatch, _card(search=listed), _card(search=listed), _card(search=listed), empty)
+    with pytest.raises(AssertionError, match="no purchases"):
+        none.named_alone()
 
 
 class _Json:
@@ -118,43 +160,24 @@ class _Json:
         return self.data
 
 
-def _in_other_words(monkeypatch, searched, replay=None, match="words"):
-    """A Smoke after its search check, asked for that question in other words."""
-    s = _smoke_answering(monkeypatch, *([replay] if replay else []))
-    s.searched = searched
-    monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"settings": [{"key": "cache_match",
-                                                                              "value": match}]}))
-    monkeypatch.setattr(smoke.time, "sleep", lambda seconds: None)
-    return s
-
-
-def _replayed(question=smoke.SEARCH_QUESTION, calls=0, cached=True):
-    answer = _answer([], cached=cached)
-    answer["meta"].update({"model_calls": calls, **({"cache": {"question": question, "match": "words"}}
-                                                    if question else {})})
-    return answer
-
-
-def test_the_search_question_in_other_words_must_come_from_the_cache(monkeypatch):
-    """ "show me my coffee purchases", then "my coffee purchases": the same
-    question, so no model call, and the answer says whose it is."""
-    ok = _in_other_words(monkeypatch, _answer([_WORKED]), _replayed())
-    assert "replayed, no model call" in ok.other_words()
-    asked_again = _in_other_words(monkeypatch, _answer([_WORKED]), _replayed(question=None, calls=3, cached=False))
-    with pytest.raises(AssertionError, match="asked again instead"):
-        asked_again.other_words()
-    unnamed = _in_other_words(monkeypatch, _answer([_WORKED]), _replayed(question=None))
-    with pytest.raises(AssertionError, match="does not say whose"):
-        unnamed.other_words()
-
-
-def test_the_other_words_check_is_skipped_when_there_is_nothing_it_could_replay(monkeypatch):
-    """Skipped, never failed and never a model call: no search answer, an
-    account that matches the same question only, or a search answer that was
-    not kept because a tool declined behind it."""
-    assert _in_other_words(monkeypatch, None).other_words().startswith("skipped")
-    assert _in_other_words(monkeypatch, _answer([_WORKED]), match="exact").other_words().startswith("skipped")
-    assert _in_other_words(monkeypatch, _answer([_WORKED, _DECLINED])).other_words().startswith("skipped")
+def test_a_merchant_by_its_name_is_the_visits_card_again(monkeypatch):
+    """ "did I go to Domino's?" and "Domino's purchases" are one answer from SQL."""
+    card = "You went to **Domino's** 29 times since 2026-05-28 and spent **$1,434.62** there ($49.47 a visit)."
+    visits = _answer([], route="visits", answer=card)
+    visits["meta"]["model_calls"] = 0
+    s = _smoke_answering(monkeypatch, visits, visits)
+    monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
+    assert s.visits().startswith("You went to **Domino's** 29 times")
+    planned = _answer([], route="plan", answer="You like Domino's.")
+    s = _smoke_answering(monkeypatch, visits, planned)
+    monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
+    with pytest.raises(AssertionError, match="route 'plan'"):
+        s.visits()
+    other = _answer([], route="visits", answer=card.replace("29 times", "3 times"))
+    s = _smoke_answering(monkeypatch, visits, other)
+    monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
+    with pytest.raises(AssertionError, match="another answer"):
+        s.visits()
 
 
 def test_the_subject_check_wants_the_total_of_what_was_named(monkeypatch):

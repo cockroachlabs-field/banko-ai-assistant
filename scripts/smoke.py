@@ -9,8 +9,9 @@ Exit code 0 when every check passes.
 
 Each run first posts a receipt with a fresh total. The new purchase moves
 the persona's data version, so no answer is served from a cache an earlier
-run (or another provider) filled; only the deliberate repeat is, and the
-search question asked once more in other words, which costs no model call.
+run (or another provider) filled; only the deliberate repeat is. A category
+asked for alone or as its purchases, and a merchant by its name, are read
+from SQL: the same answer whatever the wording, with no model call.
 
 The coach check fires signals at the webhook, so it needs the app's
 CDC_WEBHOOK_HMAC_SECRET and DATABASE_URL in this shell; without them it is
@@ -34,8 +35,11 @@ import requests
 
 TIMEOUT = 240  # seconds per request: a local model can take a while on a cold start
 SPANISH = (" el ", " la ", " en ", " de ", " los ", " las ", "gast", " del ")
-SEARCH_QUESTION = "show me my coffee purchases"
-SAME_IN_OTHER_WORDS = "my coffee purchases"  # the same category, asked for in other words
+# A question only a search by meaning answers. Every model asked picks the search for it (gpt-4.1, gpt-4o-mini
+# and granite3.3:8b did): the wording is the search tool's own example.
+SEARCH_QUESTION = "find my late night food purchases"
+# One category, asked for alone and as its purchases: read from SQL, so one answer whatever the wording.
+NAMED_ALONE = ("coffee", "my coffee expenses", "show me my coffee purchases")
 
 
 def parse_sse(lines: Iterable[str]) -> list[tuple[str, dict]]:
@@ -111,7 +115,6 @@ class Smoke:
         self.failures = 0
         self.user_id: str | None = None
         self.total = new_total()  # a new purchase each run; receipt() picks another if this one was posted lately
-        self.searched: dict | None = None  # the search check's answer, which other_words() asks for again
         self.groceries: str | None = None  # the card "on groceries last month" got, for the same total asked otherwise
 
     # -- plumbing -------------------------------------------------------------------------------
@@ -247,20 +250,24 @@ class Smoke:
         self.expect_route(a, "visits")
         if merchant.lower() not in a["answer"].lower():
             raise AssertionError(f"{merchant} not in {a['answer'][:120]!r}")
+        # The merchant by its name is the same question to SQL: the same card, and no model asked.
+        named = self.ask(self.thread(), f"{merchant} purchases")
+        self.expect_route(named, "visits")
+        if named["answer"] != a["answer"]:
+            raise AssertionError(f"'{merchant} purchases' got another answer: {named['answer'][:120]!r}")
         return a["answer"].splitlines()[0][:100]
 
     def search_and_more(self) -> str:
         tid = self.thread()
         a = self.ask(tid, SEARCH_QUESTION)
         self.expect_route(a, "plan")
-        self.searched = a
         if a.get("cached"):  # the receipt check's new purchase should have retired every earlier answer
             raise AssertionError("the answer came from the answer cache, so no search ran")
         searches = [step for step in tool_steps(a, "success") if step.get("label") == "search_transactions"]
         if not searches:
             raise AssertionError(f"no search ran: {a['answer'][:120]!r}")
         if all(str(step.get("detail", "")).startswith("0 rows") for step in searches):
-            raise AssertionError("the search found no purchases, and the receipt check just posted one")
+            raise AssertionError("the search found no purchases, and it brings the nearest ones whatever they are")
         # The answer names its search only when there is a next page to ask for.
         if not ((a.get("meta") or {}).get("search") or {}).get("next"):
             return "answered from a search; no second page to show"
@@ -271,30 +278,37 @@ class Smoke:
             raise AssertionError("show more returned no purchases")
         return f"answered, then {len(items)} more from the database"
 
-    def other_words(self) -> str:
-        """The search check's question is a category's purchases. Asked in
-        other words, the cache takes it for the same question (CACHE_MATCH,
-        words by default), replays the answer without a model call and says
-        whose answer it is."""
-        first = self.searched
-        if first is None:
-            return "skipped: the search check left no answer to replay"
-        mine = {s["key"]: s["value"] for s in self.api("GET", "/api/v1/me/settings").json()["settings"]}
-        if mine.get("cache_match") == "exact":
-            return "skipped: this account matches the same question only"
-        if tool_steps(first, "warning"):
-            return "skipped: a tool declined behind the search answer, so that answer was not kept"
-        # The cache write runs behind the search answer. "show more" has been asked since; this is room to spare,
-        # because a miss here would be answered by the model and then cached under these very words.
-        time.sleep(3)
-        a = self.ask(self.thread(), SAME_IN_OTHER_WORDS)
-        calls = (a.get("meta") or {}).get("model_calls")
-        if not a.get("cached") or calls:
-            raise AssertionError(f"asked again instead: cached={a.get('cached')}, {calls} model call(s)")
-        whose = ((a.get("meta") or {}).get("cache") or {}).get("question")
-        if whose != SEARCH_QUESTION:
-            raise AssertionError(f"the answer does not say whose it is: {whose!r}")
-        return f"the answer to {whose!r} replayed, no model call"
+    def named_alone(self) -> str:
+        """A category asked for alone or as its purchases is read from SQL:
+        one card whatever the wording, with its plan and no model call, and
+        more of the list from the database. Left to the planner, the same
+        word was a search on one model and a total of 31 days on another."""
+        cards, last, tid = [], {}, ""
+        for question in NAMED_ALONE:
+            tid = self.thread()
+            last = self.ask(tid, question)
+            self.expect_route(last, "aggregate")
+            meta = last.get("meta") or {}
+            if meta.get("model_calls"):
+                raise AssertionError(f"{question!r} cost {meta['model_calls']} model call(s)")
+            if last.get("cached"):
+                raise AssertionError(f"{question!r} was answered from a cache, not from SQL")
+            if not meta.get("explain"):
+                raise AssertionError(f"{question!r} came with no query plan")
+            cards.append(last["answer"])
+        for question, card in zip(NAMED_ALONE, cards, strict=True):
+            if card != cards[0]:
+                raise AssertionError(f"{question!r} got another answer than {NAMED_ALONE[0]!r}: {card[:120]!r}")
+        figure = cards[0].splitlines()[0][:100]
+        # The card names its list only when there is a next page to ask for.
+        if not ((last.get("meta") or {}).get("search") or {}).get("next"):
+            return f"{figure} | one page"
+        more = self.ask(tid, "show more")
+        self.expect_route(more, "more")
+        items = ((more.get("meta") or {}).get("search") or {}).get("items") or []
+        if not items:
+            raise AssertionError("show more returned no purchases")
+        return f"{figure} | then {len(items)} more from the database"
 
     def spanish(self) -> str:
         a = self.ask(self.thread(), "How much did I spend on restaurants last month?", language="es-ES")
@@ -382,7 +396,7 @@ class Smoke:
         self.check("cache on a repeat", self.cache)
         self.check("visits from SQL", self.visits)
         self.check("search and show more", self.search_and_more)
-        self.check("same question, other words", self.other_words)
+        self.check("a category, however worded", self.named_alone)
         self.check("answer in Spanish", self.spanish)
         self.check("coach nudge", self.coach)
         print(f"\n{'FAILED' if self.failures else 'All checks passed'}."
