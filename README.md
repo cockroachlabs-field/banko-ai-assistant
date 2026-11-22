@@ -61,9 +61,10 @@ Every page also has a dark theme ([dashboard](https://github.com/cockroachlabs-f
 | **Vector search** | SQL on per-user C-SPANN cosine indexes with 384-dim `all-MiniLM-L6-v2` embeddings computed locally | `banko_ai/services/` |
 
 Answers and searches are cached per user and per data version, so a new
-purchase retires every cached answer it could change. A category asked for
-in other words ("coffee", then "show my coffee expenses") gets the answer
-it already has, and the answer says which question it was written for. Each
+purchase retires every cached answer it could change. A category or a
+merchant asked for in other words ("coffee", then "show my coffee
+expenses") gets the answer it already has, and the answer says which
+question it was written for. Each
 person can set on the Settings page how questions are matched, how long a
 search page is and what the assistant remembers.
 
