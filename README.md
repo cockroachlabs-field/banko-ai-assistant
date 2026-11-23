@@ -244,9 +244,9 @@ app's state. Routes and examples are in [`docs/API.md`](https://github.com/cockr
 - Python 3.11 or later.
 - Point 2.0 at your existing database: the first boot adds the new tables
   and columns in place (or run `banko-ai migrate` beforehand). Existing
-  rows stay. A database first created before 1.0.36 also has its `expenses`
-  vector indexes rebuilt for cosine distance, which takes a while on a
-  large table.
+  rows stay. A database first created before 1.0.36 also has its per-user
+  `expenses` vector index rebuilt for cosine distance, which takes a while
+  on a large table.
 - The driver is psycopg 3. `DATABASE_URL` takes `cockroachdb://` or
   `postgresql://` as before.
 - Old setting names still work with a warning: `WATSONX_MODEL_ID`,
