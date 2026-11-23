@@ -81,6 +81,8 @@ class TurnState(TypedDict, total=False):
     citations: list[dict]
     page: dict | None  # the search this turn showed: q, category, from, to and the next cursor
     last_search: dict | None  # the previous turn's page, which "show more" continues
+    asked: dict | None  # what this turn asked SQL, when SQL answered it (_asked)
+    last_asked: dict | None  # the previous turn's, which a follow-up asks again of another name or other days
 
 
 @dataclass
@@ -186,7 +188,18 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         facts = f"Transaction: {json.dumps(detail, default=str)}" if detail else ""
     return {"memories": [], "context_facts": facts, "results": [], "answer": "", "streamed": False,
             "cached": False, "saved_tokens": 0, "meta": {}, "proposals": [], "citations": [], "route": {},
-            "page": None}
+            "page": None, "asked": None}
+
+
+def _asked(op: str, subject: str | None, days: tuple[date, date] | None, limit: int = 1) -> dict:
+    """What a turn asked SQL, kept for the turn after it: what was worked
+    out or which card ("sum", "largest", "purchases", "visits"), of which
+    category or merchant, for which days (end exclusive; None when none were
+    named, so "everything up to today" is never carried to another day), and
+    how many purchases. A follow-up asks it again of another name or for
+    other days (router._the_question_before)."""
+    return {"op": op, "subject": subject, "from": str(days[0]) if days else None,
+            "to": str(days[1]) if days else None, "limit": limit}
 
 
 def _recall(state: TurnState, deps: TurnDeps) -> list[dict]:
@@ -214,7 +227,8 @@ def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
     r = decide(state["message"], active_receipt=state.get("active_receipt"), context=state.get("context"),
                last_route=state.get("last_route"), has_history=bool(state.get("messages")),
-               last_search=state.get("last_search"), is_merchant=_own_merchants(state, runtime.context))
+               last_search=state.get("last_search"), is_merchant=_own_merchants(state, runtime.context),
+               last_asked=state.get("last_asked"))
     # Turned away as no money question, or taken for a short follow-up inside
     # a conversation: a total at one of the user's merchants is neither.
     turned_away = r.kind == "offtopic" or (r.kind == "plan" and r.detail == FOLLOW_UP)
@@ -386,6 +400,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                date.fromisoformat(i["window_end"]), int(i.get("limit") or 1), bool(i.get("loose")))
     by_size = intent.operation in SIZE_ORDER
     merchant = None
+    days = None if intent.window_start == EVER else (intent.window_start, intent.window_end)
     # A card code writes (a category's purchases, the largest or smallest
     # purchases) is kept, and looked up before anything is read from the
     # purchases. A category goes by its label, so every name for it is one
@@ -397,7 +412,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                          limit=intent.limit, size=deps.prefs.search_page_size if not by_size else None)
         card_kept = _kept_card(state, deps, kept, named or "your purchases")
         if card_kept is not None:
-            return card_kept
+            return {**card_kept, "asked": _asked(intent.operation, named, days, intent.limit)}
     if intent.loose and intent.subject:
         # Words the total could not place ("coffee total", "how much do I
         # have"). They are its subject when they are, whole and exactly, a
@@ -449,8 +464,9 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
           f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success",
           key="sql")
     language = state.get("language") or "English"
+    asked = _asked(intent.operation, agg.merchant or agg.category, days, intent.limit)
     if intent.operation == "purchases":
-        return _purchases_listed(state, deps, intent, agg, region, db_ms, url, kept)
+        return {**_purchases_listed(state, deps, intent, agg, region, db_ms, url, kept), "asked": asked}
     if by_size:
         # The largest or smallest purchases: SQL ordered them and code writes
         # the card, so no model picks one. Nothing is narrated, so nothing
@@ -460,7 +476,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         card = answers.render_aggregation_markdown(agg)
         answer = answers.translate(card, language, deps.chat)
         _keep_card(state, deps, kept, card, answer)
-        return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+        return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}, "asked": asked}
     key, hit = None, None
     try:
         key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),
@@ -495,7 +511,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region, merchant=merchant),
                                   region)
     return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,
-            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}, "asked": asked}
 
 
 def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str | None, db_ms: float,
@@ -550,7 +566,10 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     from ..utils.intent_classifier import extract_window
     deps, user_id = runtime.context, state["user_id"]
     place = state["route"].get("payload") or ""
-    window = extract_window(state["message"])
+    # A follow-up brings the days of the question before; any other message names its own.
+    carried = state["route"].get("window")
+    window = ((date.fromisoformat(carried[0]), date.fromisoformat(carried[1])) if carried
+              else extract_window(state["message"]))
     days = {"date_from": window[0], "date_to": window[1] - timedelta(days=1)} if window else {}
     # The card is the same whichever way the visits were asked about, so it
     # is kept under the place and the days, and looked up before anything is
@@ -558,7 +577,7 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     kept = _card_key(state, deps, "visits", " ".join(name_words(place)), window)
     card_kept = _kept_card(state, deps, kept, place)
     if card_kept is not None:
-        return card_kept
+        return {**card_kept, "asked": _asked("visits", place, window)}
     region = home_region_of(user_id, deps.url)
     _running("sql", "Running the numbers in CockroachDB")
     t0 = time.perf_counter()
@@ -579,7 +598,8 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         lambda: txns.explain_merchant_visits(user_id, found["merchant"], url=deps.url, **days), region)
     answer = answers.translate(card, state.get("language") or "English", deps.chat)
     _keep_card(state, deps, kept, card, answer)
-    return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+    return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain},
+            "asked": _asked("visits", found["merchant"], window)}
 
 
 def _query_plan(explain_fn, region: str | None) -> tuple[str | None, str | None]:
@@ -956,9 +976,11 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     listed = not last.get("q") and bool(last.get("category"))
     what = last.get("category") if listed else f"'{last.get('q', '')}'"
     done = ALL_LISTED.format(what=last.get("category")) if listed else ALL_SHOWN.format(q=last.get("q", ""))
+    # Paging is no new question: what the turn before asked SQL is still what a follow-up leans on.
+    asked = state.get("last_asked")
     if not last.get("next"):
         _step("Next page", f"nothing after the last page of {what}")
-        return {"answer": answers.translate(done, language, deps.chat), "page": last}
+        return {"answer": answers.translate(done, language, deps.chat), "page": last, "asked": asked}
     _running("tool:1", _TOOL_PHASES["search_transactions"])
     t0 = time.perf_counter()
     size = deps.prefs.search_page_size
@@ -981,7 +1003,7 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     else:
         line = MORE_LISTED.format(n=len(items), what=last["category"]) if listed else \
             MORE_LINE.format(n=len(items), q=last["q"])
-    return {"answer": answers.translate(line, language, deps.chat), "page": page,
+    return {"answer": answers.translate(line, language, deps.chat), "page": page, "asked": asked,
             "meta": {"region": home, "db_ms": int(db_ms), "search": {**page, "items": items}}}
 
 
@@ -1184,7 +1206,7 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
            "cached": bool(state.get("cached")), "saved_tokens": int(state.get("saved_tokens") or 0),
            "route": state.get("route") or {}, "meta": dict(state.get("meta") or {})})
     return {"answer": answer, "citations": citations, "last_route": state["route"].get("kind"),
-            "last_search": state.get("page"),
+            "last_search": state.get("page"), "last_asked": state.get("asked"),
             "messages": [{"role": "user", "content": state["message"]},
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
 

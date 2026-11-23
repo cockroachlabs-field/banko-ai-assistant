@@ -317,6 +317,20 @@ def asked_subject(question: str, today: date | None = None) -> Asked | None:
     return Asked(" ".join(subject), bare, when, shown, mine, rows, at, window)
 
 
+def only_days(text_value: str, today: date | None = None) -> tuple[date, date] | None:
+    """The days a text names (end exclusive) when it names nothing else:
+    "this month", "in august", "the last 7 days". None for a text with a
+    word left over, and for one that names no days."""
+    asked = normalize_question(text_value)
+    dates = find_window(asked, today)
+    if not dates:
+        return None
+    start, end, (i, j) = dates
+    head = asked[:i]
+    left = f"{head[:_BEFORE_DATES.search(head).start()]} {asked[j:]}".split()  # type: ignore[union-attr]
+    return (start, end) if not left else None
+
+
 def _only_the_shop(found: Asked) -> bool:
     """Whether the words can mean nothing but purchases at a place of this
     name: "target purchases", "charges from target", "spending at target"."""
@@ -340,11 +354,10 @@ def subject_asked(question: str, today: date | None = None,
     for any other question.
 
     The thing is a spending category ("coffee", as typed), or, when
-    is_merchant says so, one of the user's own merchants. A bare one
-    ("coffee", "groceries?") is a whole question when it opens a
-    conversation. After "how much did I spend on restaurants last month?"
-    it is the short form of another question, so whoever acts on this must
-    know where a bare one was asked."""
+    is_merchant says so, one of the user's own merchants. bare says no word
+    for the purchases stood with it ("coffee", "groceries?"): the router
+    reads a bare one as a whole question anywhere but beside a receipt,
+    where it may be a line of it."""
     found = asked_subject(question, today)
     if found is None:
         return None

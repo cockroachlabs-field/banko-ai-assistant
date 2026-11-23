@@ -223,6 +223,30 @@ class Smoke:
             raise AssertionError(f"not the total 'on groceries last month' got: {first[:120]!r}")
         return first[:100]
 
+    def follow_up(self) -> str:
+        """A follow-up to an answer from SQL is asked of SQL: "what about
+        groceries?" after the dining total is the groceries total for the
+        same days, the card the totals check got, and "and this month?" that
+        total for other days. Left to the planner, a model chose the tool
+        and the days. The first two come with their insights from the
+        narrative cache by now; the third costs the one call that writes
+        them."""
+        tid = self.thread()
+        self.expect_route(self.ask(tid, "How much did I spend on dining last month?"), "aggregate")
+        other = self.ask(tid, "what about groceries?")
+        self.expect_route(other, "aggregate")
+        line = other["answer"].splitlines()[0]
+        if " on Groceries " not in line:
+            raise AssertionError(f"not the groceries total: {line[:120]!r}")
+        if self.groceries and line != self.groceries:
+            raise AssertionError(f"not the total 'on groceries last month' got: {line[:120]!r}")
+        days = self.ask(tid, "and this month?")
+        self.expect_route(days, "aggregate")
+        this = days["answer"].splitlines()[0]
+        if " Groceries " not in this or this == line:
+            raise AssertionError(f"not groceries for other days: {this[:120]!r}")
+        return f"{line[:72]} | {this[:60]}"
+
     def largest(self) -> str:
         """The biggest purchase is a fact SQL has: the card comes from code,
         and no model call picks a purchase."""
@@ -410,6 +434,7 @@ class Smoke:
         self.check("dining from SQL", dining)
         self.check("totals from SQL", self.totals)
         self.check("a total keeps its subject", self.subject_kept)
+        self.check("a follow-up from SQL", self.follow_up)
         self.check("largest from SQL", self.largest)
         self.check("cache on a repeat", self.cache)
         self.check("visits from SQL", self.visits)

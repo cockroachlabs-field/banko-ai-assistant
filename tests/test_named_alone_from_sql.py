@@ -486,8 +486,10 @@ def test_a_whole_question_inside_a_conversation_still_comes_from_sql(ask, member
 def test_a_bare_name_inside_a_conversation_is_the_same_card(ask, member):
     """ "restaurants" after a question about groceries was the planner's: a
     model picked what it meant, and its answer was kept nowhere. A name
-    asked alone is one question, wherever it is asked. With a word that
-    points back ("what about restaurants?") it still takes the conversation."""
+    asked alone is one question, wherever it is asked. What leans on the
+    conversation and names no category, merchant or days ("and why so
+    much?") still takes the conversation (tests/test_follow_ups_from_sql.py
+    has the follow-ups SQL answers)."""
     total, count, first = _sum(member)
     thread = threads.create_thread(member)["thread_id"]
     try:
@@ -500,7 +502,7 @@ def test_a_bare_name_inside_a_conversation_is_the_same_card(ask, member):
         assert out["route"]["kind"] == "visits" and chat.calls == []
         chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {"category": "Restaurant"}}]}',
                             '{"steps": []}', "About the same as groceries.")
-        out, _, chat = ask("what about restaurants?", thread=thread, chat=chat)
+        out, _, chat = ask("and why so much on eating out?", thread=thread, chat=chat)
         assert out["route"]["kind"] == "plan" and out["answer"] == "About the same as groceries."
     finally:
         threads.delete_thread(member, thread)

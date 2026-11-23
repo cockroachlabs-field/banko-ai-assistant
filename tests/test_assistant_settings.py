@@ -109,24 +109,25 @@ def conversation(g, member):
 # How the answer cache matches.
 
 def test_a_question_that_points_back_is_asked_and_its_answer_kept_nowhere(g, member, conversation):
-    """ "what about groceries?" right after a question about restaurants in
-    the last 30 days asks that about groceries. It takes the conversation to
-    read, so the planner is asked, and what it is told answers no other
-    question: nothing is kept under these words, and the cache is not even
-    looked in."""
+    """ "and which of those were on a weekend?" right after a question about
+    restaurants in the last 30 days means something only there. It takes the
+    conversation to read, so the planner is asked, and what it is told
+    answers no other question: nothing is kept under these words, and the
+    cache is not even looked in. (A follow-up that names another category,
+    merchant or other days is asked of SQL: tests/test_follow_ups_from_sql.py.)"""
     here = conversation()
     spent, _ = here.ask("How much did I spend on restaurants in the last 30 days?", ScriptedChat("- Steady."))
     assert spent["route"]["kind"] == "aggregate"
-    asked = ScriptedChat(SEARCH % "groceries last 30 days", DONE, "Groceries in the last 30 days.")
-    short, events = here.ask("what about groceries?", asked)
+    asked = ScriptedChat(SEARCH % "restaurants on weekends last 30 days", DONE, "Four of them.")
+    short, events = here.ask("and which of those were on a weekend?", asked)
     assert short["route"]["kind"] == "plan" and not short["cached"] and asked.calls
-    assert short["answer"] == "Groceries in the last 30 days."
+    assert short["answer"] == "Four of them."
     assert "Answer cache" not in [e.get("label") for e in events]
     with get_engine().connect() as c:
         assert c.execute(text("SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID)"),
                          {"u": member}).scalar() == 0
-    again = ScriptedChat(SEARCH % "groceries last 30 days", DONE, "Asked again.")
-    repeat, _ = here.ask("what about groceries?", again)
+    again = ScriptedChat(SEARCH % "restaurants on weekends last 30 days", DONE, "Asked again.")
+    repeat, _ = here.ask("and which of those were on a weekend?", again)
     assert not repeat["cached"] and repeat["answer"] == "Asked again."
 
 

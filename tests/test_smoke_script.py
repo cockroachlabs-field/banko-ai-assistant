@@ -234,6 +234,34 @@ def test_the_subject_check_wants_the_total_of_what_was_named(monkeypatch):
         _smoke_answering(monkeypatch, planned).subject_kept()
 
 
+def test_a_follow_up_to_a_total_has_to_come_from_sql(monkeypatch):
+    """ "what about groceries?" after the dining total is the groceries total
+    for the same days, the card the totals check got, and "and this month?"
+    that total for other days. Left to the planner a model chose the tool
+    and the days."""
+    dining = _answer([], route="aggregate", answer="You spent **$947.33** on Restaurant from 2026-10-01 to 2026-10-31 (17 transactions).")
+    card = "You spent **$502.72** on Groceries from 2026-10-01 to 2026-10-31 (8 transactions)."
+    groceries = _answer([], route="aggregate", answer=card + "\n\n- Steady.")
+    this_month = _answer([], route="aggregate", answer="You spent **$310.05** on Groceries from 2026-11-01 to 2026-11-30 (5 transactions).")
+    s = _smoke_answering(monkeypatch, dining, groceries, this_month)
+    s.groceries = card
+    assert s.follow_up().startswith("You spent **$502.72** on Groceries from 2026-10-01")
+    planned = _answer([], route="plan", answer="Groceries came to about $500 last month.")
+    with pytest.raises(AssertionError, match="route 'plan'"):
+        _smoke_answering(monkeypatch, dining, planned, this_month).follow_up()
+    s = _smoke_answering(monkeypatch, dining, groceries, this_month)
+    s.groceries = card.replace("502.72", "552.80")         # asked outright, it was another figure
+    with pytest.raises(AssertionError, match="not the total 'on groceries last month' got"):
+        s.follow_up()
+    again = _answer([], route="aggregate", answer="You spent **$947.33** on Restaurant from 2026-10-01 to 2026-10-31 (17 transactions).")
+    with pytest.raises(AssertionError, match="not the groceries total"):
+        _smoke_answering(monkeypatch, dining, again, this_month).follow_up()
+    with pytest.raises(AssertionError, match="not groceries for other days"):
+        _smoke_answering(monkeypatch, dining, groceries, groceries).follow_up()
+    with pytest.raises(AssertionError, match="route 'plan'"):
+        _smoke_answering(monkeypatch, dining, groceries, planned).follow_up()
+
+
 def _smoke_uploading(monkeypatch, *statuses):
     """A Smoke whose receipt uploads end with these statuses, in order; every question is answered."""
     s = smoke.Smoke("http://banko.test", "maya", None)
