@@ -192,12 +192,95 @@ def test_missing_index_is_restored(scratch_url):
     S.ensure_schema(scratch_url)
     with get_engine(scratch_url).connect() as conn:
         conn.execution_options(isolation_level="AUTOCOMMIT")
-        conn.execute(text("DROP INDEX expenses@idx_expenses_merchant"))
+        conn.execute(text("DROP INDEX expenses@idx_expenses_user_date"))
         conn.execute(text("DELETE FROM banko_meta WHERE key = 'schema_fingerprint'"))
     S.ensure_schema(scratch_url)
+    assert "idx_expenses_user_date" in _index_names(scratch_url, "expenses")
+
+
+def _index_names(url: str, table: str) -> set[str]:
+    with get_engine(url).connect() as conn:
+        return {str(r[0]) for r in conn.execute(text(f"SELECT index_name FROM [SHOW INDEXES FROM {table}]"))}
+
+
+# Two indexes on purchases held every user's rows, by merchant and by
+# category. Nothing reads purchases across users by either, and for a user
+# CockroachDB had no statistics on it read one user's category or merchant
+# through them: everyone's rows, to answer for one.
+EVERY_USERS = {"idx_expenses_merchant", "idx_expenses_shopping_type"}
+
+
+def test_no_plain_index_on_purchases_holds_every_users_rows():
+    """Purchases are kept apart by user: every plain index on them leads
+    with the user, as the per-user vector index does with its prefix."""
+    expenses = next(t for t in S.tables() if t.name == "expenses")
+    assert not EVERY_USERS & {i.name for i in expenses.indexes}
+    plain = [i for i in expenses.indexes if not i.vector]
+    assert plain and all(i.columns.split(",")[0].split()[0] == "user_id" for i in plain), plain
+    for topo in (PLAIN, REGIONAL):
+        assert not [name for name in EVERY_USERS if name in expenses.create_sql(topo)]
+
+
+def test_a_new_database_is_made_without_them(scratch_url):
+    S.ensure_schema(scratch_url)
+    assert not EVERY_USERS & _index_names(scratch_url, "expenses")
+    assert "idx_expenses_user_date" in _index_names(scratch_url, "expenses")
+
+
+def _as_the_release_before_left_it(url: str) -> None:
+    """A database an earlier release set up: the two indexes are there, a
+    purchase is in them, and the fingerprint is that release's."""
+    S.ensure_schema(url)
+    with get_engine(url).connect() as conn:
+        conn.execution_options(isolation_level="AUTOCOMMIT")
+        conn.execute(text("CREATE INDEX idx_expenses_merchant ON expenses (merchant ASC)"))
+        conn.execute(text("CREATE INDEX idx_expenses_shopping_type ON expenses (shopping_type ASC)"))
+        conn.execute(text("INSERT INTO expenses (user_id, expense_date, expense_amount, shopping_type, merchant, "
+                          "payment_method) VALUES (gen_random_uuid(), current_date, 9.99, 'Coffee', 'Blue Bottle', "
+                          "'Credit Card')"))
+        stored = json.loads(conn.execute(text("SELECT value FROM banko_meta WHERE key = 'schema_fingerprint'")).scalar())
+        stored["fingerprint"] = "the-release-before"
+        conn.execute(text("UPDATE banko_meta SET value = :v WHERE key = 'schema_fingerprint'"), {"v": json.dumps(stored)})
+
+
+def test_a_database_that_has_them_loses_them_on_its_next_boot(scratch_url):
+    """The registry only ever added what was missing, so taking an index out
+    of it left the index in every database that already had it. An upgrade
+    drops the two, once: the purchases stay, the index that leads with the
+    user stays, and the boot after that runs nothing."""
+    _as_the_release_before_left_it(scratch_url)
+    assert EVERY_USERS <= _index_names(scratch_url, "expenses")
+    assert S.schema_state(scratch_url) == "outdated"
+    result = S.ensure_schema(scratch_url)
+    assert result.changed
+    names = _index_names(scratch_url, "expenses")
+    assert not EVERY_USERS & names
+    assert {"idx_expenses_user_date", "idx_expenses_user_embedding"} <= names
     with get_engine(scratch_url).connect() as conn:
-        names = {r[0] for r in conn.execute(text("SELECT index_name FROM [SHOW INDEXES FROM expenses]"))}
-    assert "idx_expenses_merchant" in names
+        assert conn.execute(text("SELECT count(*) FROM expenses WHERE merchant = 'Blue Bottle'")).scalar() == 1
+        assert S._dropped_index_upgrade(conn, PLAIN) == []         # nothing left for the next upgrade to do
+    assert not S.ensure_schema(scratch_url).changed
+
+
+@pytest.mark.skipif(not MR_URL, reason="BANKO_TEST_MR_URL not set")
+def test_a_multi_region_database_that_has_them_loses_them_too():
+    """On a REGIONAL BY ROW table each index is one partition per region."""
+    name = "banko_dropped_index_mr_test"
+    url = _scratch(MR_URL, name)
+    try:
+        _as_the_release_before_left_it(url)
+        with get_engine(url).connect() as conn:
+            assert conn.execute(text("SELECT locality FROM [SHOW TABLES] WHERE table_name = 'expenses'")
+                                ).scalar() == "REGIONAL BY ROW"
+        assert EVERY_USERS <= _index_names(url, "expenses")
+        started = time.monotonic()
+        assert S.ensure_schema(url).changed
+        print(f"registry applied again on a multi-region database in {time.monotonic() - started:.1f}s")
+        assert not EVERY_USERS & _index_names(url, "expenses")
+        assert "idx_expenses_user_date" in _index_names(url, "expenses")
+        assert not S.ensure_schema(url).changed
+    finally:
+        _drop(MR_URL, name)
 
 
 def test_upgrade_from_v13_schema(scratch_url):

@@ -30,7 +30,7 @@ def budget_progress(user_id: str, *, today: date | None = None, url: str | None 
         budgets = conn.execute(text(f"SELECT category, amount FROM user_budgets WHERE {region_pin('', region)}"
                                     "user_id = CAST(:u AS UUID)"), {"u": user_id, "region": region}).fetchall()
         spent_rows = conn.execute(text(f"""
-            SELECT shopping_type, sum(expense_amount) FROM expenses
+            SELECT shopping_type, sum(expense_amount) FROM expenses@idx_expenses_user_date
             WHERE {region_pin('', region)}user_id = CAST(:u AS UUID) AND expense_date >= :first AND expense_date < :next
             GROUP BY shopping_type
         """), {"u": user_id, "first": first, "next": nxt, "region": region}).fetchall()

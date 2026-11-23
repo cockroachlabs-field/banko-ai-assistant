@@ -45,7 +45,7 @@ def get_monthly_summary(user_id: str, year: int, month: int,
             SELECT shopping_type AS category,
                    COALESCE(merchant, 'Unknown') AS merchant,
                    expense_amount
-            FROM expenses
+            FROM expenses@idx_expenses_user_date
             WHERE user_id = :u
               AND expense_date >= :start
               AND expense_date <= :end
@@ -102,7 +102,7 @@ def get_spending_velocity(user_id: str, category: str,
         row = conn.execute(text("""
             SELECT COALESCE(SUM(expense_amount), 0) AS spent,
                    COUNT(*) AS n
-            FROM expenses
+            FROM expenses@idx_expenses_user_date
             WHERE user_id = :u
               AND shopping_type = :c
               AND expense_date >= :start
@@ -146,7 +146,7 @@ def get_top_merchants(user_id: str, database_url: str,
                 SELECT COALESCE(merchant, 'Unknown') AS merchant,
                        SUM(expense_amount) AS total,
                        COUNT(*) AS n
-                FROM expenses
+                FROM expenses@idx_expenses_user_date
                 WHERE user_id = :u
                   AND shopping_type = :c
                   AND expense_date >= :cutoff
@@ -160,7 +160,7 @@ def get_top_merchants(user_id: str, database_url: str,
                 SELECT COALESCE(merchant, 'Unknown') AS merchant,
                        SUM(expense_amount) AS total,
                        COUNT(*) AS n
-                FROM expenses
+                FROM expenses@idx_expenses_user_date
                 WHERE user_id = :u
                   AND expense_date >= :cutoff
                 GROUP BY merchant
@@ -192,7 +192,7 @@ def detect_subscriptions(user_id: str, database_url: str,
             SELECT COALESCE(merchant, 'Unknown') AS merchant,
                    expense_date,
                    expense_amount
-            FROM expenses
+            FROM expenses@idx_expenses_user_date
             WHERE user_id = :u
               AND expense_date >= :cutoff
               AND merchant IS NOT NULL

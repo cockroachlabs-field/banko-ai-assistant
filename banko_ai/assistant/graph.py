@@ -46,7 +46,7 @@ from ..utils.request_trace import serving_regions, trace_step
 from . import answers, background, narration
 from .planner import first_object, parse_plan, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
-from .router import Route, reads_as_follow_up
+from .router import FOLLOW_UP, Route, reads_as_follow_up
 from .router import route as decide
 from .tools import SearchArgs, ToolContext, run_tool, spend_plan
 
@@ -172,20 +172,10 @@ def _ctx(state: TurnState, deps: TurnDeps) -> ToolContext:
 # ── nodes ────────────────────────────────────────────────────────────────
 
 def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
+    """Start the turn with nothing left over from the one before. Memories
+    are recalled where an answer is written from them (_recall), not here."""
     deps = runtime.context
-    user_id, message = state["user_id"], state["message"]
-    recalled: list[dict] = []
-    _running("ingest", "Recalling what you told me")
-    t0 = time.perf_counter()
-    try:
-        recalled = memories.recall(user_id, message, k=deps.prefs.assistant_memory_recall_k,
-                                   max_distance=deps.prefs.assistant_memory_max_distance, url=deps.url)
-    except Exception as exc:
-        note_skipped(log, "memory recall", exc)
-    if recalled:
-        _step("Memory recall", f"{len(recalled)} memories", ms=_since(t0), status="success", key="ingest")
-    else:
-        _step("Memory recall", "none that fit this question", ms=_since(t0), key="ingest")
+    user_id = state["user_id"]
     facts = ""
     ctx = state.get("context") or {}
     if ctx.get("kind") == "nudge":
@@ -194,9 +184,30 @@ def ingest(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     elif ctx.get("kind") == "transaction":
         detail = txns.transaction_detail(user_id, str(ctx.get("id")), url=deps.url)
         facts = f"Transaction: {json.dumps(detail, default=str)}" if detail else ""
-    return {"memories": recalled, "context_facts": facts, "results": [], "answer": "", "streamed": False,
+    return {"memories": [], "context_facts": facts, "results": [], "answer": "", "streamed": False,
             "cached": False, "saved_tokens": 0, "meta": {}, "proposals": [], "citations": [], "route": {},
             "page": None}
+
+
+def _recall(state: TurnState, deps: TurnDeps) -> list[dict]:
+    """What the user told Banko that fits this question, for the answers a
+    model writes from it: the planner's and a receipt's. A turn SQL answers
+    uses none. Every turn used to recall first, and that embeds the
+    question: on a process that had just started, a card no model has a part
+    in waited up to WARMUP_WAIT_SECONDS for the embedding model."""
+    recalled: list[dict] = []
+    _running("recall", "Recalling what you told me")
+    t0 = time.perf_counter()
+    try:
+        recalled = memories.recall(state["user_id"], state["message"], k=deps.prefs.assistant_memory_recall_k,
+                                   max_distance=deps.prefs.assistant_memory_max_distance, url=deps.url)
+    except Exception as exc:
+        note_skipped(log, "memory recall", exc)
+    if recalled:
+        _step("Memory recall", f"{len(recalled)} memories", ms=_since(t0), status="success", key="recall")
+    else:
+        _step("Memory recall", "none that fit this question", ms=_since(t0), key="recall")
+    return recalled
 
 
 def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -204,7 +215,10 @@ def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     r = decide(state["message"], active_receipt=state.get("active_receipt"), context=state.get("context"),
                last_route=state.get("last_route"), has_history=bool(state.get("messages")),
                last_search=state.get("last_search"), is_merchant=_own_merchants(state, runtime.context))
-    if r.kind == "offtopic" and (total := _total_at_own_merchant(state, runtime.context)) is not None:
+    # Turned away as no money question, or taken for a short follow-up inside
+    # a conversation: a total at one of the user's merchants is neither.
+    turned_away = r.kind == "offtopic" or (r.kind == "plan" and r.detail == FOLLOW_UP)
+    if turned_away and (total := _total_at_own_merchant(state, runtime.context)) is not None:
         r = Route("aggregate", f"{total.operation} answered by SQL", intent=total)
     _step("Intent routing", f"{r.kind}: {r.detail}", ms=(time.perf_counter() - t0) * 1000)
     return {"route": r.as_dict()}
@@ -272,12 +286,94 @@ def _own_merchants(state: TurnState, deps: TurnDeps) -> Callable[[str], bool]:
 
 
 NOT_FOUND = "I couldn't find a category or merchant called '{subject}'."
+# The cards code writes from SQL, as they are kept. Raise it when a card's words or layout change:
+# an older card is then not found again.
+CARD_KEPT = 1
+
+
+def _card_key(state: TurnState, deps: TurnDeps, kind: str, name: str | None, days: tuple[date, date] | None,
+              **more: Any) -> str | None:
+    """Where a card code wrote from SQL is kept: one for each user and state
+    of their money (a new purchase gives the user a new data version), for
+    what was asked for (the kind of card, the category or merchant, the
+    days), the language, and whatever else shaped it (more: the length of a
+    page, how many purchases were asked for). The days are the dates the
+    statement read, so "the last 7 days", and everything "up to today", is
+    another card tomorrow.
+
+    Not the words. "coffee", "my coffee expenses" and "show me my coffee
+    purchases" ask for one thing, here and in any conversation. None when
+    the data version cannot be read: then nothing is looked up or kept."""
+    try:
+        version = ledger.data_version(state["user_id"], deps.url)
+    except Exception as exc:  # a cache outage is a miss, never a broken answer
+        note_skipped(log, "answer cache read", exc)
+        return None
+    return caches.search_key(state["user_id"], version, {
+        "card": kind, "name": name, "days": [str(d) for d in days] if days else None,
+        "lang": state.get("language") or "English", "kept": CARD_KEPT, **more})
+
+
+def _kept_card(state: TurnState, deps: TurnDeps, key: str | None, what: str) -> dict | None:
+    """The node's output from the card kept under key, or None. The trace
+    says which. A hit read nothing from the user's purchases: the key holds
+    the state of their money, so the card is the one SQL would write again.
+    It brings the page Show more goes on from, and no query plan: no
+    statement ran. Written for other words than the ones typed, the chat
+    says whose answer it is."""
+    if key is None:
+        return None
+    _running("answer_cache", "Checking the answer cache")
+    t0 = time.perf_counter()
+    hit = None
+    try:
+        got = caches.get_search(state["user_id"], key, url=deps.url, stat="answer")
+        hit = got[0] if isinstance(got, list) and got and got[0].get("answer") else None
+    except Exception as exc:  # a cache outage is a miss, never a broken answer
+        note_skipped(log, "answer cache read", exc)
+    if hit is None:
+        narration.answer_cache(False)
+        _step("Answer cache", "miss", ms=_since(t0), status="miss", key="answer_cache")
+        return None
+    tokens = int(hit.get("tokens") or 0)
+    found = _whose_answer(hit.get("question"), state["message"])
+    narration.answer_cache(True, tokens)
+    detail = f"hit: the card for {what}, kept since your money last changed"
+    if found:
+        detail += f", written for “{found['question']}”"
+    if tokens:
+        detail += f", about {tokens:,} tokens saved"
+    _step("Answer cache", detail, ms=_since(t0), status="hit", key="answer_cache")
+    page = hit.get("page")
+    meta: dict[str, Any] = {}
+    if found:
+        meta["cache"] = found
+    if page and page.get("next"):
+        meta["search"] = page  # the chat's Show more pages it
+    return {"answer": hit["answer"], "cached": True, "saved_tokens": tokens, "meta": meta, "page": page}
+
+
+def _keep_card(state: TurnState, deps: TurnDeps, key: str | None, card: str, answer: str,
+               page: dict | None = None) -> None:
+    """Keep a card after it went out, as long as a cached answer. card is
+    what code wrote and answer what was sent: the same in English, where no
+    model saved anything; the model's translation elsewhere, which a hit
+    saves. A card the model could not translate went out in English and is
+    not kept as the translation."""
+    english = (state.get("language") or "English") == "English"
+    if key is None or not answer or (not english and answer == card):
+        return
+    entry = {"answer": answer, "question": state["message"][:300], "page": page,
+             "tokens": 0 if english else caches.estimate_tokens(answer)}
+    background.submit("answer cache write", caches.put_search, state["user_id"], key, [entry], url=deps.url,
+                      stat="answer", minutes=get_config().cache_ttl_hours * 60)
 
 
 def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     from ..utils.aggregations import (
         SIZE_ORDER,
         explain_aggregation,
+        name_words,
         resolve_category,
         resolve_merchant,
         run_aggregation,
@@ -290,6 +386,18 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                date.fromisoformat(i["window_end"]), int(i.get("limit") or 1), bool(i.get("loose")))
     by_size = intent.operation in SIZE_ORDER
     merchant = None
+    # A card code writes (a category's purchases, the largest or smallest
+    # purchases) is kept, and looked up before anything is read from the
+    # purchases. A category goes by its label, so every name for it is one
+    # card; any other subject by its words as they were asked.
+    kept = None
+    if by_size or intent.operation == "purchases":
+        named = resolve_category(intent.subject, url) or " ".join(name_words(intent.subject)) or None
+        kept = _card_key(state, deps, intent.operation, named, (intent.window_start, intent.window_end),
+                         limit=intent.limit, size=deps.prefs.search_page_size if not by_size else None)
+        card_kept = _kept_card(state, deps, kept, named or "your purchases")
+        if card_kept is not None:
+            return card_kept
     if intent.loose and intent.subject:
         # Words the total could not place ("coffee total", "how much do I
         # have"). They are its subject when they are, whole and exactly, a
@@ -342,15 +450,17 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
           key="sql")
     language = state.get("language") or "English"
     if intent.operation == "purchases":
-        return _purchases_listed(state, deps, intent, agg, region, db_ms, url)
+        return _purchases_listed(state, deps, intent, agg, region, db_ms, url, kept)
     if by_size:
         # The largest or smallest purchases: SQL ordered them and code writes
         # the card, so no model picks one. Nothing is narrated, so nothing
-        # goes through the narrative cache either.
+        # goes through the narrative cache either: the card itself is kept.
         explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region,
                                                                   merchant=merchant), region)
-        return {"answer": answers.translate(answers.render_aggregation_markdown(agg), language, deps.chat),
-                "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+        card = answers.render_aggregation_markdown(agg)
+        answer = answers.translate(card, language, deps.chat)
+        _keep_card(state, deps, kept, card, answer)
+        return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
     key, hit = None, None
     try:
         key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),
@@ -389,7 +499,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
 
 
 def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str | None, db_ms: float,
-                      url: str) -> dict:
+                      url: str, kept: str | None = None) -> dict:
     """A category asked for alone or as its purchases ("coffee", "show my
     coffee purchases"): its figure and breakdown from the totals statement,
     its latest purchases as the Transactions page lists them, and the card
@@ -400,7 +510,10 @@ def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str
     The purchases come a page at a time, as long as the asker set a page.
     Show more asks the transactions API for the next one, and a typed "show
     more" the more route: the page names the category and the days, with no
-    words to search by."""
+    words to search by.
+
+    The card is kept under kept with its page (_keep_card): asked again, or
+    in other words, it comes back without a statement on the purchases."""
     from ..utils.aggregations import explain_aggregation
     user_id, size = state["user_id"], deps.prefs.search_page_size
     days = ({} if intent.window_start == EVER else
@@ -418,9 +531,10 @@ def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str
     meta: dict[str, Any] = {"region": served, "db_ms": int(db_ms), "explain": explain}
     if page["next"]:
         meta["search"] = page  # the chat's Show more pages it
-    return {"answer": answers.translate(answers.render_aggregation_markdown(agg),
-                                        state.get("language") or "English", deps.chat),
-            "meta": meta, "page": page}
+    card = answers.render_aggregation_markdown(agg)
+    answer = answers.translate(card, state.get("language") or "English", deps.chat)
+    _keep_card(state, deps, kept, card, answer, page)
+    return {"answer": answer, "meta": meta, "page": page}
 
 
 def _to_planner(state: TurnState, why: str) -> dict:
@@ -432,11 +546,19 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     """"Did I go to IKEA?": the visits come from SQL and the card from code,
     so no model lists, drops or invents a date. A place that is none of the
     user's merchants ("the gym") goes on to the planner."""
+    from ..utils.aggregations import name_words
     from ..utils.intent_classifier import extract_window
     deps, user_id = runtime.context, state["user_id"]
     place = state["route"].get("payload") or ""
     window = extract_window(state["message"])
     days = {"date_from": window[0], "date_to": window[1] - timedelta(days=1)} if window else {}
+    # The card is the same whichever way the visits were asked about, so it
+    # is kept under the place and the days, and looked up before anything is
+    # read from the purchases.
+    kept = _card_key(state, deps, "visits", " ".join(name_words(place)), window)
+    card_kept = _kept_card(state, deps, kept, place)
+    if card_kept is not None:
+        return card_kept
     region = home_region_of(user_id, deps.url)
     _running("sql", "Running the numbers in CockroachDB")
     t0 = time.perf_counter()
@@ -455,8 +577,9 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     card = answers.render_visits_markdown(found, window=window, last_ever=last_ever)
     explain, served = _query_plan(
         lambda: txns.explain_merchant_visits(user_id, found["merchant"], url=deps.url, **days), region)
-    return {"answer": answers.translate(card, state.get("language") or "English", deps.chat),
-            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+    answer = answers.translate(card, state.get("language") or "English", deps.chat)
+    _keep_card(state, deps, kept, card, answer)
+    return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
 
 
 def _query_plan(explain_fn, region: str | None) -> tuple[str | None, str | None]:
@@ -561,11 +684,12 @@ def receipt(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         hit = _cached_beside_receipt(state, deps, scope, state.get("language") or "English")
         if hit:
             return {**hit, **({"active_receipt": adopted} if adopted else {})}
+    recalled = _recall(state, deps)
     result = run_tool("receipt_details", {}, ctx)
     _step("Receipt details", which if result["ok"] and result.get("result") else "not found",
           ms=result["ms"], status="success" if result["ok"] else "warning")
     # The latest receipt becomes this thread's receipt, so "was the wine on it?" works next.
-    return {"results": [result], **({"active_receipt": adopted} if adopted else {})}
+    return {"results": [result], "memories": recalled, **({"active_receipt": adopted} if adopted else {})}
 
 
 def memory(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
@@ -778,6 +902,7 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         narration.answer_cache(False)
         _step("Answer cache", _miss_line(refused), ms=_since(t0), status="miss", key="answer_cache")
 
+    recalled = _recall(state, deps)
     tools_run = 0
 
     def on_start(step) -> None:
@@ -791,7 +916,7 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
               ms=result["ms"], status="success" if result["ok"] else "warning", key=f"tool:{tools_run}")
 
     results = plan_and_act(_Planning(deps.chat), state["message"], _ctx(state, deps),
-                           history=state.get("messages") or [], memories=state.get("memories") or [],
+                           history=state.get("messages") or [], memories=recalled,
                            context_facts=state.get("context_facts") or "", on_step=on_step, on_start=on_start)
     # Kept in event shape, so the streamed proposal and the returned one match.
     proposals = [{"type": "proposal", **r["result"]} for r in results
@@ -799,7 +924,7 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     meta, page = _search_meta(state, deps, results), _page(results, deps.prefs.search_page_size)
     if page and page["next"]:
         meta["search"] = page  # the chat's Show more pages it
-    return {"results": results, "proposals": proposals, "meta": meta, "page": page}
+    return {"results": results, "proposals": proposals, "meta": meta, "page": page, "memories": recalled}
 
 
 def _page(results: list[dict], size: int) -> dict | None:

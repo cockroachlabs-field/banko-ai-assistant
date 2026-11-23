@@ -34,6 +34,8 @@ _ITEM_WITH_DETERMINER = re.compile(r"\b(the|that|this|my)\s+([a-z]{4,})", re.I)
 # Words that lean on the turn before: such a message means nothing alone.
 _FOLLOW_UP = re.compile(r"\b(what about|and|also|that|those|it|them|this one|that one|how about)\b", re.I)
 _SHORT_WORDS = 8
+# The route of a short message that says nothing about money, mid-conversation.
+FOLLOW_UP = "follow-up in this conversation"
 # "show more", "next 10", "keep going": a message made only of these words
 # asks for the next page of the search before it. A question that merely
 # contains "more" or "next" ("how can I save more?", "next month") carries
@@ -239,22 +241,38 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         return Route("plan", f"opened with {context.get('kind', 'context')}")
     if not active_receipt and _STRONG_REF.search(text):
         return Route("receipt", "about your latest receipt")
-    if not is_financial_query(text):
-        # "which one was the biggest?", "thanks!": not off topic mid-conversation.
-        if has_history and (len(text.split()) <= _SHORT_WORDS or reads_as_follow_up(text)):
-            return Route("plan", "follow-up in this conversation", follow_up=True)
     asked = _asked_for(text, today, is_merchant)
-    if not is_financial_query(text) and asked is None and not _a_category_asked_for(text) \
-            and not _a_total_of_a_category(intent):
+    # A category or one of the user's merchants named alone, or a total of a
+    # category: SQL accounts for every word of it, so it is the same question
+    # wherever in a conversation it is asked. Read as a short follow-up,
+    # "coffee" asked twice in one chat was a card from SQL the first time and
+    # the planner's the second: three model calls, and no cache keeps a
+    # follow-up. Beside a receipt it may still be a line of it (below).
+    whole = not active_receipt and (asked is not None or _a_total_of_a_category(intent))
+    money: list[bool] = []
+
+    def about_money() -> bool:
+        """Asked last, once, and only where the route turns on it: for words
+        that say nothing about money it embeds the message, and "coffee"
+        must not wait for the embedding model to be read from SQL."""
+        if not money:
+            money.append(is_financial_query(text))
+        return money[0]
+
+    # "which one was the biggest?", "thanks!": not off topic mid-conversation.
+    if has_history and not whole and (len(text.split()) <= _SHORT_WORDS or reads_as_follow_up(text)) \
+            and not about_money():
+        return Route("plan", FOLLOW_UP, follow_up=True)
+    if asked is None and not _a_category_asked_for(text) and not _a_total_of_a_category(intent) \
+            and not about_money():
         return Route("offtopic", "not a money question")
     if intent is not None:
         return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)
-    # Bare ("coffee") it is a whole question only where it opens a
-    # conversation. After another question, or beside a receipt, it may be
-    # the short form of something else: that takes the conversation, so it
-    # is the planner's, and what it is told is never kept under these words.
-    if asked is not None and asked.bare and in_conversation:
-        return Route("plan", "a name alone leans on this conversation", follow_up=True)
+    # Bare ("coffee") beside a receipt it may be the short form of a question
+    # about the receipt: that takes the conversation, so it is the planner's,
+    # and what it is told is never kept under these words.
+    if asked is not None and asked.bare and active_receipt:
+        return Route("plan", "a name alone beside a receipt leans on it", follow_up=True)
     if asked is not None:
         return _from_sql(asked, today)
     if in_conversation and classify_aggregation(text, today=today) is not None:

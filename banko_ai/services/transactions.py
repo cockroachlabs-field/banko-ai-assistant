@@ -51,7 +51,7 @@ def _stream(region: str | None = None) -> str:
     UNION ALL
     SELECT e.expense_id, e.expense_date::TIMESTAMPTZ, -e.expense_amount, 'purchase', e.description, NULL,
            e.merchant, e.shopping_type, e.expense_id
-    FROM expenses AS e
+    FROM expenses@idx_expenses_user_date AS e
     LEFT JOIN ledger_entries AS l2 ON {pin('l2.')}l2.expense_id = e.expense_id AND l2.user_id = CAST(:u AS UUID)
     WHERE {pin('e.')}e.user_id = CAST(:u AS UUID) AND l2.entry_id IS NULL
 """
@@ -480,7 +480,7 @@ def _visits_sql(where: str) -> str:
     return f"""
         SELECT count(*), COALESCE(sum(expense_amount), 0), COALESCE(avg(expense_amount), 0),
                min(expense_date), max(expense_date)
-        FROM expenses WHERE {where}
+        FROM expenses@idx_expenses_user_date WHERE {where}
     """
 
 
@@ -500,7 +500,7 @@ def merchant_history(user_id: str, merchant: str, *, date_from: date | None = No
         agg = conn.execute(text(_visits_sql(where)), params).fetchone()
         recent = conn.execute(text(f"""
             SELECT expense_id, expense_date, expense_amount, merchant, shopping_type, description
-            FROM expenses WHERE {where}
+            FROM expenses@idx_expenses_user_date WHERE {where}
             ORDER BY expense_date DESC LIMIT :n
         """), {**params, "n": max(0, int(recent))}).fetchall()
     visits = int(agg[0])

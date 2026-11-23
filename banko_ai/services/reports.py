@@ -26,15 +26,15 @@ def cashflow(user_id: str, *, months: int = 6, today: date | None = None, url: s
             WHERE user_id = CAST(:u AS UUID) AND kind = 'income' AND posted_at >= :s GROUP BY 1
         """), {"u": user_id, "s": start}).fetchall())
         spending = dict(conn.execute(text("""
-            SELECT to_char(expense_date, 'YYYY-MM'), sum(expense_amount) FROM expenses
+            SELECT to_char(expense_date, 'YYYY-MM'), sum(expense_amount) FROM expenses@idx_expenses_user_date
             WHERE user_id = CAST(:u AS UUID) AND expense_date >= :s GROUP BY 1
         """), {"u": user_id, "s": start}).fetchall())
         cats = conn.execute(text("""
-            SELECT shopping_type, sum(expense_amount), count(*) FROM expenses
+            SELECT shopping_type, sum(expense_amount), count(*) FROM expenses@idx_expenses_user_date
             WHERE user_id = CAST(:u AS UUID) AND expense_date >= :s GROUP BY 1
         """), {"u": user_id, "s": start}).fetchall()
         merchants = conn.execute(text("""
-            SELECT merchant, sum(expense_amount), count(*) FROM expenses
+            SELECT merchant, sum(expense_amount), count(*) FROM expenses@idx_expenses_user_date
             WHERE user_id = CAST(:u AS UUID) AND expense_date >= :s AND merchant IS NOT NULL
             GROUP BY 1 ORDER BY 2 DESC LIMIT 8
         """), {"u": user_id, "s": start}).fetchall()
@@ -67,7 +67,7 @@ def spending_pace(user_id: str, *, today: date | None = None, url: str | None = 
                       12 if this_first.month == 1 else this_first.month - 1, 1)
     with read_session(user_id, url=url, follower=True) as conn:
         rows = conn.execute(text("""
-            SELECT expense_date, sum(expense_amount) FROM expenses
+            SELECT expense_date, sum(expense_amount) FROM expenses@idx_expenses_user_date
             WHERE user_id = CAST(:u AS UUID) AND expense_date >= :s AND expense_date <= :t GROUP BY 1
         """), {"u": user_id, "s": last_first, "t": today}).fetchall()
     daily = dict(rows)

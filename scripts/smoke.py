@@ -250,11 +250,14 @@ class Smoke:
         self.expect_route(a, "visits")
         if merchant.lower() not in a["answer"].lower():
             raise AssertionError(f"{merchant} not in {a['answer'][:120]!r}")
-        # The merchant by its name is the same question to SQL: the same card, and no model asked.
+        # The merchant by its name is the same question: the same card, kept from the first ask.
         named = self.ask(self.thread(), f"{merchant} purchases")
         self.expect_route(named, "visits")
         if named["answer"] != a["answer"]:
             raise AssertionError(f"'{merchant} purchases' got another answer: {named['answer'][:120]!r}")
+        if not named.get("cached"):
+            raise AssertionError(f"'{merchant} purchases' read the purchases again: the card kept for the "
+                                 "visits did not answer it")
         return a["answer"].splitlines()[0][:100]
 
     def search_and_more(self) -> str:
@@ -280,28 +283,43 @@ class Smoke:
 
     def named_alone(self) -> str:
         """A category asked for alone or as its purchases is read from SQL:
-        one card whatever the wording, with its plan and no model call, and
-        more of the list from the database. Left to the planner, the same
-        word was a search on one model and a total of 31 days on another."""
-        cards, last, tid = [], {}, ""
-        for question in NAMED_ALONE:
-            tid = self.thread()
-            last = self.ask(tid, question)
-            self.expect_route(last, "aggregate")
-            meta = last.get("meta") or {}
-            if meta.get("model_calls"):
-                raise AssertionError(f"{question!r} cost {meta['model_calls']} model call(s)")
-            if last.get("cached"):
-                raise AssertionError(f"{question!r} was answered from a cache, not from SQL")
-            if not meta.get("explain"):
-                raise AssertionError(f"{question!r} came with no query plan")
-            cards.append(last["answer"])
-        for question, card in zip(NAMED_ALONE, cards, strict=True):
-            if card != cards[0]:
-                raise AssertionError(f"{question!r} got another answer than {NAMED_ALONE[0]!r}: {card[:120]!r}")
-        figure = cards[0].splitlines()[0][:100]
+        one card whatever the wording, with its plan and no model call. Asked
+        again, in other words or with the same word in the conversation it
+        opened, the card comes from the cache, and more of its list from the
+        database. Left to the planner, the same word was a search on one
+        model and a total of 31 days on another; and asked twice in one chat
+        it was a card from SQL first and the planner's after it."""
+        def card(tid: str, question: str) -> dict:
+            got = self.ask(tid, question)
+            self.expect_route(got, "aggregate")
+            if (got.get("meta") or {}).get("model_calls"):
+                raise AssertionError(f"{question!r} cost {got['meta']['model_calls']} model call(s)")
+            return got
+
+        opened = self.thread()
+        first = card(opened, NAMED_ALONE[0])
+        if first.get("cached"):
+            raise AssertionError(f"{NAMED_ALONE[0]!r} came from the cache: the receipt check's new purchase "
+                                 "should have retired every card")
+        if not (first.get("meta") or {}).get("explain"):
+            raise AssertionError(f"{NAMED_ALONE[0]!r} came with no query plan")
+        page = ((first.get("meta") or {}).get("search") or {}).get("next")
+        tid = opened
+        # The other wordings each open a conversation; the first word is asked again in its own.
+        for question, where in [(q, None) for q in NAMED_ALONE[1:]] + [(NAMED_ALONE[0], opened)]:
+            tid = where or self.thread()
+            again = card(tid, question)
+            if again["answer"] != first["answer"]:
+                raise AssertionError(f"{question!r} got another answer than {NAMED_ALONE[0]!r}: "
+                                     f"{again['answer'][:120]!r}")
+            if not again.get("cached"):
+                raise AssertionError(f"{question!r} read the purchases again: the card kept for "
+                                     f"{NAMED_ALONE[0]!r} did not answer it")
+            if page and not ((again.get("meta") or {}).get("search") or {}).get("next"):
+                raise AssertionError(f"{question!r} came from the cache and lost its next page")
+        figure = first["answer"].splitlines()[0][:100] + " | repeats from the cache"
         # The card names its list only when there is a next page to ask for.
-        if not ((last.get("meta") or {}).get("search") or {}).get("next"):
+        if not page:
             return f"{figure} | one page"
         more = self.ask(tid, "show more")
         self.expect_route(more, "more")

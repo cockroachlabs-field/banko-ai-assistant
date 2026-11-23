@@ -477,7 +477,8 @@ def _merchant_names(conn: Any, user_id: str, region: str | None = None) -> set[s
     read_region): on REGIONAL BY ROW tables a lookup by user alone looks in
     every region."""
     return {_as_asked(str(r[0])) for r in conn.execute(text(
-        f"SELECT DISTINCT merchant FROM expenses WHERE {region_pin('', region)}user_id = CAST(:u AS UUID) "
+        f"SELECT DISTINCT merchant FROM expenses@idx_expenses_user_date "
+        f"WHERE {region_pin('', region)}user_id = CAST(:u AS UUID) "
         "AND merchant IS NOT NULL"), {"u": user_id, "region": region})}
 
 
