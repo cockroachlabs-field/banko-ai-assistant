@@ -218,6 +218,23 @@ def test_a_similar_question_is_answered_from_the_cache_and_says_how_similar(g, m
     assert not none["cached"]
 
 
+def test_a_thing_asked_to_be_shown_is_matched_as_any_other_question(g, member):
+    """ "show me coffee" asks to be shown the thing itself, so the planner
+    answers it. For whoever also takes a similar question, "list coffee" was
+    its answer again however similar the two were: the last question the
+    answer cache still read as a category's purchases in other words.
+    Similarity decides now, as between any two questions."""
+    strict = Preferences({"cache_match": "similar", "cache_similarity_threshold": 0.99})
+    _answered(g, member, "show me coffee", "coffee", "Eight at Blue Bottle.", prefs=strict)
+    asked = ScriptedChat(SEARCH % "coffee", DONE, "Eight, listed.")
+    other, _ = _ask(g, member, "list coffee", asked, prefs=strict)
+    assert not other["cached"] and asked.calls and other["answer"] == "Eight, listed."
+    usual = Preferences({"cache_match": "similar", "cache_similarity_threshold": 0.75})
+    near, events = _ask(g, member, "display coffee", ScriptedChat("unused"), prefs=usual)
+    assert near["cached"] and near["answer"] in ("Eight at Blue Bottle.", "Eight, listed.")
+    assert near["meta"]["cache"]["match"] == "similar" and "% similar" in _cache_step(events)["detail"]
+
+
 def test_inside_a_conversation_a_similar_question_is_asked(g, member, conversation):
     """Similarity knows nothing of what the conversation was about: after
     "show my Costco purchases" the question means Costco."""
@@ -400,6 +417,24 @@ def test_beside_a_receipt_a_question_that_is_no_category_is_matched_word_for_wor
     assert not other["cached"] and asked.calls
     same, _ = here.ask("Any unusual charges lately?", ScriptedChat("unused"))
     assert same["cached"] and same["answer"] == "Nothing unusual."
+
+
+def test_beside_a_receipt_a_thing_asked_to_be_shown_is_matched_word_for_word_too(g, conversation):
+    """Beside a receipt every question is matched word for word, also for
+    whoever takes a similar question elsewhere. "list coffee" right after
+    "show me coffee" was the one exception left: the same question in other
+    words."""
+    similar = Preferences({"cache_match": "similar", "cache_similarity_threshold": 0.5})
+    here = conversation()
+    _receipt_on_the_table(g, here.member, here.thread)
+    first, _ = here.ask("show me coffee", ScriptedChat(SEARCH % "coffee", DONE, "Eight at Blue Bottle."), prefs=similar)
+    assert first["route"]["kind"] == "plan" and not first["cached"]
+    asked = ScriptedChat(SEARCH % "coffee", DONE, "Eight, listed.")
+    other, _ = here.ask("list coffee", asked, prefs=similar)
+    assert not other["cached"] and asked.calls and other["answer"] == "Eight, listed."
+    same, events = here.ask("Show me coffee?", ScriptedChat("unused"), prefs=similar)
+    assert same["cached"] and same["answer"] == "Eight at Blue Bottle." and "cache" not in same["meta"]
+    assert _cache_step(events)["detail"].startswith("hit, about ")
 
 
 def test_a_question_about_the_receipt_itself_is_matched_word_for_word(g, conversation):

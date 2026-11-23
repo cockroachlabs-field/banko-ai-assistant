@@ -131,9 +131,9 @@ def _about_receipt(message: str, receipt: dict, last_route: str | None) -> bool:
     # "my coffee expenses": a category asked for as its purchases is about
     # that category, whatever the receipt's merchant or lines are called.
     # Bare, "the coffee" can still be the line.
-    from ..services.caches import category_ask
-    asked_for = category_ask(message)
-    if asked_for is not None and not asked_for[1]:
+    from ..services.caches import subject_asked
+    asked_for = subject_asked(message)
+    if asked_for is not None and not asked_for.bare:
         return False
     # Merchant words count bare
     merchant_words = _merchant_words(receipt)

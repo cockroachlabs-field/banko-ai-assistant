@@ -468,11 +468,13 @@ def tables() -> tuple[Table, ...]:
             ("hits", "INT8 NOT NULL DEFAULT 0"),
             ("created_at", "TIMESTAMPTZ NOT NULL DEFAULT now()"),
             ("expires_at", "TIMESTAMPTZ NOT NULL"),
-            # The asker's settings that shaped the answer (page size, memories), whether the question was
-            # its conversation's first, so it leaned on nothing, and which conversation that was. NULL: a
-            # row from before these existed.
+            # The asker's settings that shaped the answer (page size, memories), and whether the question
+            # was its conversation's first, so it leaned on nothing. NULL: a row from before these existed.
             ("shape", "STRING"),
             ("standalone", "BOOL"),
+            # No longer written or read. It said which conversation kept an answer, for matching a
+            # category or merchant in other words, which the answer cache does not do any more. It stays:
+            # dropping a column rewrites the table, vector index and all, for nothing anyone would see.
             ("thread_id", "STRING"),
         ), primary_key="cache_id", indexes=(
             Index("answer_cache_user_embedding", "user_id, query_embedding vector_cosine_ops", vector=True),

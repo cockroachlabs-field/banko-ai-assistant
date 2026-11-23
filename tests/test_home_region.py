@@ -152,13 +152,11 @@ def test_an_account_the_sign_in_makes_starts_in_the_primary_region_and_its_rows_
 
 @needs_regions
 def test_a_users_merchants_are_read_in_their_home_region(regional, monkeypatch):
-    """The answer cache asks which names are a user's merchants. On REGIONAL
-    BY ROW tables a lookup by user alone looks in every region; this one
-    names the home region, for an account whose rows all live there. Then
-    "<merchant> purchases" finds the answer kept for "<merchant>"."""
+    """The router asks which names are a user's merchants. On REGIONAL BY
+    ROW tables a lookup by user alone looks in every region; this one names
+    the home region, for an account whose rows all live there."""
     from banko_ai.services import caches, ledger
     from banko_ai.services import home_region as home
-    from banko_ai.services._vector import embed
     primary = home.default_region(regional)
     other = sorted(r for r in home.regions_of(regional) if r != primary)[0]
     uid = _member(regional, other)
@@ -174,17 +172,13 @@ def test_a_users_merchants_are_read_in_their_home_region(regional, monkeypatch):
     assert stored and all(is_merchant(name) for name in stored) and not is_merchant("no such place")
     assert named == [other]                                    # read once, inside the home region
 
-    # Through the answer cache, which asks for the region before it takes its connection.
-    name = next(n for n in sorted(stored)
-                if caches.subject_ask(f"{n} purchases", is_merchant=stored.__contains__) == (f"@{n}", False)
-                and caches.subject_ask(n, is_merchant=stored.__contains__) == (f"@{n}", True))
-    caches.forget_merchants()
-    caches.put_answer(uid, version=version, language="English", query=name, qvec=embed(name), answer="kept",
-                      tokens=5, standalone=True, url=regional)
-    hit = caches.get_answer(uid, version=version, language="English", query=f"{name} purchases",
-                            qvec=embed(f"{name} purchases"), match="words", url=regional)
-    assert hit and hit["match"] == "words" and hit["answer"] == "kept"
-    assert named == [other, other]
+    # A question that names one of them is read as that merchant's purchases, and reads nothing more.
+    again = caches.merchants_of(uid, version, regional)
+    name, found = next((n, f) for n in sorted(stored)
+                       if (f := caches.subject_asked(f"{n} purchases", is_merchant=again)) and f.kind == "merchant")
+    assert (found.name, found.bare) == (name, False) and named == [other]
+    caches.forget_merchants()                                  # as a deleted account or a rebuilt database does
+    assert caches.merchants_of(uid, version, regional)(name) and named == [other, other]
 
 
 def _scanned(plan: str) -> set[str]:
