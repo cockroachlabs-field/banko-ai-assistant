@@ -86,10 +86,14 @@ class Route:
     # Routed this way only because of the conversation so far: the text
     # alone means nothing, so it must never key a cached answer.
     follow_up: bool = False
+    # The days a visits route is for, end exclusive, when the message itself
+    # does not name them: a follow-up carries the days of the question before.
+    window: tuple[date, date] | None = None
 
     def as_dict(self) -> dict:
         out: dict = {"kind": self.kind, "detail": self.detail, "payload": self.payload, "intent": None,
-                     "follow_up": self.follow_up}
+                     "follow_up": self.follow_up,
+                     "window": [str(d) for d in self.window] if self.window else None}
         if self.intent is not None:
             out["intent"] = {"operation": self.intent.operation, "subject": self.intent.subject,
                              "window_start": str(self.intent.window_start),
@@ -197,15 +201,80 @@ def _from_sql(asked, today: date | None) -> Route:
                  intent=AggregationIntent("purchases", asked.name, start, end))
 
 
+# Words that point back at the question before, and then say what it is
+# now asked about: "what about coffee?", "and this month?", "same for
+# groceries", "coffee too".
+_POINTS_BACK = re.compile(r"^(?:(?:ok(?:ay)?|so|and|now)[\s,]+)*(?:(?:what|how)\s+about|same\s+for|also|and)\s+"
+                          r"(?P<rest>.+?)\s*[?.!]*$", re.I)
+_POINTS_BACK_AFTER = re.compile(r"^(?P<rest>.+?),?\s+(?:too|as\s+well)\s*[?.!]*$", re.I)
+_BEFORE_A_NAME = re.compile(r"^(?:for|on|at|in|during|from)\s+", re.I)
+_TOTALS = ("sum", "count", "average", "largest", "smallest")
+
+
+def _named_now(rest: str, today: date | None, is_merchant: Callable[[str], bool] | None):
+    """What a follow-up names after its words that point back: (the
+    category or merchant or None, its days or None). None when it names
+    neither, or anything besides."""
+    from ..services.caches import only_days, subject_asked
+    for words in dict.fromkeys((rest, _BEFORE_A_NAME.sub("", rest))):
+        days = only_days(words, today)
+        if days is not None:
+            return None, days
+        found = subject_asked(words, today, is_merchant)
+        if found is not None and not found.shown_only:
+            return found, found.window
+    return None
+
+
+def _the_question_before(text: str, today: date | None, is_merchant: Callable[[str], bool] | None,
+                         last: dict) -> Route | None:
+    """The route of a follow-up to an answer from SQL, or None when the
+    message is none. last is what the turn before asked SQL (graph._asked):
+    what to work out or which card, of what, for which days.
+
+    "What about coffee?" after "how much did I spend on restaurants last
+    month?" asks that total of coffee: the same operation and days, the
+    other name. "And this month?" asks it for other days. After a card for
+    a category or a merchant, the other name gets its own card, for the
+    days the card before was for. All of it is a question SQL has, so
+    nothing here is the planner's: left to it, a model read the
+    conversation, chose a tool and a window, and its answer was kept
+    nowhere."""
+    found = _POINTS_BACK.match(text) or _POINTS_BACK_AFTER.match(text)
+    named = _named_now(found.group("rest"), today, is_merchant) if found else None
+    if named is None:
+        return None
+    subject, days = named
+    carried = ((date.fromisoformat(last["from"]), date.fromisoformat(last["to"]))
+               if last.get("from") and last.get("to") else None)
+    window = days or carried
+    name = subject.name if subject is not None else last.get("subject")
+    detail = "the question before" + (f", about {subject.name}" if subject is not None else "") + (
+        ", for other days" if days else "")
+    op = last.get("op")
+    if op in _TOTALS and window is not None:
+        return Route("aggregate", detail, follow_up=True,
+                     intent=AggregationIntent(op, name, window[0], window[1], int(last.get("limit") or 1)))
+    if op not in ("purchases", "visits") or not name:
+        return None
+    # A card: which one is the name's to say, a category's purchases or a merchant's visits.
+    if (subject.kind == "merchant") if subject is not None else op == "visits":
+        return Route("visits", detail, payload=name, follow_up=True, window=window)
+    start, end = window or (EVER, (today or clock.today()) + timedelta(days=1))
+    return Route("aggregate", detail, follow_up=True, intent=AggregationIntent("purchases", name, start, end))
+
+
 def route(message: str, *, active_receipt: dict | None = None, context: dict | None = None,
           today: date | None = None, last_route: str | None = None, has_history: bool = False,
-          last_search: dict | None = None, is_merchant: Callable[[str], bool] | None = None) -> Route:
+          last_search: dict | None = None, is_merchant: Callable[[str], bool] | None = None,
+          last_asked: dict | None = None) -> Route:
     """last_route is the route of the thread's previous turn ("receipt" right
     after an upload); has_history says whether the thread has messages;
     last_search is the search the previous turn showed, if it ran one;
     is_merchant says whether a name is one of the user's merchants (the
     router knows nobody's purchases), and is asked only for a few words
-    that could be a name."""
+    that could be a name; last_asked is what the previous turn asked SQL,
+    when SQL answered it."""
     # One space between words: nothing here reads a run of them, and the
     # patterns below took minutes over ten thousand.
     text = " ".join((message or "").split())
@@ -215,6 +284,13 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         return Route("forget", "memory command", payload=m.group(1).strip().rstrip("."))
     if last_search is not None and asks_for_more(text):
         return Route("more", "next page of the last search", follow_up=True)
+    # A follow-up to an answer from SQL asks SQL again. Not beside a receipt
+    # or in a conversation opened from a nudge or a transaction: there a
+    # follow-up may be about that.
+    if last_asked and not active_receipt and not context:
+        again = _the_question_before(text, today, is_merchant, last_asked)
+        if again is not None:
+            return again
     # A receipt on the table is a conversation too: "the biggest charge" then leans on it.
     in_conversation = has_history or bool(active_receipt)
     intent = classify_aggregation(text, today=today, has_history=in_conversation)
