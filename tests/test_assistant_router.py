@@ -240,12 +240,12 @@ def test_a_name_that_is_a_thing_of_its_own_stays_a_question_for_the_planner():
 
 
 @pytest.mark.parametrize("name", ["electronics", "streaming", "movies"])
-def test_inside_a_conversation_such_a_name_still_leans_on_it(name):
-    """As before: short and in the middle of a conversation, it is a
-    follow-up, and its answer is never kept under that one word."""
+def test_inside_a_conversation_such_a_name_is_the_same_question(name):
+    """Short and in the middle of a conversation it used to be a follow-up
+    for the planner: the same word asked twice in one chat got a card from
+    SQL first and a model's answer after it."""
     for question in (name, f"my {name}"):
-        later = route(question, has_history=True, today=TODAY)
-        assert later.kind == "plan" and later.follow_up, question
+        assert _purchases_of(route(question, has_history=True, today=TODAY), name), question
 
 
 @pytest.mark.parametrize("question", ["show me movies", "list movies", "can you show me movies today?",
@@ -338,16 +338,33 @@ def test_a_categorys_purchases_for_the_days_it_names(question, window):
     assert (found.intent.window_start, found.intent.window_end) == window
 
 
-def test_inside_a_conversation_only_a_bare_name_leans_on_it():
-    """After "how much did I spend on restaurants last month?", "coffee" is
-    the short form of another question. With a word for its purchases it is
-    a whole question anywhere."""
-    for bare in ("coffee", "my coffee", "groceries?", "electronics", "coffee this month"):
-        later = route(bare, has_history=True, today=TODAY)
-        # A follow-up: its words alone mean nothing, so no answer is ever kept under them.
-        assert later.kind == "plan" and later.follow_up, bare
-    for whole in ("coffee expenses", "show my coffee purchases", "my coffee spending this month"):
-        assert _purchases_of(route(whole, has_history=True, today=TODAY), "coffee"), whole
+def test_a_category_named_alone_is_the_same_question_anywhere_in_a_conversation():
+    """ "coffee" asked twice in one chat is one question asked twice. It was
+    a card from SQL where it opened the conversation and the planner's after
+    that: three model calls, and an answer no cache ever kept."""
+    for asked in ("coffee", "Coffee?", "my coffee", "groceries?", "electronics", "coffee this month", "dining out",
+                  "coffee expenses", "show my coffee purchases", "my coffee spending this month"):
+        opening, later = route(asked, today=TODAY), route(asked, has_history=True, today=TODAY)
+        assert later == opening and later.kind == "aggregate" and later.intent.operation == "purchases", asked
+        assert not later.follow_up, asked
+
+
+@pytest.mark.parametrize("leaning", ["what about coffee", "what about coffee?", "and coffee?", "how about groceries",
+                                     "coffee too", "and for coffee", "also electronics", "that coffee"])
+def test_words_that_lean_on_the_conversation_still_do(leaning):
+    """Asked for outright it is a question of its own. With a word that
+    points back ("what about", "and", "too") it means something only after
+    the turn before, and that takes the conversation: the planner's, as it
+    was."""
+    assert route(leaning, has_history=True, today=TODAY).kind == "plan", leaning
+
+
+def test_a_name_that_is_a_thing_of_its_own_still_leans_on_the_conversation():
+    """ "phone" and "bills" are no spending kind when they stand alone, so
+    inside a conversation they are what they were: the planner's."""
+    for name in ("phone", "bills", "my subscriptions"):
+        assert route(name, has_history=True, today=TODAY).kind == "plan", name
+    assert route("phone", has_history=True, today=TODAY).follow_up      # nothing in it says money: a short follow-up
 
 
 def test_a_total_and_a_question_are_not_a_request_for_the_purchases():
@@ -394,12 +411,15 @@ def test_asking_to_be_shown_a_merchant_alone_is_still_no_money_question():
     assert _visits_to(route("show me my netflix", today=TODAY, is_merchant=_SHOPS.__contains__), "netflix")
 
 
-def test_inside_a_conversation_only_a_bare_merchant_leans_on_it():
-    for bare in ("starbucks", "netflix", "my netflix"):
-        later = route(bare, has_history=True, today=TODAY, is_merchant=_SHOPS.__contains__)
-        assert later.kind == "plan" and later.follow_up, bare
-    assert _visits_to(route("starbucks purchases", has_history=True, today=TODAY, is_merchant=_SHOPS.__contains__),
-                      "starbucks")
+def test_one_of_the_users_merchants_is_the_same_question_anywhere_in_a_conversation():
+    for asked, name in (("starbucks", "starbucks"), ("netflix", "netflix"), ("my netflix", "netflix"),
+                        ("Starbucks?", "starbucks"), ("starbucks purchases", "starbucks")):
+        later = route(asked, has_history=True, today=TODAY, is_merchant=_SHOPS.__contains__)
+        assert _visits_to(later, name), asked
+        assert later == route(asked, today=TODAY, is_merchant=_SHOPS.__contains__), asked
+    # A name nobody bought at is what it was inside a conversation: a short follow-up.
+    stranger = route("netflix", has_history=True, today=TODAY, is_merchant=lambda name: False)
+    assert stranger.kind == "plan" and stranger.follow_up
 
 
 def test_beside_a_receipt_a_bare_name_is_still_the_planners():
@@ -407,8 +427,36 @@ def test_beside_a_receipt_a_bare_name_is_still_the_planners():
     for bare in ("coffee", "netflix"):
         found = route(bare, active_receipt=RECEIPT, last_route="receipt", today=TODAY, is_merchant=_SHOPS.__contains__)
         assert found.kind == "plan" and found.follow_up, bare
+        later = route(bare, active_receipt=RECEIPT, last_route="plan", has_history=True, today=TODAY,
+                      is_merchant=_SHOPS.__contains__)
+        assert later.kind == "plan" and later.follow_up, bare
     assert _visits_to(route("netflix purchases", active_receipt=RECEIPT, last_route="receipt", today=TODAY,
                             is_merchant=_SHOPS.__contains__), "netflix")
+
+
+def test_a_question_sql_answers_is_routed_without_the_embedding_model(monkeypatch):
+    """Whether a message is about money is read from its words and, when
+    they say nothing, from its embedding. "coffee" says nothing, so routing
+    embedded it, though no route turns on the answer once SQL accounts for
+    every word. On a process that had just started that waited for the
+    embedding model: twenty seconds here, after twenty in the recall."""
+    from banko_ai.utils import intent_classifier
+    from banko_ai.utils.embeddings import ModelWarmingUp
+
+    def loading():
+        raise ModelWarmingUp("embedding model all-MiniLM-L6-v2 is still loading")
+    monkeypatch.setattr(intent_classifier, "_get_model", loading)
+    for asked, kind in (("coffee", "aggregate"), ("electronics", "aggregate"), ("my streaming", "aggregate"),
+                        ("movies this month", "aggregate"), ("netflix", "visits"), ("show me my netflix", "visits"),
+                        ("total electronics", "aggregate"), ("how much movies", "aggregate"),
+                        ("how much did I spend on coffee last month", "aggregate"), ("did I go to ikea?", "visits")):
+        for history in (False, True):
+            found = route(asked, has_history=history, today=TODAY, is_merchant=_SHOPS.__contains__)
+            assert found.kind == kind, (asked, history)
+    # A message whose words say nothing, and which nothing accounts for, still takes the model.
+    for other in ("hello there", "what's the capital of France?"):
+        with pytest.raises(ModelWarmingUp):
+            route(other, today=TODAY, is_merchant=_SHOPS.__contains__)
 
 
 def test_a_merchant_lookup_is_asked_only_for_words_that_could_be_a_name():
@@ -433,9 +481,16 @@ def test_a_total_of_a_category_is_a_money_question(name):
         assert route(other, today=TODAY).kind == "offtopic", other
 
 
-def test_inside_a_conversation_a_short_total_the_money_check_rejects_still_leans_on_it():
-    later = route("total electronics", has_history=True, today=TODAY)
-    assert later.kind == "plan" and later.follow_up
+def test_inside_a_conversation_a_total_of_a_category_is_the_same_total():
+    """ "total electronics" says nothing about money to the check that
+    decides, so inside a conversation it was a short follow-up: SQL where it
+    opened the conversation, the planner when asked again."""
+    for asked in ("total electronics", "movies total", "how much movies this month"):
+        opening, later = route(asked, today=TODAY), route(asked, has_history=True, today=TODAY)
+        assert later == opening and later.kind == "aggregate" and later.intent.loose, asked
+    # Beside a receipt it is what it was.
+    assert route("total electronics", active_receipt=RECEIPT, last_route="receipt", has_history=True,
+                 today=TODAY).kind == "plan"
 
 
 def test_a_total_the_totals_decline_is_not_a_question_about_the_receipt():

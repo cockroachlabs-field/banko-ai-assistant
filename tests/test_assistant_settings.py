@@ -108,16 +108,17 @@ def conversation(g, member):
 
 # How the answer cache matches.
 
-def test_a_bare_category_after_another_question_is_asked_and_its_answer_kept_nowhere(g, member, conversation):
-    """ "groceries?" right after a question about restaurants in the last 30
-    days asks that about groceries. It takes the conversation to read, so
-    the planner is asked, and what it is told answers no other question:
-    nothing is kept under these words, and the cache is not even looked in."""
+def test_a_question_that_points_back_is_asked_and_its_answer_kept_nowhere(g, member, conversation):
+    """ "what about groceries?" right after a question about restaurants in
+    the last 30 days asks that about groceries. It takes the conversation to
+    read, so the planner is asked, and what it is told answers no other
+    question: nothing is kept under these words, and the cache is not even
+    looked in."""
     here = conversation()
     spent, _ = here.ask("How much did I spend on restaurants in the last 30 days?", ScriptedChat("- Steady."))
     assert spent["route"]["kind"] == "aggregate"
     asked = ScriptedChat(SEARCH % "groceries last 30 days", DONE, "Groceries in the last 30 days.")
-    short, events = here.ask("groceries?", asked)
+    short, events = here.ask("what about groceries?", asked)
     assert short["route"]["kind"] == "plan" and not short["cached"] and asked.calls
     assert short["answer"] == "Groceries in the last 30 days."
     assert "Answer cache" not in [e.get("label") for e in events]
@@ -125,8 +126,25 @@ def test_a_bare_category_after_another_question_is_asked_and_its_answer_kept_now
         assert c.execute(text("SELECT count(*) FROM answer_cache WHERE user_id = CAST(:u AS UUID)"),
                          {"u": member}).scalar() == 0
     again = ScriptedChat(SEARCH % "groceries last 30 days", DONE, "Asked again.")
-    repeat, _ = here.ask("groceries?", again)
+    repeat, _ = here.ask("what about groceries?", again)
     assert not repeat["cached"] and repeat["answer"] == "Asked again."
+
+
+def test_a_category_named_alone_after_another_question_is_its_card_and_no_model_is_asked(g, member, conversation):
+    """ "groceries?" with nothing that points back is a question of its own
+    there too: the card SQL writes, the same one wherever it is asked, kept
+    for the next time. It used to be the planner's from the second turn of
+    a conversation on, and its answer was kept nowhere."""
+    here = conversation()
+    here.ask("How much did I spend on restaurants in the last 30 days?", ScriptedChat("- Steady."))
+    silent = ScriptedChat("no model is asked")
+    short, events = here.ask("groceries?", silent)
+    assert short["route"]["kind"] == "aggregate" and silent.calls == []
+    assert short["answer"].startswith("You spent **$") and " on Groceries since " in short["answer"]
+    repeat, _ = here.ask("groceries?", silent)
+    assert repeat["cached"] and repeat["answer"] == short["answer"] and silent.calls == []
+    opened, _ = conversation().ask("groceries", silent)
+    assert opened["cached"] and opened["answer"] == short["answer"] and silent.calls == []
 
 
 def test_an_answer_is_kept_as_of_the_day_its_question_was_asked(g, member, monkeypatch):

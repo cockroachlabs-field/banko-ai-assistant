@@ -434,15 +434,25 @@ def test_a_persons_settings_shape_the_answers_they_get(client, chat, member):
 
 def test_a_category_named_alone_costs_no_model_call_however_it_is_worded(client, chat, member):
     """Asked the way the page asks: "coffee", "coffee expenses" and "show my
-    coffee purchases" are read from SQL. No model is called for any of them,
-    and nothing about them is cached or replayed."""
+    coffee purchases" are one card, and no model is called for any of them.
+    The first is read from SQL and comes with its plan; the others come from
+    the card that was kept, and say whose answer they are."""
     chat["chat"] = ScriptedChat("no model is asked")
+    with get_engine().begin() as c:     # no card kept by an earlier test
+        c.execute(text("DELETE FROM search_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
     answers = []
     for question in ("coffee", "coffee expenses", "show my coffee purchases"):
         resp = client.post(f"/api/v1/assistant/threads/{_thread(client)}/messages", json={"message": question})
         answer = next(data for event, data in events(resp) if event == "answer")
-        assert answer["route"] == "aggregate" and not answer["cached"], question
-        assert answer["meta"]["model_calls"] == 0 and answer["meta"]["explain"], question
+        assert answer["route"] == "aggregate" and answer["meta"]["model_calls"] == 0, question
+        if not answers:
+            assert not answer["cached"] and not answer["meta"]["cached"] and answer["meta"]["explain"]
+            assert "cache" not in answer["meta"]
+        else:
+            assert answer["cached"] and answer["meta"]["cached"] and "explain" not in answer["meta"], question
+            assert answer["meta"]["cache"] == {"question": "coffee", "match": "words"}, question
+            assert [s["label"] for s in answer["meta"]["trace"] if s["kind"] == "assistant"] == [
+                "Intent routing", "Answer cache"], question
         answers.append(answer["answer"])
     assert len(set(answers)) == 1 and answers[0].startswith("You spent **$")
     assert chat["chat"].calls == []

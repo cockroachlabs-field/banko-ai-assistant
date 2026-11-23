@@ -410,6 +410,13 @@ def _cold_answer_cache(member):
         c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
 
 
+def _no_card_kept(member):
+    """The cards code writes from SQL are kept for a repeat: a test about how
+    one was read starts with none, whatever an earlier test asked."""
+    with get_engine().begin() as c:
+        c.execute(text("DELETE FROM search_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
+
+
 def test_granite_markers_resolve_or_disappear_and_the_cache_keeps_the_clean_text(g, member, thread):
     q = "which pizza places did I order from late at night?"
     _cold_answer_cache(member)
@@ -440,6 +447,35 @@ def test_a_placeholder_marker_never_reaches_the_answer(g, member, thread):
     out, events = _turn(g, member, thread, "where could I trim my dining out spending?", chat)
     assert "txn" not in out["answer"] and "could save money. Consider" in out["answer"]
     assert out["citations"] == [] and not [e for e in events if e["type"] == "citation"]
+
+
+def test_what_the_user_told_banko_reaches_the_model_that_writes_from_it(g, member, thread, monkeypatch):
+    """Memories are recalled where an answer is written from them, no longer
+    at the start of every turn: by the planner, and beside a receipt."""
+    told = [{"memory_id": str(uuid.uuid4()), "kind": "preference", "content": "I split every bill with Kai",
+             "distance": 0.2}]
+    monkeypatch.setattr(memories, "recall", lambda *a, **k: told)
+    _cold_answer_cache(member)
+    chat = ScriptedChat('{"steps": []}', '{"steps": []}', "Half of it is Kai's.")
+    out, _ = _turn(g, member, thread, "how should I think about what I owe this month?", chat)
+    assert out["route"]["kind"] == "plan"
+    planner, writer = chat.calls[0][1], chat.calls[-1][1]
+    assert any("I split every bill with Kai" in m["content"] for m in planner)        # the planner knew
+    assert any("I split every bill with Kai" in m["content"] for m in writer)         # and so did the answer
+
+    doc = str(uuid.uuid4())
+    with get_engine().begin() as c:
+        c.execute(text("INSERT INTO receipts (document_id, user_id, status, extracted) VALUES "
+                       "(CAST(:d AS UUID), CAST(:u AS UUID), 'posted', CAST(:x AS JSONB))"),
+                  {"d": doc, "u": member, "x": json.dumps({"merchant": "Kai's Diner", "amount": 31.0,
+                                                           "items": ["Two lunches"], "date": "2026-10-10"})})
+    G.set_active_receipt(thread, {"document_id": doc, "merchant": "Kai's Diner", "items": ["Two lunches"],
+                                  "amount": 31.0}, graph=g)
+    chat = ScriptedChat(lambda msgs: "It came to $31.00, so $15.50 each.")
+    out, events = _turn(g, member, thread, "how much was this receipt?", chat)
+    assert out["route"]["kind"] == "receipt"
+    assert "I split every bill with Kai" in "\n".join(chat.prompts())
+    assert "Memory recall" in [e["label"] for e in events if e["type"] == "step"]
 
 
 def test_a_memory_id_in_a_marker_is_dropped(g, member, thread):
@@ -602,16 +638,17 @@ def test_long_phases_say_they_started_and_finish_under_the_same_key(g, member, t
     chat = ScriptedChat('{"steps": [{"tool": "search_transactions", "args": {"query": "coffee"}}]}',
                         '{"steps": []}', "You buy coffee most mornings.")
     _, events = _turn(g, member, thread, "where do I buy coffee before work most days?", chat)
-    assert _phases(events) == ["Recalling what you told me", "Checking the answer cache", "Planning the steps",
+    # Memories are recalled once the cache has said no: a hit is replayed without them.
+    assert _phases(events) == ["Checking the answer cache", "Recalling what you told me", "Planning the steps",
                                "Searching your transactions", "Planning the steps", "Reading the query plan",
                                "Writing the answer"]
     done = {e["key"]: e["label"] for e in events if e["type"] == "step" and e.get("key") and e["status"] != "running"}
-    assert list(done.values()) == ["Memory recall", "Answer cache", "Planner", "Tool search_transactions", "Planner",
+    assert list(done.values()) == ["Answer cache", "Memory recall", "Planner", "Tool search_transactions", "Planner",
                                    "EXPLAIN ANALYZE", "LLM answer"]
     _, agg = _turn(g, member, thread, "how much did I spend on groceries in the last 37 days",
                    ScriptedChat("- Groceries are steady."))
-    assert _phases(agg) == ["Recalling what you told me", "Running the numbers in CockroachDB", "Writing the answer",
-                            "Reading the query plan"]
+    # A total recalls nothing: no memory has a part in it.
+    assert _phases(agg) == ["Running the numbers in CockroachDB", "Writing the answer", "Reading the query plan"]
 
 
 def test_cache_writes_leave_the_answer_path_and_drain_lands_them(g, member, thread, monkeypatch):
@@ -777,6 +814,7 @@ def test_a_visit_question_is_answered_from_sql_without_the_model(g, member, thre
 
 
 def test_a_visit_answer_survives_a_query_plan_the_database_cannot_give(g, member, thread, monkeypatch):
+    _no_card_kept(member)
     monkeypatch.setattr(G.txns, "explain_merchant_visits", _unreachable)
     merchant, visits, _ = _top_merchant(member)
     out, events = _turn(g, member, thread, f"did I go to {merchant.lower()}?", ScriptedChat("unused"))
@@ -922,8 +960,10 @@ def test_a_model_that_is_still_loading_is_one_line_in_the_log(g, member, thread,
     from banko_ai.utils.embeddings import ModelWarmingUp
     _recall_raises(monkeypatch, ModelWarmingUp("embedding model all-MiniLM-L6-v2 is still loading"))
     caplog.set_level(logging.INFO, logger="banko.assistant")
-    out, _ = _turn(g, member, thread, "how much did I spend on restaurants in the last 35 days", ScriptedChat("- steady"))
-    assert out["answer"].startswith("You spent")
+    _cold_answer_cache(member)
+    out, _ = _turn(g, member, thread, "where could I cut back on eating out these days?",
+                   ScriptedChat('{"steps": []}', '{"steps": []}', "Nowhere."))
+    assert out["route"]["kind"] == "plan" and out["answer"] == "Nowhere."
     about = [r for r in caplog.records if "memory recall" in r.getMessage()]
     assert [r.getMessage() for r in about] == ["memory recall skipped: the embedding model is still loading"]
     assert about[0].exc_info is None and about[0].levelno == logging.INFO
@@ -933,8 +973,10 @@ def test_any_other_reason_to_skip_a_step_keeps_its_traceback(g, member, thread, 
     import logging
     _recall_raises(monkeypatch, RuntimeError("connection reset by peer"))
     caplog.set_level(logging.INFO, logger="banko.assistant")
-    out, _ = _turn(g, member, thread, "how much did I spend on restaurants in the last 36 days", ScriptedChat("- steady"))
-    assert out["answer"].startswith("You spent")
+    _cold_answer_cache(member)
+    out, _ = _turn(g, member, thread, "where could I cut back on eating out this season?",
+                   ScriptedChat('{"steps": []}', '{"steps": []}', "Nowhere."))
+    assert out["route"]["kind"] == "plan" and out["answer"] == "Nowhere."
     about = [r for r in caplog.records if "memory recall" in r.getMessage()]
     assert [r.getMessage() for r in about] == ["memory recall skipped"]
     assert about[0].exc_info is not None and about[0].levelno == logging.WARNING
@@ -1034,7 +1076,7 @@ def test_an_answer_from_the_totals_tool_carries_its_plan(g, member, thread):
     plan = out["meta"]["explain"]
     assert plan and "group (scalar)" in plan and "expenses@" in plan
     done = {e["key"]: e for e in events if e["type"] == "step" and e.get("key") and e["status"] != "running"}
-    assert [e["label"] for e in done.values()] == ["Memory recall", "Answer cache", "Planner", "Tool spend_summary",
+    assert [e["label"] for e in done.values()] == ["Answer cache", "Memory recall", "Planner", "Tool spend_summary",
                                                    "Planner", "EXPLAIN ANALYZE", "LLM answer"]
     assert done["explain"]["detail"] == "plan captured"
     assert _phases(events)[-2:] == ["Reading the query plan", "Writing the answer"]
@@ -1182,6 +1224,7 @@ def test_a_lookup_with_no_statement_to_show_brings_no_plan(g, member, thread, mo
 def test_the_plan_under_a_size_answer_is_of_the_statement_that_ordered_the_purchases(g, member, thread):
     """It was the plan of the totals statement, which the rows in the answer
     did not come from."""
+    _no_card_kept(member)
     out, events = _turn(g, member, thread, "What was my biggest purchase last month?", ScriptedChat("unused"))
     plan = out["meta"]["explain"]
     assert plan and "expense_amount" in plan and ("top-k" in plan or "sort" in plan)

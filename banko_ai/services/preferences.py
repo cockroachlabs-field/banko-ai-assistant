@@ -55,9 +55,11 @@ def _page_size() -> int:
 SETTINGS: tuple[Setting, ...] = (
     Setting("cache_match", "Answer cache", "Reuse an answer for",
             "Which earlier question's answer may be replayed instead of asking the model again. A replayed answer "
-            "says which question it was written for.", "choice",
+            "says which question it was written for. A card read from SQL (a category or merchant named alone) "
+            "is kept by what it is about, whatever is chosen here.", "choice",
             # A category or one of the user's merchants in other words was a third choice. Those questions
-            # are read from SQL and never reach a model, so there is no answer of theirs to reuse.
+            # are read from SQL, and their card is kept under what was asked for (graph._card_key), so no
+            # matching of words is left to choose.
             choices=(("exact", "The same question",
                       "The same words only, give or take capitals and punctuation."),
                      ("similar", "Also a similar question",

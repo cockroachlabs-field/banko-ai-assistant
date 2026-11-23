@@ -6,20 +6,28 @@ was a total of the last 31 days; on gpt-4o-mini and granite a search of the
 nearest purchases; and seven characters of the planner's tool list had moved
 gpt-4.1 from one to the other. The answer is the database's, so it has to be
 the same answer on every model and every day: SQL computes it, code writes
-the card, and no model is called in English."""
+the card, and no model is called in English.
+
+Asked again, the card comes from the cache: it is kept under what was asked
+for (the category or merchant, the days, the language, the page), with the
+state of the user's money, so a repeat or the same thing in other words
+reads no purchase at all. And it is the same question wherever in a
+conversation it is asked."""
 
 import os
 from datetime import date, timedelta
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.engine import Engine
 
 from banko_ai.assistant import background
 from banko_ai.assistant import graph as G
 from banko_ai.db.engine import get_engine
 from banko_ai.services import threads
 from banko_ai.services import transactions as txns
+from banko_ai.services.preferences import Preferences
 from tests._chat import ScriptedChat
 from tests._money import card_purchase, drop_user, seeded_diner
 
@@ -40,9 +48,32 @@ def member():
     drop_user(uid)
 
 
+@pytest.fixture(autouse=True)
+def nothing_kept(member):
+    """Each test starts with no card kept for the member, so what one test asked never answers another."""
+    with get_engine().begin() as c:
+        c.execute(text("DELETE FROM search_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
+
+
 @pytest.fixture
 def g():
     return G.build_graph(InMemorySaver())
+
+
+@pytest.fixture
+def statements():
+    """Every statement the app sends while the test runs, as text."""
+    sent: list[str] = []
+
+    def note(conn, cursor, statement, parameters, context, executemany):
+        sent.append(" ".join(statement.split()))
+    event.listen(Engine, "before_cursor_execute", note)
+    yield sent
+    event.remove(Engine, "before_cursor_execute", note)
+
+
+def _on_purchases(sent: list[str]) -> list[str]:
+    return [s for s in sent if " expenses" in s and not s.startswith(("INSERT", "UPSERT"))]
 
 
 @pytest.fixture
@@ -88,12 +119,210 @@ def test_a_category_in_any_of_its_wordings_is_one_card_from_sql_and_no_model(ask
         assert out["route"]["kind"] == "aggregate" and chat.calls == [], question
         assert out["answer"].startswith(f"You spent **${total:,.2f}** on Restaurant since {first} "
                                         f"({count} transactions)."), question
-        assert out["meta"]["explain"] and "expenses@" in out["meta"]["explain"], question
         steps = _steps(events)
-        assert "Aggregation SQL" in steps and "EXPLAIN ANALYZE" in steps, question
-        assert not {"Planner", "LLM answer", "Answer cache", "Narrative cache"} & set(steps), question
+        assert not {"Planner", "LLM answer", "Narrative cache", "Memory recall"} & set(steps), question
+        if question == RESTAURANTS[0]:
+            # Nobody asked before: SQL reads it, and the plan under it is of that statement.
+            assert not out["cached"]
+            assert [s for s in steps if s != "Region pruning"] == ["Intent routing", "Answer cache", "Aggregation SQL",
+                                                                   "EXPLAIN ANALYZE"], steps
+            assert out["meta"]["explain"] and "expenses@idx_expenses_user_date" in out["meta"]["explain"]
+        else:
+            # The same thing in other words: the card that was kept, and it says whose answer it is.
+            assert out["cached"] and steps == ["Intent routing", "Answer cache"], (question, steps)
+            assert out["meta"]["cache"] == {"question": RESTAURANTS[0], "match": "words"}, question
+            assert "explain" not in out["meta"], question         # no statement ran, so there is no plan to show
         cards.add(out["answer"])
     assert len(cards) == 1                      # the same words back, whatever the wording of the question
+
+
+def test_asked_again_the_card_comes_from_the_cache_and_reads_no_purchase(ask, member, statements):
+    """ "coffee" asked twice ran every statement twice and never said
+    cached. The card is kept under the state of the user's money: asked
+    again, nothing is read from the purchases."""
+    first, _, _ = ask("restaurants")
+    assert not first["cached"] and _on_purchases(statements)
+    del statements[:]
+    again, events, chat = ask("restaurants")
+    assert again["cached"] and chat.calls == [] and again["answer"] == first["answer"]
+    assert _on_purchases(statements) == [], _on_purchases(statements)
+    assert again["saved_tokens"] == 0                           # no model wrote it, so none was saved
+    assert "cache" not in again["meta"]                         # the same words: nothing to add under the answer
+    hit = next(e for e in events if e["type"] == "step" and e["label"] == "Answer cache" and e["status"] != "running")
+    assert hit["status"] == "hit" and "Restaurant" in hit["detail"]
+    # Show more under a cached card pages on from the database as it did under the first.
+    assert again["meta"]["search"] == first["meta"]["search"] and again["meta"]["search"]["next"]
+
+
+def test_asked_again_in_the_same_conversation_it_is_the_same_card(ask, member, statements):
+    """The report: "coffee" twice in one chat. The second went to the
+    planner as a follow-up, three model calls, and no cache keeps those."""
+    thread = threads.create_thread(member)["thread_id"]
+    try:
+        first, _, _ = ask("restaurants", thread=thread)
+        del statements[:]
+        again, events, chat = ask("restaurants", thread=thread)
+        assert again["route"]["kind"] == "aggregate" and chat.calls == []
+        assert again["cached"] and again["answer"] == first["answer"] and _on_purchases(statements) == []
+        assert "cache" not in again["meta"]
+        # And a typed "show more" goes on from the card the cache gave.
+        more, _, chat = ask("show more", thread=thread)
+        assert more["route"]["kind"] == "more" and chat.calls == []
+        assert more["answer"] == "Here are 10 more Restaurant purchases."
+    finally:
+        threads.delete_thread(member, thread)
+
+
+def test_a_new_purchase_retires_the_card_that_was_kept(ask, member):
+    before, _, _ = ask("my coffee expenses")
+    assert ask("my coffee expenses")[0]["cached"]
+    card_purchase(member, "Blue Bottle Coffee", "3.10")
+    total, count, first = _sum(member, "shopping_type = 'Coffee'")
+    after, _, chat = ask("my coffee expenses")
+    assert not after["cached"] and chat.calls == [] and after["answer"] != before["answer"]
+    assert after["answer"].startswith(f"You spent **${total:,.2f}** on Coffee since {first} ({count} transactions).")
+
+
+def test_a_card_is_kept_for_what_was_asked_for_and_nothing_else(ask, member):
+    """Other days, another category, another page length or another
+    language is another card: none of them is answered from this one."""
+    ask("restaurants")
+    for other, kw in (("restaurants this month", {}), ("groceries", {}),
+                      ("restaurants", {"prefs": Preferences({"search_page_size": 5})})):
+        out, _, _ = ask(other, **kw)
+        assert not out["cached"], other
+    short, _, _ = ask("restaurants", prefs=Preferences({"search_page_size": 5}))
+    assert short["cached"] and "The latest 5 of " in short["answer"]
+    assert ask("restaurants")[0]["cached"] and "The latest 10 of " in ask("restaurants")[0]["answer"]
+
+
+def test_a_merchants_card_is_kept_the_same_way(ask, member, statements):
+    card_purchase(member, "Corner Kiosk", "4.20")
+    first, _, _ = ask("blue bottle coffee")
+    other, _, _ = ask("corner kiosk")                               # another merchant is another card
+    assert not other["cached"] and other["answer"].startswith("You went to **Corner Kiosk** 1 time ")
+    del statements[:]
+    cards = set()
+    for question in ("blue bottle coffee", "Blue Bottle Coffee purchases", "purchases at Blue Bottle Coffee"):
+        again, events, chat = ask(question)
+        assert again["route"]["kind"] == "visits" and again["cached"] and chat.calls == [], question
+        assert _steps(events) == ["Intent routing", "Answer cache"], question
+        cards.add(again["answer"])
+    assert cards == {first["answer"]} and _on_purchases(statements) == []
+    assert again["meta"]["cache"] == {"question": "blue bottle coffee", "match": "words"}
+    assert not ask("blue bottle coffee purchases this month")[0]["cached"]        # its own days: another card
+    card_purchase(member, "Blue Bottle Coffee", "5.55")
+    assert not ask("blue bottle coffee")[0]["cached"]
+
+
+def test_in_another_language_the_translation_is_kept_and_the_model_is_not_asked_again(ask, member):
+    spanish = lambda: ScriptedChat(lambda messages: "Gastaste ... en Restaurant")      # noqa: E731
+    first, _, chat = ask("my restaurant expenses", chat=spanish(), language_code="es-ES")
+    assert len(chat.calls) == 1 and not first["cached"]
+    again, _, chat = ask("restaurants", chat=spanish(), language_code="es-ES")
+    assert again["cached"] and chat.calls == [] and again["answer"] == first["answer"]
+    assert again["saved_tokens"] > 0                            # the translation the model did not write again
+    english, _, chat = ask("restaurants")
+    assert not english["cached"] and english["answer"].startswith("You spent")
+
+
+def test_a_card_the_model_could_not_translate_is_not_kept_as_the_translation(ask, member):
+    """With the provider out of reach the card goes out in English. Kept as
+    the Spanish answer, it would stay English after the provider is back."""
+    def down(messages):
+        raise ConnectionError("the provider is out of reach")
+    out, _, _ = ask("my restaurant expenses", chat=ScriptedChat(down), language_code="es-ES")
+    assert out["answer"].startswith("You spent")
+    again, _, chat = ask("my restaurant expenses", chat=ScriptedChat(lambda m: "Gastaste ..."), language_code="es-ES")
+    assert not again["cached"] and again["answer"].startswith("Gastaste") and len(chat.calls) == 1
+
+
+def test_the_largest_purchases_are_a_card_code_writes_and_kept_the_same_way(ask, member, statements):
+    """ "my biggest purchase this year" asked twice ran its statements twice
+    as well, and in another language asked the model twice."""
+    first, events, chat = ask("What was my biggest purchase this year?")
+    assert first["route"]["kind"] == "aggregate" and not first["cached"] and chat.calls == []
+    assert first["meta"]["explain"] and "expenses@idx_expenses_user_date" in first["meta"]["explain"]
+    del statements[:]
+    again, events, chat = ask("what was my biggest purchase this year")
+    assert again["cached"] and again["answer"] == first["answer"] and chat.calls == []
+    assert _on_purchases(statements) == [] and _steps(events) == ["Intent routing", "Answer cache"]
+    # How many were asked for, and of what, is another card; and a category's purchases are not its largest.
+    three, _, _ = ask("my 3 biggest purchases this year")
+    assert not three["cached"] and three["answer"] != first["answer"]
+    smallest, _, _ = ask("what was my smallest purchase this year?")
+    assert not smallest["cached"] and smallest["answer"] != first["answer"]
+    listed, _, _ = ask("restaurant expenses this year")
+    largest, _, _ = ask("what was my biggest restaurant purchase this year")
+    assert not listed["cached"] and not largest["cached"] and largest["answer"] != listed["answer"]
+    card_purchase(member, "Blue Bottle Coffee", "2.95")
+    assert not ask("What was my biggest purchase this year?")[0]["cached"]
+
+
+def test_a_total_at_one_of_the_users_merchants_is_the_same_total_inside_a_conversation(ask, member):
+    """ "total zebra crossing" says nothing about money to the check that
+    decides. Where it opened a conversation the user's merchants were asked
+    before it was turned away; inside one it was taken for a short
+    follow-up, and never were."""
+    card_purchase(member, "Zebra Crossing", "18.40", category="Restaurant")
+    thread = threads.create_thread(member)["thread_id"]
+    try:
+        ask("how much did I spend on groceries in the last 30 days", thread=thread, chat=ScriptedChat("- Steady."))
+        out, _, _ = ask("total zebra crossing", thread=thread, chat=ScriptedChat("- Steady."))
+        first = out["answer"].splitlines()[0]
+        assert out["route"]["kind"] == "aggregate" and "$18.40" in first and "Zebra Crossing" in first, first
+        # Words that are nobody's merchant are still a short follow-up for the planner.
+        chat = ScriptedChat('{"steps": []}', '{"steps": []}', "Not sure what you mean.")
+        out, _, _ = ask("total eclipse", thread=thread, chat=chat)
+        assert out["route"]["kind"] == "plan"
+    finally:
+        threads.delete_thread(member, thread)
+
+
+def test_a_cache_that_cannot_be_read_or_written_costs_nothing_but_the_cache(ask, member, monkeypatch):
+    def down(*args, **kwargs):
+        raise ConnectionError("the gateway node went away")
+    monkeypatch.setattr(G.caches, "get_search", down)
+    monkeypatch.setattr(G.caches, "put_search", down)
+    total, count, first = _sum(member)
+    out, events, chat = ask("restaurants")
+    assert not out["cached"] and chat.calls == []
+    assert out["answer"].startswith(f"You spent **${total:,.2f}** on Restaurant since {first} ({count} transactions).")
+
+
+def test_an_answer_from_sql_recalls_no_memory_and_needs_no_embedding_model(ask, member, monkeypatch):
+    """Every turn began by embedding the question to recall memories, the
+    ones SQL answers too, which use none. On a process that had just started
+    that waited for the embedding model: up to WARMUP_WAIT_SECONDS before a
+    card that needs no model at all."""
+    from banko_ai.services import _vector
+    from banko_ai.utils.embeddings import ModelWarmingUp
+
+    def loading(text_value):
+        raise ModelWarmingUp("embedding model is still loading")
+    monkeypatch.setattr(_vector, "embed", loading)
+    monkeypatch.setattr(G.memories, "embed", loading, raising=False)
+    for question, kind in (("restaurants", "aggregate"), ("blue bottle coffee", "visits"),
+                           ("restaurants", "aggregate"), ("hello there", "offtopic")):
+        out, events, chat = ask(question)
+        assert out["route"]["kind"] == kind and chat.calls == [], question
+        assert "Memory recall" not in _steps(events), question
+    out, events, _ = ask("how much did I spend on groceries in the last 30 days", chat=ScriptedChat("- Steady."))
+    assert out["route"]["kind"] == "aggregate" and "Memory recall" not in _steps(events)
+
+
+def test_a_question_for_the_planner_still_recalls_what_the_user_told_it(ask, member, monkeypatch):
+    recalled = []
+    real = G.memories.recall
+    monkeypatch.setattr(G.memories, "recall", lambda *a, **k: recalled.append(a[1]) or real(*a, **k))
+    chat = ScriptedChat('{"steps": []}', '{"steps": []}', "Nowhere.")
+    out, events, chat = ask("where could I cut back on dining out lately?", chat=chat)
+    assert out["route"]["kind"] == "plan" and recalled == ["where could I cut back on dining out lately?"]
+    steps = _steps(events)
+    assert steps.index("Memory recall") > steps.index("Intent routing")
+    assert steps.index("Memory recall") < steps.index("Planner")
+    ask("restaurants")
+    assert len(recalled) == 1
 
 
 def test_the_card_breaks_the_category_down_and_lists_its_latest_purchases(ask, member):
@@ -235,8 +464,9 @@ def test_one_of_the_users_merchants_in_any_wording_is_one_card_from_sql(ask, mem
         assert out["route"]["kind"] == "visits" and chat.calls == [], question
         assert out["answer"].startswith(f"You went to **Blue Bottle Coffee** {count} times since {first} and spent "
                                         f"**${total:,.2f}** there"), question
-        assert out["meta"]["explain"], question
-        assert not {"Planner", "LLM answer", "Answer cache"} & set(_steps(events)), question
+        if not cards:
+            assert out["meta"]["explain"] and "expenses@idx_expenses_user_date" in out["meta"]["explain"]
+        assert not {"Planner", "LLM answer", "Memory recall"} & set(_steps(events)), question
         cards.add(out["answer"])
     assert len(cards) == 1
 
@@ -253,16 +483,24 @@ def test_a_whole_question_inside_a_conversation_still_comes_from_sql(ask, member
         threads.delete_thread(member, thread)
 
 
-def test_a_bare_name_inside_a_conversation_is_still_the_planners(ask, member):
-    """ "restaurants" after a question about groceries last month is the
-    short form of another question. What it means there takes the
-    conversation, which no fixed rule reads."""
+def test_a_bare_name_inside_a_conversation_is_the_same_card(ask, member):
+    """ "restaurants" after a question about groceries was the planner's: a
+    model picked what it meant, and its answer was kept nowhere. A name
+    asked alone is one question, wherever it is asked. With a word that
+    points back ("what about restaurants?") it still takes the conversation."""
+    total, count, first = _sum(member)
     thread = threads.create_thread(member)["thread_id"]
     try:
         ask("how much did I spend on groceries in the last 30 days", thread=thread, chat=ScriptedChat("- Steady."))
+        out, _, chat = ask("restaurants", thread=thread)
+        assert out["route"]["kind"] == "aggregate" and chat.calls == []
+        assert out["answer"].startswith(f"You spent **${total:,.2f}** on Restaurant since {first} "
+                                        f"({count} transactions).")
+        out, _, chat = ask("blue bottle coffee", thread=thread)
+        assert out["route"]["kind"] == "visits" and chat.calls == []
         chat = ScriptedChat('{"steps": [{"tool": "spend_summary", "args": {"category": "Restaurant"}}]}',
                             '{"steps": []}', "About the same as groceries.")
-        out, _, chat = ask("restaurants", thread=thread, chat=chat)
+        out, _, chat = ask("what about restaurants?", thread=thread, chat=chat)
         assert out["route"]["kind"] == "plan" and out["answer"] == "About the same as groceries."
     finally:
         threads.delete_thread(member, thread)
