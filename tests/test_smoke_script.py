@@ -118,38 +118,66 @@ def _card(text="You spent **$41.20** on Coffee since 2026-05-23 (9 transactions)
     return answer
 
 
+def _kept(**kw):
+    """The same card from the cache: no statement ran, so it brings no plan."""
+    return _card(cached=True, plan=None, **kw)
+
+
 def test_a_category_in_three_wordings_must_be_one_card_from_sql(monkeypatch):
     """ "coffee", "my coffee expenses", "show me my coffee purchases": the
-    database's answer, so the same one each time, with no model call."""
-    ok = _smoke_answering(monkeypatch, _card(), _card(), _card())
-    assert ok.named_alone() == "You spent **$41.20** on Coffee since 2026-05-23 (9 transactions). | one page"
-    planned = _smoke_answering(monkeypatch, _card(), _card(route="plan", calls=3), _card())
+    database's answer, so the same one each time, with no model call. The
+    first is read from SQL; the other wordings, and the same word again in
+    the conversation it opened, come from the card that was kept."""
+    ok = _smoke_answering(monkeypatch, _card(), _kept(), _kept(), _kept())
+    assert ok.named_alone() == ("You spent **$41.20** on Coffee since 2026-05-23 (9 transactions). "
+                                "| repeats from the cache | one page")
+    planned = _smoke_answering(monkeypatch, _card(), _card(route="plan", calls=3), _kept(), _kept())
     with pytest.raises(AssertionError, match="route 'plan'"):
         planned.named_alone()
-    narrated = _smoke_answering(monkeypatch, _card(calls=1), _card(), _card())
+    narrated = _smoke_answering(monkeypatch, _card(calls=1), _kept(), _kept(), _kept())
     with pytest.raises(AssertionError, match="1 model call"):
         narrated.named_alone()
-    replayed = _smoke_answering(monkeypatch, _card(cached=True), _card(), _card())
-    with pytest.raises(AssertionError, match="from a cache"):
-        replayed.named_alone()
-    no_plan = _smoke_answering(monkeypatch, _card(), _card(plan=None), _card())
+    stale = _smoke_answering(monkeypatch, _kept(), _kept(), _kept(), _kept())
+    with pytest.raises(AssertionError, match="should have retired"):
+        stale.named_alone()
+    no_plan = _smoke_answering(monkeypatch, _card(plan=None), _kept(), _kept(), _kept())
     with pytest.raises(AssertionError, match="no query plan"):
         no_plan.named_alone()
-    other = _smoke_answering(monkeypatch, _card(), _card(), _card(text="You spent **$12.00** on Coffee since 2026-10-23."))
+    other = _smoke_answering(monkeypatch, _card(), _kept(), _kept(text="You spent **$12.00** on Coffee since 2026-10-23."),
+                             _kept())
     with pytest.raises(AssertionError, match="another answer"):
         other.named_alone()
+
+
+def test_a_category_asked_again_must_come_from_the_cache(monkeypatch):
+    """Asked for in other words it read every purchase again and never said
+    cached. Asked again in the same conversation it went to the planner."""
+    reread = _smoke_answering(monkeypatch, _card(), _card(), _kept(), _kept())
+    with pytest.raises(AssertionError, match="'my coffee expenses' read the purchases again"):
+        reread.named_alone()
+    follow_up = _smoke_answering(monkeypatch, _card(), _kept(), _kept(), _card(route="plan", calls=3))
+    with pytest.raises(AssertionError, match="route 'plan'"):
+        follow_up.named_alone()
+    again = _smoke_answering(monkeypatch, _card(), _kept(), _kept(), _card())
+    with pytest.raises(AssertionError, match="'coffee' read the purchases again"):
+        again.named_alone()
 
 
 def test_a_categorys_list_goes_on_from_the_database(monkeypatch):
     listed = {"q": "", "category": "Coffee", "next": "c1"}
     more = _answer([], route="more", search={**listed, "next": None, "items": [{"expense_id": "e1"}, {"expense_id": "e2"}]})
     more["meta"]["model_calls"] = 0
-    two = _smoke_answering(monkeypatch, _card(search=listed), _card(search=listed), _card(search=listed), more)
-    assert two.named_alone().endswith("| then 2 more from the database")
+    cards = (_card(search=listed), _kept(search=listed), _kept(search=listed), _kept(search=listed))
+    two = _smoke_answering(monkeypatch, *cards, more)
+    assert two.named_alone().endswith("| repeats from the cache | then 2 more from the database")
     empty = _answer([], route="more", search={**listed, "next": None, "items": []})
-    none = _smoke_answering(monkeypatch, _card(search=listed), _card(search=listed), _card(search=listed), empty)
+    none = _smoke_answering(monkeypatch, *cards, empty)
     with pytest.raises(AssertionError, match="no purchases"):
         none.named_alone()
+    # A card from the cache that lost its page offers nothing to go on from.
+    lost = _smoke_answering(monkeypatch, _card(search=listed), _kept(search=listed), _kept(), _kept(search=listed))
+    with pytest.raises(AssertionError, match="lost its next page"):
+        lost.named_alone()
 
 
 class _Json:
@@ -165,7 +193,8 @@ def test_a_merchant_by_its_name_is_the_visits_card_again(monkeypatch):
     card = "You went to **Domino's** 29 times since 2026-05-28 and spent **$1,434.62** there ($49.47 a visit)."
     visits = _answer([], route="visits", answer=card)
     visits["meta"]["model_calls"] = 0
-    s = _smoke_answering(monkeypatch, visits, visits)
+    kept = {**visits, "cached": True}
+    s = _smoke_answering(monkeypatch, visits, kept)
     monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
     assert s.visits().startswith("You went to **Domino's** 29 times")
     planned = _answer([], route="plan", answer="You like Domino's.")
@@ -173,10 +202,15 @@ def test_a_merchant_by_its_name_is_the_visits_card_again(monkeypatch):
     monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
     with pytest.raises(AssertionError, match="route 'plan'"):
         s.visits()
-    other = _answer([], route="visits", answer=card.replace("29 times", "3 times"))
+    other = _answer([], route="visits", answer=card.replace("29 times", "3 times"), cached=True)
     s = _smoke_answering(monkeypatch, visits, other)
     monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
     with pytest.raises(AssertionError, match="another answer"):
+        s.visits()
+    # Asked again by its name the card comes from the cache: read again, every statement ran twice.
+    s = _smoke_answering(monkeypatch, visits, visits)
+    monkeypatch.setattr(s, "api", lambda method, path, **kw: _Json({"items": [{"merchant": "Domino's"}] * 3}))
+    with pytest.raises(AssertionError, match="read the purchases again"):
         s.visits()
 
 
