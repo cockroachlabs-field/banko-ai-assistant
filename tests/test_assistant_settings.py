@@ -291,18 +291,25 @@ def test_most_of_what_is_off_topic_reads_nothing_about_the_users_purchases(g, me
     assert out["route"]["kind"] == "offtopic" and len(reads) == 1
 
 
-def test_an_answer_kept_before_the_upgrade_is_still_replayed(g, member):
-    """It carries no settings. Whoever has the deployment's gets it; someone with a page of three asks again."""
+def test_an_answer_kept_before_answers_were_read_for_their_figures_is_not_replayed(g, member):
+    """Nobody read it: a figure in it may be one no lookup gave. It carries
+    no mark that it was read (one kept before settings were recorded
+    carries none at all, one from the release before only the settings),
+    and whoever asks is answered anew."""
     from banko_ai.services import caches, ledger
     from banko_ai.services._vector import embed
     question = "any unusual charges lately"
-    caches.put_answer(member, version=ledger.data_version(member), language="English", query=question,
-                      qvec=embed(question), answer="Kept before the upgrade.", tokens=10)
-    usual, _ = _ask(g, member, question, ScriptedChat("unused"))
-    assert usual["cached"] and usual["answer"] == "Kept before the upgrade."
-    asked = ScriptedChat(SEARCH % "unusual charges", DONE, "Three of them.")
-    short, _ = _ask(g, member, question, asked, prefs=Preferences({"search_page_size": 3}))
-    assert not short["cached"] and short["answer"] == "Three of them."
+    for shape in (None, Preferences().shape):
+        with get_engine().begin() as c:
+            c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID)"), {"u": member})
+        caches.put_answer(member, version=ledger.data_version(member), language="English", query=question,
+                          qvec=embed(question), answer="Kept before the upgrade: about $950.", tokens=10, shape=shape)
+        asked = ScriptedChat(SEARCH % "unusual charges", DONE, "Nothing unusual.")
+        anew, _ = _ask(g, member, question, asked)
+        assert not anew["cached"] and anew["answer"] == "Nothing unusual.", shape
+    # What is kept from here on is replayed.
+    again, _ = _ask(g, member, question, ScriptedChat("unused"))
+    assert again["cached"] and again["answer"] == "Nothing unusual."
 
 
 # Settings that shape an answer are kept with it.

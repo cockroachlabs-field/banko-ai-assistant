@@ -28,3 +28,19 @@ class ScriptedChat:
     def prompts(self) -> list[str]:
         """Every message content the model saw, flattened, for assertions."""
         return [m["content"] for _, msgs in self.calls for m in msgs]
+
+
+def reworded(messages: list[dict], words: dict[str, str] | None = None) -> str:
+    """A translation as a model gives it: the text it was sent, its words
+    changed and every figure kept. The assistant does not show a translation
+    that changed, added or lost a figure, so a scripted one has to keep
+    them as a real one does."""
+    text = messages[-1]["content"].split("\n\n", 1)[1]
+    for was, now in (words or SPANISH).items():
+        text = text.replace(was, now)
+    return text
+
+
+SPANISH = {"You spent": "Gastaste", "You went to": "Fuiste a", "Your biggest purchase": "Tu compra más grande",
+           "transactions": "transacciones", "- Steady.": "- Estable."}
+

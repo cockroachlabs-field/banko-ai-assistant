@@ -23,7 +23,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from datetime import time as datetime_time
 from typing import Annotated, Any, TypedDict
@@ -43,7 +43,7 @@ from ..utils import clock
 from ..utils.embeddings import note_skipped
 from ..utils.intent_classifier import EVER, extract_window
 from ..utils.request_trace import serving_regions, trace_step
-from . import answers, background, narration
+from . import answers, background, figures, narration
 from .planner import first_object, parse_plan, plan_and_act
 from .prompts import answer_messages, memory_extraction_messages
 from .router import FOLLOW_UP, Route, reads_as_follow_up
@@ -302,7 +302,7 @@ def _own_merchants(state: TurnState, deps: TurnDeps) -> Callable[[str], bool]:
 NOT_FOUND = "I couldn't find a category or merchant called '{subject}'."
 # The cards code writes from SQL, as they are kept. Raise it when a card's words or layout change:
 # an older card is then not found again.
-CARD_KEPT = 1
+CARD_KEPT = 2    # 2: a card's translation is read for its figures before it is kept
 
 
 def _card_key(state: TurnState, deps: TurnDeps, kind: str, name: str | None, days: tuple[date, date] | None,
@@ -439,7 +439,7 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             # A total across every category would answer a question nobody asked.
             _step("Category lookup", f"no category or merchant called '{intent.subject}'",
                   ms=(time.perf_counter() - t0) * 1000, status="warning")
-            return {"answer": answers.translate(NOT_FOUND.format(subject=intent.subject),
+            return {"answer": _translate(NOT_FOUND.format(subject=intent.subject),
                                                 state.get("language") or "English", deps.chat)}
     # Named only when all the user's rows live in their home region: a sum
     # pinned there would miss rows written elsewhere and answer "none".
@@ -474,19 +474,20 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region,
                                                                   merchant=merchant), region)
         card = answers.render_aggregation_markdown(agg)
-        answer = answers.translate(card, language, deps.chat)
+        answer = _translate(card, language, deps.chat)
         _keep_card(state, deps, kept, card, answer)
         return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}, "asked": asked}
     key, hit = None, None
     try:
         key = caches.search_key(user_id, ledger.data_version(user_id, deps.url),
-                                # card: 2 since the card carries a breakdown and the insights are written from it
+                                # card: 2 since the card carries a breakdown and the insights are written from it;
+                                # 3 since the insights are read for their figures before they are kept
                                 {"agg": [agg.operation, agg.category, agg.merchant, str(agg.window_start),
-                                         str(agg.window_end), agg.total, agg.count], "lang": language, "card": 2})
+                                         str(agg.window_end), agg.total, agg.count], "lang": language, "card": 3})
         hit = caches.get_search(user_id, key, url=deps.url, stat="narrative")
     except Exception as exc:  # a cache outage is a miss, never a broken answer
         note_skipped(log, "narrative cache read", exc)
-    saved = 0
+    saved, checked = 0, None
     if hit:
         text, cached, streamed = hit[0]["answer"], True, False
         saved = caches.estimate_tokens(text)
@@ -500,18 +501,23 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         if writes:
             _running("answer", "Writing the answer")
         t0 = time.perf_counter()
-        (text, finished), cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
+        (text, finished, readers), cached, streamed = _narrate(agg, state["message"], language, deps.chat), False, True
         if writes:
             _step("LLM answer", "narrative streamed" if finished else "the model stopped early; its words are kept",
                   ms=_since(t0), status="success" if finished else "warning", key="answer")
-        if key is not None and finished:  # a narrative the model never finished is never replayed
+        reports = [r for r in (_figures_checked(reader, what) for reader, what in readers) if r]
+        if reports:
+            checked = {"read": sum(r["read"] for r in reports), "left_out": [x for r in reports for x in r["left_out"]]}
+        # A narrative the model never finished is never replayed, nor one with a piece of it left out.
+        if key is not None and finished and not any(reader.held for reader, _ in readers):
             # Kept as long as a cached answer: the key holds the data version and the exact figures.
             background.submit("narrative cache write", caches.put_search, user_id, key, [{"answer": text}],
                               url=deps.url, stat="narrative", minutes=get_config().cache_ttl_hours * 60)
     explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region, merchant=merchant),
                                   region)
     return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,
-            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}, "asked": asked}
+            "meta": {"region": served, "db_ms": int(db_ms), "explain": explain,
+                     **({"figures": checked} if checked else {})}, "asked": asked}
 
 
 def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str | None, db_ms: float,
@@ -548,7 +554,7 @@ def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str
     if page["next"]:
         meta["search"] = page  # the chat's Show more pages it
     card = answers.render_aggregation_markdown(agg)
-    answer = answers.translate(card, state.get("language") or "English", deps.chat)
+    answer = _translate(card, state.get("language") or "English", deps.chat)
     _keep_card(state, deps, kept, card, answer, page)
     return {"answer": answer, "meta": meta, "page": page}
 
@@ -596,7 +602,7 @@ def visits(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     card = answers.render_visits_markdown(found, window=window, last_ever=last_ever)
     explain, served = _query_plan(
         lambda: txns.explain_merchant_visits(user_id, found["merchant"], url=deps.url, **days), region)
-    answer = answers.translate(card, state.get("language") or "English", deps.chat)
+    answer = _translate(card, state.get("language") or "English", deps.chat)
     _keep_card(state, deps, kept, card, answer)
     return {"answer": answer, "meta": {"region": served, "db_ms": int(db_ms), "explain": explain},
             "asked": _asked("visits", found["merchant"], window)}
@@ -653,35 +659,83 @@ def _relay(open_stream, prefix: str = "") -> tuple[str, bool]:
     return "".join(sent), True
 
 
-def _narrate(agg, question: str, language: str, chat: Chat) -> tuple[str, bool]:
+def _translate(text: str, language: str, chat: Chat) -> str:
+    """Text code wrote, in the asker's language. When the translation
+    changed, added or lost a figure the English goes out, and the trace
+    says so: the figures are SQL's, and a card in English with the right
+    ones beats one in Spanish with a wrong one."""
+    out = answers.translate(text, language, chat)
+    if out != text and not figures.translation_keeps(text, out):
+        log.warning("a translation into %s changed a figure; the English is shown", language)
+        _step("Figures check", "the translation changed a figure, so the English is shown", status="warning")
+        return text
+    return out
+
+
+def _left_out_note(reader: figures.Reader, shown: str) -> str:
+    """What is said under a model's text when a piece of it was held back."""
+    if not shown.strip():
+        return NOTHING_STOOD
+    return FIGURE_LEFT_OUT if len(reader.held) == 1 else FIGURES_LEFT_OUT.format(n=len(reader.held))
+
+
+def _total_given(agg, card: str, question: str) -> figures.Given:
+    """The figures the model that writes a total's observations is given:
+    the total with its breakdown, the card above them as it reads (its days
+    are the window's, last day included), and the question."""
+    return figures.given(asdict(agg), card, question)
+
+
+def _narrate(agg, question: str, language: str, chat: Chat) -> tuple[str, bool, list[tuple[figures.Reader, str]]]:
     """The aggregation answer, streamed as it is produced. In English the SQL
     card goes out at once and the insights stream after it. In another
     language the insights come first (one call), then the translation of
-    card and insights streams. Returns exactly the text sent, and whether
-    the model finished all of it (only a finished narrative is cached)."""
+    card and insights streams. Returns exactly the text sent, whether the
+    model finished all of it, and the readers that read what the model
+    wrote, each with what it read.
+
+    What the model writes is read before it is shown (assistant/figures.py):
+    an observation with a figure that is not on the card, in the breakdown
+    or in the question is dropped, and a translated sentence with a figure
+    the English does not have is held back. Only a narrative the model
+    finished, with nothing held back, is cached."""
     card = answers.render_aggregation_markdown(agg)
+    known = _total_given(agg, card, question)
     if language == "English":
         _emit_text(card)
         if not agg.count:
-            return card, True
-        insights, finished = _relay(lambda: chat.stream(answers.insights_messages(agg, question), temperature=0.4),
-                                    prefix="\n\n")
+            return card, True, []
+        reader = figures.Reader(known)
+        insights, finished = _relay(lambda: figures.released(
+            chat.stream(answers.insights_messages(agg, question), temperature=0.4), reader), prefix="\n\n")
         if insights:
             narration.insights()
-        return card + insights, finished
+        return card + insights, finished, [(reader, "observations")]
     notes = answers.aggregation_insights(agg, question, chat) if agg.count else None
+    wrote = notes is not None
+    readers: list[tuple[figures.Reader, str]] = []
     if notes:
+        reader = figures.Reader(known)
+        notes = "".join(figures.released([notes], reader)).strip() or None
+        readers.append((reader, "observations"))
         narration.insights()
     english = card + (f"\n\n{notes}" if notes else "")
-    translated, finished = _relay(lambda: chat.stream(answers.translation_messages(english, language),
-                                                      temperature=0.1))
+    translating = figures.translation_reader(english)
+    translated, finished = _relay(lambda: figures.released(
+        chat.stream(answers.translation_messages(english, language), temperature=0.1), translating))
     if not translated:  # no translation came back: the English, figures and all, never cached as the translation
         _emit_text(english)
-        return english, False
+        return english, False, readers
     translated = answers.unwrap_html(translated)
+    readers.append((translating, "translated sentences"))
+    if translating.held:
+        # A sentence of the translation had a figure the English does not: it was not shown.
+        note = _left_out_note(translating, translated)
+        _emit_text(f"\n\n{note}")
+        translated = f"{translated}\n\n{note}"
     if translated != english:
         narration.rendered(language)
-    return translated, finished and (notes is not None or not agg.count)
+    return translated, finished and (wrote or not agg.count), readers
 
 
 RECEIPT_KEYS = ("document_id", "merchant", "amount", "date", "category", "items", "expense_id")
@@ -697,7 +751,7 @@ def receipt(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         latest = receipts.latest_receipt(state["user_id"], url=deps.url)
         if latest is None:
             _step("Receipt details", "no receipt yet", ms=(time.perf_counter() - t0) * 1000, status="warning")
-            return {"answer": answers.translate(NO_RECEIPT, state.get("language") or "English", deps.chat)}
+            return {"answer": _translate(NO_RECEIPT, state.get("language") or "English", deps.chat)}
         adopted, which = {k: latest.get(k) for k in RECEIPT_KEYS}, "your latest receipt"
         ctx = replace(ctx, active_receipt=adopted)
     if (scope := _receipt_scope(state, ctx.active_receipt)):
@@ -725,11 +779,11 @@ def memory(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         _step("Memory removed" if removed else "Nothing to forget", ", ".join(removed))
         text = (f"Done, I forgot that {answers.second_person(removed[0])}." if removed
                 else "I didn't have anything like that saved.")
-    return {"answer": answers.translate(text, language, deps.chat)}
+    return {"answer": _translate(text, language, deps.chat)}
 
 
 def offtopic(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
-    return {"answer": answers.translate(answers.redirect_message(), state.get("language") or "English",
+    return {"answer": _translate(answers.redirect_message(), state.get("language") or "English",
                                         runtime.context.chat)}
 
 
@@ -829,7 +883,7 @@ def _cached_beside_receipt(state: TurnState, deps: TurnDeps, scope: str, languag
 
     def kept(words: bool) -> dict | None:
         got = caches.get_search(user_id, _receipt_key(user_id, scope, state["message"], route, language, deps.url,
-                                                      prefs.shape, words, deps.day, is_merchant, version),
+                                                      _shape(deps), words, deps.day, is_merchant, version),
                                 url=deps.url, stat=None)
         return got[0] if isinstance(got, list) and got and got[0].get("answer") else None
 
@@ -903,11 +957,11 @@ def plan(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
             hit = caches.get_answer(user_id, version=ledger.data_version(user_id, deps.url), language=language,
                                     query=state["message"], qvec=embed(state["message"]),
                                     match=deps.prefs.cache_match, similarity=deps.prefs.cache_similarity_threshold,
-                                    shape=deps.prefs.shape, standalone=not state.get("messages"),
+                                    shape=_shape(deps), standalone=not state.get("messages"),
                                     previous=_just_asked(state), thread_id=state.get("thread_id"),
                                     refused=refused, url=deps.url,
                                     # Answers kept before shapes were recorded were shaped by the deployment's settings.
-                                    unshaped=deps.prefs.shape == preferences.defaults().shape)
+                                    unshaped=False)
         except Exception as exc:  # a cache outage is a miss, never a broken answer
             note_skipped(log, "answer cache read", exc)
         if hit:
@@ -980,7 +1034,7 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     asked = state.get("last_asked")
     if not last.get("next"):
         _step("Next page", f"nothing after the last page of {what}")
-        return {"answer": answers.translate(done, language, deps.chat), "page": last, "asked": asked}
+        return {"answer": _translate(done, language, deps.chat), "page": last, "asked": asked}
     _running("tool:1", _TOOL_PHASES["search_transactions"])
     t0 = time.perf_counter()
     size = deps.prefs.search_page_size
@@ -1003,7 +1057,7 @@ def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     else:
         line = MORE_LISTED.format(n=len(items), what=last["category"]) if listed else \
             MORE_LINE.format(n=len(items), q=last["q"])
-    return {"answer": answers.translate(line, language, deps.chat), "page": page, "asked": asked,
+    return {"answer": _translate(line, language, deps.chat), "page": page, "asked": asked,
             "meta": {"region": home, "db_ms": int(db_ms), "search": {**page, "items": items}}}
 
 
@@ -1073,7 +1127,8 @@ def _with_cites(value: Any) -> Any:
     return value
 
 
-def _facts(results: list[dict]) -> str:
+def _useful(results: list[dict]) -> list[dict]:
+    """What the lookups found, as the model that writes the answer is given it."""
     useful = []
     for r in results:
         if not r.get("ok"):
@@ -1087,7 +1142,56 @@ def _facts(results: list[dict]) -> str:
                 result = {k: v for k, v in result.items() if k != "next_cursor"}
             result = _with_cites(result)
         useful.append({"tool": r["tool"], "result": result, **({"capped_at": r["clamped"]} if r.get("clamped") else {})})
+    return useful
+
+
+def _facts(results: list[dict]) -> str:
+    useful = _useful(results)
     return json.dumps(useful, default=str)[:8000] if useful else "[]"
+
+
+def _shape(deps: TurnDeps) -> str:
+    """What shaped a model's answer, as the answer cache keeps it: the
+    asker's settings, and that the answer was read for its figures. An
+    answer kept before they were read carries no such mark and is not
+    replayed."""
+    return f"{deps.prefs.shape};figures=read"
+
+
+# Said under an answer when a sentence of the model's was not shown: a figure
+# in it is in nothing the model was given (assistant/figures.py).
+FIGURE_LEFT_OUT = "I left out a sentence because a figure in it is not in your data."
+FIGURES_LEFT_OUT = "I left out {n} sentences because figures in them are not in your data."
+NOTHING_STOOD = "I couldn't put that into words without a figure that is not in your data. Please ask again."
+
+
+def _given(state: TurnState, results: list[dict]) -> figures.Given:
+    """The figures in everything the model that writes this turn's answer
+    is given: what the lookups found, the question, the conversation so
+    far, what the user asked to be remembered and what the conversation
+    was opened from."""
+    return figures.given(_useful(results), state["message"],
+                         [m.get("content") for m in state.get("messages") or []],
+                         [m.get("content") for m in state.get("memories") or []],
+                         state.get("context_facts") or "")
+
+
+def _figures_checked(reader: figures.Reader, what: str = "sentences") -> dict | None:
+    """The trace step for what a reader made of a model's text, and what the
+    answer's meta says of it: how many figures it read, and each piece it
+    held back with the figures nobody gave. None when the text had no
+    figure at all."""
+    left_out = [{"text": piece.strip()[:300], "figures": missing} for piece, missing in reader.held]
+    if left_out:
+        named = "; ".join(", ".join(item["figures"]) for item in left_out)[:160]
+        _step("Figures check", f"{len(left_out)} of {reader.checked} {what} left out: {named} not in the data",
+              status="warning")
+    elif reader.figures:
+        _step("Figures check", f"{reader.figures} figures in {reader.checked} {what}, every one from the data",
+              status="success")
+    else:
+        return None
+    return {"read": reader.figures, "left_out": left_out}
 
 
 def _positive(amount: Any) -> Any:
@@ -1133,7 +1237,7 @@ def _confirmation(proposals: list[dict], language: str, chat: Chat) -> str:
     """The fixed line a proposal turn ends with, whatever the model said:
     nothing changes until the user clicks Confirm."""
     lines = "\n".join(CONFIRM_LINE.format(summary=str(p.get("summary") or "").rstrip(".")) for p in proposals)
-    return answers.translate(lines, language, chat)
+    return _translate(lines, language, chat)
 
 
 def _raised(results: list[dict]) -> bool:
@@ -1147,13 +1251,13 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     language = state.get("language") or "English"
     answer = state.get("answer") or ""
     results = state.get("results") or []
-    generated = False
+    generated, checked, reader = False, None, None
     if answer:
         if not state.get("streamed"):  # a fixed or cached answer; a streamed one already went out
             _emit_text(answer)
     elif _raised(results) and not any(r.get("ok") for r in results):
         # Nothing to write from, and a model given no facts says the user has none.
-        answer = answers.translate(LOOKUP_FAILED, language, deps.chat)
+        answer = _translate(LOOKUP_FAILED, language, deps.chat)
         _emit_text(answer)
     else:
         msgs = answer_messages(state["message"], language=language,
@@ -1162,15 +1266,21 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         narration.generating(language)
         _running("answer", "Writing the answer")
         t0 = time.perf_counter()
-        parts = []
-        for piece in deps.chat.stream(msgs, temperature=0.3):
-            parts.append(piece)
+        # Read as it arrives: a sentence goes out when it is whole and every
+        # figure in it is one the model was given, and never otherwise.
+        reader = figures.Reader(_given(state, results))
+        for piece in figures.released(deps.chat.stream(msgs, temperature=0.3), reader):
             _emit({"type": "token", "text": piece})
-        answer = "".join(parts).strip()
+        answer = reader.shown.strip()
         generated = True
         _step("LLM answer", "streamed", ms=_since(t0), status="success", key="answer")
+        checked = _figures_checked(reader)
+        if reader.held:
+            note = _translate(_left_out_note(reader, answer), language, deps.chat)
+            _emit({"type": "token", "text": f"\n\n{note}" if answer else note})
+            answer = f"{answer}\n\n{note}" if answer else note
         if _raised(results):
-            note = answers.translate(LOOKUP_PARTLY_FAILED, language, deps.chat)
+            note = _translate(LOOKUP_PARTLY_FAILED, language, deps.chat)
             _emit({"type": "token", "text": f"\n\n{note}" if answer else note})
             answer = f"{answer}\n\n{note}" if answer else note
     citations = _cited(answer, results) if results else _cited_from_ledger(state["user_id"], answer, deps)
@@ -1185,16 +1295,18 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     # card or an empty reply would replay wrong on a hit, and an answer that
     # any failed tool call left short of evidence would keep that gap for
     # every later ask.
+    elif reader is not None and reader.held:
+        pass    # a sentence was left out: not kept, so the next ask can get the whole answer
     elif (generated and state["route"].get("kind") == "plan" and _cacheable(state) and answer
           and results and all(r.get("ok") for r in results)):
         background.submit("answer cache write", _keep_answer, state["user_id"], language, state["message"],
-                          answer, deps.url, deps.prefs.shape, not state.get("messages"), state.get("thread_id"),
+                          answer, deps.url, _shape(deps), not state.get("messages"), state.get("thread_id"),
                           deps.day)
     elif (generated and state["route"].get("kind") in ("plan", "receipt") and answer and results
           and all(r.get("ok") for r in results) and (scope := _receipt_scope(state))):
         # Beside a receipt: the same rule, with the receipt in the key.
         background.submit("answer cache write", _keep_beside_receipt, state["user_id"], scope, state["message"],
-                          state["route"].get("kind"), language, answer, deps.url, deps.prefs.shape,
+                          state["route"].get("kind"), language, answer, deps.url, _shape(deps),
                           not state.get("messages"), state.get("thread_id"), deps.day)
     for c in citations:
         _emit({"type": "citation", **c})
@@ -1202,10 +1314,11 @@ def respond(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
         _emit(p)
     # Everything the answer event needs, sent now: learn and the checkpoint
     # write still have to run, and nobody should wait for them.
+    meta = {**(state.get("meta") or {}), **({"figures": checked} if checked else {})}
     _emit({"type": "final", "answer": answer, "citations": citations, "proposals": proposals,
            "cached": bool(state.get("cached")), "saved_tokens": int(state.get("saved_tokens") or 0),
-           "route": state.get("route") or {}, "meta": dict(state.get("meta") or {})})
-    return {"answer": answer, "citations": citations, "last_route": state["route"].get("kind"),
+           "route": state.get("route") or {}, "meta": meta})
+    return {"answer": answer, "citations": citations, "meta": meta, "last_route": state["route"].get("kind"),
             "last_search": state.get("page"), "last_asked": state.get("asked"),
             "messages": [{"role": "user", "content": state["message"]},
                          {"role": "assistant", "content": answers.strip_citations(answer)}]}
