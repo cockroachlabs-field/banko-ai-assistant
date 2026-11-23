@@ -35,43 +35,6 @@ class VectorSearchEngine:
         return load_embedding_model()
 
     @db_retry(max_attempts=3, initial_delay=0.5)
-    def simple_search_expenses(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
-        """
-        Simple search function that matches the original implementation exactly.
-        Returns list of dictionaries like the original search_expenses function.
-        """
-        print("\n🔍 SIMPLE VECTOR SEARCH:")
-        print(f"1. Query: '{query}' | Limit: {limit}")
-        
-        # Generate embedding
-        raw_embedding = self.embedding_model.encode(query)
-        print(f"2. Generated embedding with {len(raw_embedding)} dimensions")
-        
-        # Convert to PostgreSQL vector format (matching original implementation)
-        search_embedding = json.dumps(raw_embedding.flatten().tolist())
-        
-        # Use the exact same query as the original implementation
-        search_query = text("""
-            SELECT 
-                description,
-                merchant,
-                shopping_type,
-                expense_amount,
-                embedding <=> :search_embedding as similarity_score
-            FROM expenses
-            ORDER BY embedding <=> :search_embedding
-            LIMIT :limit
-        """)
-        
-        with self.engine.connect() as conn:
-            results = conn.execute(search_query, 
-                                 {'search_embedding': search_embedding, 'limit': limit})
-            search_results = [dict(row._mapping) for row in results]
-            print(f"3. Database query returned {len(search_results)} expense records")
-            
-            return search_results
-    
-    @db_retry(max_attempts=3, initial_delay=0.5)
     def search_expenses(
         self,
         query: str,
@@ -263,7 +226,7 @@ class VectorSearchEngine:
         return results
     
     def _build_user_specific_query(self, filter_clause: str = "") -> str:
-        """Build SQL query for user-specific vector search."""
+        """One user's purchases, through the vector index whose prefix column is the user."""
         return """
         SELECT
             expense_id,
@@ -277,14 +240,15 @@ class VectorSearchEngine:
             payment_method,
             recurring,
             tags
-        FROM expenses
+        FROM expenses@idx_expenses_user_embedding
         WHERE user_id = :user_id""" + filter_clause + """
         ORDER BY embedding <=> :search_embedding
         LIMIT :limit
         """
 
     def _build_general_query(self, filter_clause: str = "") -> str:
-        """Build SQL query for general vector search."""
+        """A search with no user in it: every user's purchases, which no index holds any more, so it
+        scans the table. No route asks for one (/api/search names the signed-in user)."""
         return """
         SELECT
             expense_id,
@@ -324,7 +288,7 @@ class VectorSearchEngine:
             AVG(expense_amount) as average_amount,
             shopping_type,
             COUNT(*) as category_count
-        FROM expenses
+        FROM expenses@idx_expenses_user_date
         AS OF SYSTEM TIME follower_read_timestamp()
         WHERE user_id = :user_id
         AND expense_date >= CURRENT_DATE - CAST(:days || ' days' AS INTERVAL)

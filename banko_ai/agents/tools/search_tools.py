@@ -38,19 +38,21 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
         
         Args:
             query: Natural language search query
-            user_id: Optional user ID to filter by
+            user_id: Whose purchases to search. Without one the search is declined:
+                purchases are kept apart by user, and no route asks for everyone's.
             limit: Number of results to return
         
         Returns:
             JSON string with search results
         """
+        if not user_id:
+            return json.dumps({'success': False, 'error': 'a search needs a user_id: purchases are searched for one user'})
         try:
             # Generate embedding for query
             query_embedding = embedding_model.encode(query).tolist()
             
             # Format embedding as JSON array for CockroachDB v25.4.0+
             # No CAST needed with v25.4.0 GA
-            import json
             embedding_json = json.dumps(query_embedding)
             
 
@@ -70,17 +72,12 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
                         expense_date,
                         payment_method,
                         embedding <=> :embedding as distance
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_embedding
+                    WHERE user_id = :user_id
+                    ORDER BY embedding <=> :embedding LIMIT :limit
                 """
-                
-                params = {'embedding': embedding_json, 'limit': limit}
-                
-                if user_id:
-                    sql += " WHERE user_id = :user_id"
-                    params['user_id'] = user_id
-                
-                # Order by expression (not alias) for index usage
-                sql += " ORDER BY embedding <=> :embedding LIMIT :limit"
+                # The index whose prefix column is the user, and the expression (not its alias) to order by.
+                params = {'embedding': embedding_json, 'limit': limit, 'user_id': user_id}
                 
                 result = conn.execute(text(sql), params)
                 rows = result.fetchall()
@@ -119,12 +116,16 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
         Search expenses using SQL filters (exact matches).
         
         Args:
-            filters: Dictionary of filters (e.g., {'category': 'food', 'min_amount': 100})
+            filters: Dictionary of filters (e.g., {'user_id': '...', 'category': 'food', 'min_amount': 100}).
+                user_id is needed: without it the search is declined.
             limit: Number of results to return
         
         Returns:
             JSON string with search results
         """
+        if not (filters or {}).get('user_id'):
+            return json.dumps({'success': False, 'error': 'a search needs a user_id in its filters: '
+                                                          'purchases are searched for one user'})
         try:
 
             engine = get_engine(database_url)
@@ -168,7 +169,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
                     SELECT 
                         expense_id, user_id, description, expense_amount, merchant,
                         shopping_type, expense_date, payment_method
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE {where_sql}
                     ORDER BY expense_date DESC
                     LIMIT :limit
@@ -260,7 +261,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             name="vector_search_expenses",
             description="""Search expenses using natural language semantic similarity.
             Use this when the user asks about expenses in conversational terms.
-            Args: query (str), user_id (optional str), limit (optional int, default 5)
+            Args: query (str), user_id (str, whose purchases), limit (optional int, default 5)
             Returns: JSON with matching expenses and similarity scores""",
             func=lambda query, user_id=None, limit=5: vector_search_expenses(query, user_id, limit)
         ),
@@ -268,7 +269,7 @@ def create_search_tools(database_url: str, embedding_model) -> list[Tool]:
             name="sql_search_expenses",
             description="""Search expenses using exact filters (category, amount, date, merchant).
             Use this for precise queries with specific criteria.
-            Args: filters (dict with keys: user_id, category, merchant, min_amount, max_amount, start_date, end_date), limit (optional int, default 10)
+            Args: filters (dict with user_id, and any of: category, merchant, min_amount, max_amount, start_date, end_date), limit (optional int, default 10)
             Returns: JSON with filtered expenses""",
             func=lambda filters, limit=10: sql_search_expenses(filters, limit)
         ),

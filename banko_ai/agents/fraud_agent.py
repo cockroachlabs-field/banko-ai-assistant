@@ -375,7 +375,7 @@ Be thorough but not overly cautious. False positives are costly."""
         with get_engine(self.database_url).connect() as conn:
             return list(conn.execute(text("""
                 SELECT expense_id::TEXT, merchant, expense_amount, expense_date
-                FROM expenses
+                FROM expenses@idx_expenses_user_date
                 WHERE user_id = :user_id
                 AND merchant ILIKE :merchant
                 AND expense_amount = :amount

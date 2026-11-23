@@ -396,7 +396,7 @@ def create_document_tools(database_url: str, embedding_model) -> list[Tool]:
                     SELECT 
                         expense_id, description, expense_amount, merchant, 
                         expense_date, shopping_type
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE user_id = :user_id
                     AND expense_amount = :amount
                     AND merchant ILIKE :merchant
@@ -434,7 +434,7 @@ def create_document_tools(database_url: str, embedding_model) -> list[Tool]:
                         expense_id, description, expense_amount, merchant, 
                         expense_date, shopping_type,
                         ABS(expense_amount - :amount) as amount_diff
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE user_id = :user_id
                     AND expense_date = :date::DATE
                     AND ABS(expense_amount - :amount) < 5.0
