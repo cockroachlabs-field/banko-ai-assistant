@@ -10,14 +10,15 @@ words to ignore: "show my savings account" is not "show my savings account
 transactions". One shape can: a spending category or one of the user's own
 merchants, asked for bare or as its purchases, for the same dates.
 
-That shape is what the router sends to SQL now (subject_asked): such a
-question is answered by the database on every model, and never reaches a
-model or the cache. So the product matches two ways (CACHE_MATCH, and each
+That shape is what the router sends to SQL (subject_asked): such a question
+is answered by the database on every model, and its card is kept under what
+it asks for, never under its words (tests/test_named_alone_from_sql.py). The
+answer cache was the first to read the shape, as a third way to match
+(words), and reads it no more. It matches two ways (CACHE_MATCH, and each
 person's own choice in Settings): exact, the same question; similar, also,
 for a conversation's first question, any question at least as similar as the
 similarity setting, unless it names other dates or numbers or differs in a
-word that turns a question around. get_answer can still match the shape
-(match="words"), which nothing asks it to."""
+word that turns a question around."""
 
 import os
 
@@ -31,6 +32,24 @@ from banko_ai.services._vector import embed
 from tests._money import card_purchase, drop_user, make_user, seeded_diner
 
 needs_db = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
+
+
+def _asked(question: str, today=None, is_merchant=None):
+    """What a question in the shape asks for (C.subject_asked), as one line
+    to compare: the name with the days it names, "@" before a merchant's,
+    and whether it stands bare. None for any other question."""
+    found = C.subject_asked(question, today, is_merchant)
+    if found is None:
+        return None
+    days = "".join(f" {day.isoformat()}" for day in found.window or ())
+    return ("@" if found.kind == "merchant" else "") + found.name + days, found.bare
+
+
+def _one(question: str, today=None, is_merchant=None) -> str:
+    """What two wordings of one question share: the thing asked for with
+    its days, or, outside the shape, the question as the cache reads it."""
+    found = _asked(question, today, is_merchant)
+    return found[0] if found else C.normalize_question(question)
 
 
 # The same question, as the cache reads it.
@@ -84,7 +103,7 @@ def test_a_question_in_a_script_with_vowel_signs_keeps_them():
     assert C.normalize_question("दिन का खर्च?") == "दिन का खर्च"
 
 
-# The same question in other words: a spending category, asked for bare or as its purchases.
+# One thing asked for in other words: a spending category, bare or as its purchases.
 
 @pytest.mark.parametrize("question, means, bare", [
     ("coffee", "coffee", True),
@@ -111,22 +130,21 @@ def test_a_question_in_a_script_with_vowel_signs_keeps_them():
 def test_a_category_asked_for_in_other_words_is_one_question(question, means, bare):
     """bare: no word for its purchases. Alone that is a whole question;
     inside a conversation it may be the short form of another one."""
-    assert C.category_ask(question) == (means, bare)
-    assert C.ask_words(question) == means
+    assert _asked(question) == (means, bare)
 
 
 def test_the_dates_a_category_is_asked_for_are_part_of_the_question():
     """The same category for the same dates, however the dates are said."""
-    this_month = C.ask_words("coffee this month")
+    this_month = _one("coffee this month")
     assert this_month.startswith("coffee ") and this_month != "coffee"
     for same in ("coffee expenses this month", "show my coffee purchases for this month", "this month coffee spending",
                  "my coffee spending during this month"):
-        assert C.ask_words(same) == this_month, same
-    assert C.ask_words("coffee last month") != this_month
-    assert C.ask_words("coffee last month") == C.ask_words("show my coffee expenses for last month")
-    assert C.ask_words("coffee expenses in the last 30 days") == C.ask_words("coffee over the past 30 days")
-    assert C.ask_words("coffee expenses in the last 30 days") != C.ask_words("coffee in the last 7 days")
-    assert C.ask_words("coffee expenses in october") == C.ask_words("coffee in october")
+        assert _one(same) == this_month, same
+    assert _one("coffee last month") != this_month
+    assert _one("coffee last month") == _one("show my coffee expenses for last month")
+    assert _one("coffee expenses in the last 30 days") == _one("coffee over the past 30 days")
+    assert _one("coffee expenses in the last 30 days") != _one("coffee in the last 7 days")
+    assert _one("coffee expenses in october") == _one("coffee in october")
 
 
 def test_a_span_of_days_no_calendar_holds_is_no_window_and_no_crash():
@@ -137,7 +155,7 @@ def test_a_span_of_days_no_calendar_holds_is_no_window_and_no_crash():
     for question in ("coffee last 1000000 days", "coffee last 1,000,000 days", "coffee in the past 99999999 months",
                      "coffee last 400000 weeks"):
         assert find_window(question) is None and extract_window(question) is None, question
-        assert C.category_ask(question) is None
+        assert _asked(question) is None
 
 
 def test_dates_are_read_as_of_the_day_the_question_was_asked():
@@ -145,11 +163,11 @@ def test_dates_are_read_as_of_the_day_the_question_was_asked():
     1st it would be November's question, and October's answer would be
     replayed for it."""
     from datetime import date
-    october = C.ask_words("coffee this month", today=date(2026, 10, 31))
-    november = C.ask_words("coffee this month", today=date(2026, 11, 1))
+    october = _one("coffee this month", today=date(2026, 10, 31))
+    november = _one("coffee this month", today=date(2026, 11, 1))
     assert october != november
-    assert october == C.ask_words("coffee expenses in october", today=date(2026, 11, 1))
-    assert C.ask_words("coffee", today=date(2026, 10, 31)) == C.ask_words("coffee", today=date(2026, 11, 1))
+    assert october == _one("coffee expenses in october", today=date(2026, 11, 1))
+    assert _one("coffee", today=date(2026, 10, 31)) == _one("coffee", today=date(2026, 11, 1))
 
 
 @pytest.mark.parametrize("question", [
@@ -174,11 +192,10 @@ def test_dates_are_read_as_of_the_day_the_question_was_asked():
     "what did I pay for at Costco", "did I get a refund from Amazon?", "which bills are due", "when do I get paid",
     "do I have any subscriptions", "any charges over $100?", "transfers to savings", "quién me pagó",
 ])
-def test_every_other_question_is_compared_word_for_word(question):
-    """One word that the shape does not account for, and it is no category
-    question: a miss costs a model call, a wrong hit is a wrong answer."""
-    assert C.category_ask(question) is None
-    assert C.ask_words(question) == C.normalize_question(question)
+def test_one_word_the_shape_does_not_account_for_and_it_is_no_category_asked_for(question):
+    """Such a question goes on to the routes that read all of it. Taken for
+    the category's purchases it would be told about another question."""
+    assert _asked(question) is None
 
 
 @pytest.mark.parametrize("one, other", [
@@ -204,7 +221,7 @@ def test_every_other_question_is_compared_word_for_word(question):
     ("where do I spend the most on coffee", "where do I spend most on coffee"),
 ])
 def test_two_questions_stay_two(one, other):
-    assert C.ask_words(one) != C.ask_words(other)
+    assert _one(one) != _one(other)
 
 
 # A merchant of one's own, asked for in other words.
@@ -231,15 +248,15 @@ def _mine(name: str) -> bool:
 ])
 def test_a_merchant_asked_for_in_other_words_is_one_question(question, means, bare):
     """The same shape as a category, for a name that is one of the user's own merchants."""
-    assert C.subject_ask(question, is_merchant=_mine) == (means, bare)
-    assert C.category_ask(question) is None and C.subject_ask(question) is None      # nobody's merchant: no shape
+    assert _asked(question, is_merchant=_mine) == (means, bare)
+    assert _asked(question) is None                                                  # nobody's merchant: no shape
 
 
 def test_a_merchants_dates_are_part_of_the_question_too():
-    bare = C.subject_ask("starbucks last month", is_merchant=_mine)
-    asked_for = C.subject_ask("show my starbucks purchases for last month", is_merchant=_mine)
+    bare = _asked("starbucks last month", is_merchant=_mine)
+    asked_for = _asked("show my starbucks purchases for last month", is_merchant=_mine)
     assert bare[0] == asked_for[0] and bare[0].startswith("@starbucks ") and (bare[1], asked_for[1]) == (True, False)
-    assert bare[0] != C.subject_ask("starbucks", is_merchant=_mine)[0]
+    assert bare[0] != _asked("starbucks", is_merchant=_mine)[0]
 
 
 # The shape as a route reads it: what is asked for, how, and for which days.
@@ -262,19 +279,6 @@ def test_the_shape_says_what_is_asked_for_how_and_for_which_days():
         assert C.subject_asked(nothing, today) is None, nothing
 
 
-@pytest.mark.parametrize("question", ["coffee", "my coffee expenses", "coffee this month", "starbucks",
-                                      "purchases at Starbucks last month", "show me movies", "bills", "how much coffee",
-                                      "my target", "target purchases"])
-def test_what_the_cache_matches_by_is_that_reading_written_as_a_key(question):
-    _everything = {*_MINE, "target"}
-    found = C.subject_asked(question, is_merchant=_everything.__contains__)
-    key = C.subject_ask(question, is_merchant=_everything.__contains__)
-    if found is None:
-        assert key is None
-    else:
-        assert key == (("@" if found.kind == "merchant" else "") + found.name + found.when, found.bare)
-
-
 @pytest.mark.parametrize("question", [
     "target purchases",                       # a merchant, and not one of this user's
     "starbucks and netflix purchases", "starbucks purchases over $5", "recent starbucks purchases",
@@ -282,7 +286,7 @@ def test_what_the_cache_matches_by_is_that_reading_written_as_a_key(question):
     "starbucks purchase", "the starbucks on main street purchases", "purchases to starbucks",
 ])
 def test_a_merchant_and_one_word_more_is_no_merchant_question(question):
-    assert C.subject_ask(question, is_merchant=_mine) is None
+    assert _asked(question, is_merchant=_mine) is None
 
 
 @pytest.mark.parametrize("name", ["target", "goal", "budget", "new balance", "savings", "cash app", "card factory",
@@ -294,23 +298,23 @@ def test_a_merchant_named_like_one_of_bankos_own_things_is_asked_for_only_as_the
     everything = lambda _: True  # noqa: E731
     for question in (f"my {name}", name, f"show me {name}", f"{name} this month", f"spending on {name}",
                      f"my spending on {name}", f"{name} spending", f"{name} expenses", f"expenses for {name}"):
-        assert C.subject_ask(question, is_merchant=everything) is None, question
+        assert _asked(question, is_merchant=everything) is None, question
     for question in (f"{name} purchases", f"{name} transactions", f"my {name} charges", f"purchases at {name}",
                      f"charges from {name}", f"spending at {name}", f"expenses at {name}"):
-        assert C.subject_ask(question, is_merchant=everything) == (f"@{name}", False), question
+        assert _asked(question, is_merchant=everything) == (f"@{name}", False), question
 
 
 @pytest.mark.parametrize("question", ["purchases at the restaurant", "expenses from the pharmacy", "charges at the hotel",
                                       "spending at restaurants"])
 def test_a_category_is_no_place_to_buy_at(question):
     """ "purchases at the restaurant" names one restaurant. At and from are a merchant's."""
-    assert C.category_ask(question) is None
-    assert C.subject_ask(question, is_merchant=lambda _: False) is None
+    assert _asked(question) is None
+    assert _asked(question, is_merchant=lambda _: False) is None
 
 
 def test_a_category_is_still_what_money_is_spent_on():
-    assert C.category_ask("spending on restaurants") == ("restaurants", False)
-    assert C.category_ask("expenses for groceries") == ("groceries", False)
+    assert _asked("spending on restaurants") == ("restaurants", False)
+    assert _asked("expenses for groceries") == ("groceries", False)
 
 
 def test_a_word_that_ends_in_the_keeps_its_ending_before_the_dates():
@@ -320,35 +324,44 @@ def test_a_word_that_ends_in_the_keeps_its_ending_before_the_dates():
     assert C.asked_subject("coffee over the last 30 days").name == "coffee"
 
 
+def _read_from_made_up_databases(monkeypatch, names) -> None:
+    """The merchants come from `names`, over a connection that is only its database's URL."""
+    monkeypatch.setattr(C, "_merchant_names", names)
+    monkeypatch.setattr(C, "request_url", lambda url: url)
+    monkeypatch.setattr(C, "read_region", lambda user, url: None)
+    monkeypatch.setattr(C, "routed", lambda url, user: url)
+    monkeypatch.setattr(C, "get_engine", lambda url: type("E", (), {"connect": lambda self: _Held(url)})())
+
+
 def test_what_is_kept_about_a_users_merchants_is_per_database_and_not_for_ever(monkeypatch):
     """One process, two databases (a test run, a scratch database): the same
     user id is another user there. And another process may have deleted the
     account, so nothing is kept longer than a while."""
     reads, clock = [], [1000.0]
-    monkeypatch.setattr(C, "_merchant_names", lambda conn, user, region=None: reads.append(conn) or {"starbucks"})
+    _read_from_made_up_databases(monkeypatch, lambda conn, user, region=None: reads.append(conn) or {"starbucks"})
     monkeypatch.setattr(C, "_now", lambda: clock[0])
     C.forget_merchants()
     uid, one, two = "3f0c6d0e-7c55-4c1b-9a65-0f6f3b0a9d11", "postgresql://one/db", "postgresql://two/db"
-    assert C.merchants_of(uid, 3, one, conn="one")("starbucks") and reads == ["one"]
-    assert C.merchants_of(uid, 3, one, conn="one")("starbucks") and reads == ["one"]                  # kept
-    assert C.merchants_of(uid, 3, two, conn="two")("starbucks") and reads == ["one", "two"]           # another database
+    assert C.merchants_of(uid, 3, one)("starbucks") and reads == [one]
+    assert C.merchants_of(uid, 3, one)("starbucks") and reads == [one]                    # kept
+    assert C.merchants_of(uid, 3, two)("starbucks") and reads == [one, two]               # another database
     clock[0] += C._MERCHANTS_SECONDS + 1
-    assert C.merchants_of(uid, 3, one, conn="one")("starbucks") and reads == ["one", "two", "one"]    # a while later
+    assert C.merchants_of(uid, 3, one)("starbucks") and reads == [one, two, one]          # a while later
     C.forget_merchants([uid])
-    assert C.merchants_of(uid, 3, two, conn="two")("starbucks") and reads == ["one", "two", "one", "two"]
+    assert C.merchants_of(uid, 3, two)("starbucks") and reads == [one, two, one, two]
 
 
 def test_a_users_data_version_is_read_only_when_a_name_asks(monkeypatch):
     """A category, or a bare name with one of Banko's own words, needs no look at the user's purchases."""
     asked = []
-    monkeypatch.setattr(C, "_merchant_names", lambda conn, user, region=None: {"starbucks"})
+    _read_from_made_up_databases(monkeypatch, lambda conn, user, region=None: {"starbucks"})
     C.forget_merchants()
     is_merchant = C.merchants_of("3f0c6d0e-7c55-4c1b-9a65-0f6f3b0a9d12", lambda: asked.append(1) or 7,
-                                 "postgresql://one/db", conn="one")
-    assert C.subject_ask("coffee expenses", is_merchant=is_merchant) == ("coffee", False) and asked == []
-    assert C.subject_ask("my target", is_merchant=is_merchant) is None and asked == []
-    assert C.subject_ask("starbucks", is_merchant=is_merchant) == ("@starbucks", True) and asked == [1]
-    assert C.subject_ask("starbucks charges", is_merchant=is_merchant) == ("@starbucks", False) and asked == [1]
+                                 "postgresql://one/db")
+    assert _asked("coffee expenses", is_merchant=is_merchant) == ("coffee", False) and asked == []
+    assert _asked("my target", is_merchant=is_merchant) is None and asked == []
+    assert _asked("starbucks", is_merchant=is_merchant) == ("@starbucks", True) and asked == [1]
+    assert _asked("starbucks charges", is_merchant=is_merchant) == ("@starbucks", False) and asked == [1]
 
 
 def test_the_merchants_are_read_inside_the_home_region_when_a_read_may_name_it(monkeypatch):
@@ -388,7 +401,7 @@ class _Held:
 
 def test_a_name_that_is_a_category_and_a_merchant_is_the_category():
     """ "cafe" names the Coffee category. A merchant called Cafe does not change what the word asks for."""
-    assert C.subject_ask("cafe purchases", is_merchant=_mine) == ("cafe", False) == C.category_ask("cafe purchases")
+    assert _asked("cafe purchases", is_merchant=_mine) == ("cafe", False) == _asked("cafe purchases")
 
 
 # A similar question that is another question.
@@ -462,12 +475,11 @@ def user():
     drop_user(uid)
 
 
-def _keep(uid: str, question: str, answer: str = "kept", *, standalone: bool = True, shape: str | None = None,
-          thread: str | None = None) -> int:
+def _keep(uid: str, question: str, answer: str = "kept", *, standalone: bool = True, shape: str | None = None) -> int:
     """An answer as a conversation's first question leaves it, unless said otherwise."""
     version = ledger.data_version(uid)
     C.put_answer(uid, version=version, language="English", query=question, qvec=embed(question), answer=answer,
-                 tokens=120, standalone=standalone, shape=shape, thread_id=thread)
+                 tokens=120, standalone=standalone, shape=shape)
     return version
 
 
@@ -476,29 +488,25 @@ def _ask(uid: str, version: int, question: str, **how):
 
 
 @needs_db
-def test_a_category_in_other_words_gets_the_answer_and_says_whose_it_was(user):
+def test_one_thing_in_other_words_is_another_question_to_the_answer_cache(user):
+    """ "coffee", then "coffee expenses", was one question here, by a third
+    way to match (words). Both are a card from SQL now, kept under what they
+    ask for, and never come this far. Whoever still asks for words gets the
+    same question, as everyone."""
     version = _keep(user, "coffee", "Nine coffee purchases.")
-    hit = _ask(user, version, "coffee expenses", match="words")
-    assert hit and hit["answer"] == "Nine coffee purchases." and hit["tokens"] == 120
-    assert hit["question"] == "coffee" and hit["match"] == "words"       # written for other words: the chat says so
-    assert _ask(user, version, "Show my coffee expenses, please", match="words")["question"] == "coffee"
-    assert _ask(user, version, "tea expenses", match="words") is None
-    assert _ask(user, version, "coffee last month", match="words") is None
-    assert _ask(user, version, "all coffee expenses", match="words") is None
-
-
-@needs_db
-def test_the_longer_wording_asked_first_serves_the_shorter_one(user):
-    """The two sit far apart as vectors (a third of the way to unrelated),
-    so the words decide, never the distance."""
-    version = _keep(user, "can you show me my coffee expenses please")
-    assert _ask(user, version, "coffee", match="words")["question"] == "can you show me my coffee expenses please"
+    for how in ("exact", "words"):
+        # Not even as a similar question, which "coffee expenses" is at half the way: words is no way to ask for that.
+        assert _ask(user, version, "coffee expenses", match=how, similarity=0.5) is None, how
+        assert _ask(user, version, "show my coffee purchases", match=how, similarity=0.5) is None, how
+        hit = _ask(user, version, "Coffee?", match=how)
+        assert hit and hit["answer"] == "Nine coffee purchases." and hit["tokens"] == 120 and hit["match"] == "exact"
+    assert _ask(user, version, "coffee expenses", match="similar", similarity=0.5)["match"] == "similar"
 
 
 @needs_db
 def test_the_same_question_is_marked_as_the_same(user):
     version = _keep(user, "coffee expenses")
-    for how in ("exact", "words", "similar"):
+    for how in ("exact", "similar"):
         hit = _ask(user, version, "Coffee  expenses?", match=how)
         assert hit and hit["match"] == "exact", how
 
@@ -537,81 +545,13 @@ def test_the_same_question_is_the_way_to_match_unless_told_otherwise(user, monke
 
 
 @needs_db
-def test_a_category_with_a_word_for_its_purchases_counts_anywhere(user):
-    """ "coffee expenses" says all it asks: kept inside a conversation or
-    asked inside one, it is the same question. Main already replayed the
-    same words there."""
-    version = _keep(user, "coffee expenses", "Nine coffee purchases.", standalone=False)
-    assert _ask(user, version, "my coffee spending", match="words", standalone=False)["answer"] == "Nine coffee purchases."
-    assert _ask(user, version, "show my coffee purchases", match="words")["answer"] == "Nine coffee purchases."
-
-
-@needs_db
-def test_a_bare_category_inside_a_conversation_is_no_whole_question(user):
-    """ "groceries?" right after "how much did I spend on restaurants last
-    month?" asks that about groceries. It is not "show my groceries
-    purchases", and what it is told is not that question's answer either."""
-    version = _keep(user, "show my groceries purchases", "All of them.")
-    assert _ask(user, version, "groceries?", match="words", standalone=False,
-                previous="How much did I spend on restaurants last month?") is None
-    assert _ask(user, version, "groceries?", match="words")["answer"] == "All of them."       # opening a conversation
-    with get_engine().begin() as c:
-        c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID)"), {"u": user})
-    _keep(user, "groceries?", "Last month's groceries.", standalone=False)
-    assert _ask(user, version, "show my groceries purchases", match="words") is None
-    assert _ask(user, version, "groceries expenses", match="words", standalone=False,
-                previous="something else") is None
-    assert _ask(user, version, "Groceries", match="words")["match"] == "exact"                # the same words, as ever
-
-
-@needs_db
-def test_a_bare_category_and_the_question_right_after_it_are_one(user):
-    """ "coffee" anywhere in a conversation, then "coffee expenses": the
-    question just asked, in other words. And the other way round."""
-    version = _keep(user, "coffee", "Nine coffee purchases.", standalone=False, thread="here")
-    hit = _ask(user, version, "coffee expenses", match="words", standalone=False, previous="Coffee?", thread_id="here")
-    assert hit and hit["answer"] == "Nine coffee purchases." and hit["match"] == "words"
-    with get_engine().begin() as c:
-        c.execute(text("DELETE FROM answer_cache WHERE user_id = CAST(:u AS UUID)"), {"u": user})
-    _keep(user, "show my coffee expenses", "Nine coffee purchases.", standalone=False, thread="here")
-    assert _ask(user, version, "coffee", match="words", standalone=False, previous="Show my coffee expenses",
-                thread_id="here")["answer"] == "Nine coffee purchases."
-    assert _ask(user, version, "coffee", match="words", standalone=False, previous="my rent", thread_id="here") is None
-
-
-@needs_db
-def test_the_question_right_before_is_this_conversations_not_anothers_in_the_same_words(user):
-    """This conversation asked "coffee" and then "coffee expenses". The
-    "coffee" that is kept was asked inside another conversation, after a
-    question about last month: the same words, and not the question this
-    conversation asked just before."""
-    version = _keep(user, "coffee", "Coffee last month.", standalone=False, thread="another")
-    assert _ask(user, version, "coffee expenses", match="words", standalone=False, previous="coffee",
-                thread_id="this one") is None
-    assert _ask(user, version, "coffee expenses", match="words", standalone=False, previous="coffee") is None
-    assert _ask(user, version, "coffee expenses", match="words", standalone=False, previous="coffee",
-                thread_id="another")["answer"] == "Coffee last month."
-
-
-@needs_db
 def test_a_question_no_one_can_read_does_not_switch_the_cache_off(user):
     """Kept beside others, "coffee last 1,000,000 days" used to raise in every lookup that met it."""
     version = _keep(user, "coffee last 1,000,000 days", "Too long ago.")
     _keep(user, "coffee", "Nine coffee purchases.")
-    assert _ask(user, version, "coffee expenses", match="words")["answer"] == "Nine coffee purchases."
+    assert _ask(user, version, "Coffee?")["answer"] == "Nine coffee purchases."
+    assert _ask(user, version, "coffee costs", match="similar", similarity=0.5)["answer"] == "Nine coffee purchases."
     assert _ask(user, version, "Coffee last 1,000,000 days", match="similar")["answer"] == "Too long ago."
-
-
-@needs_db
-def test_a_question_that_is_no_category_is_matched_word_for_word(user):
-    """ "any charges over $100?" after "show my Costco purchases" is about
-    Costco. It never answers "show my purchases over $100" asked elsewhere,
-    in any wording but its own."""
-    version = _keep(user, "any charges over $100?", "Two at Costco.", standalone=False)
-    assert _ask(user, version, "show my purchases over $100", match="words") is None
-    assert _ask(user, version, "charges over $100?", match="words", standalone=False,
-                previous="any charges over $100?") is None
-    assert _ask(user, version, "Any charges over $100?", match="words")["answer"] == "Two at Costco."
 
 
 def _kept_on(uid: str, question: str, when: str) -> None:
@@ -622,23 +562,22 @@ def _kept_on(uid: str, question: str, when: str) -> None:
 
 @needs_db
 def test_an_answer_about_this_month_does_not_answer_for_the_next(user, monkeypatch):
-    """Kept on October 31, "coffee this month" is October's. On November 1,
-    with no purchase in between, it was replayed for the same words, and
-    would now be for "coffee in november" as well."""
+    """Kept on October 31, "any odd charges this month" is October's. On
+    November 1, with no purchase in between, it was replayed for the same
+    words."""
     from datetime import date
 
     from banko_ai.utils import clock
-    version = _keep(user, "coffee this month", "October's coffee.")
-    _keep(user, "coffee", "All coffee.")
-    _kept_on(user, "coffee this month", "2026-10-31 22:00:00+00")
-    _kept_on(user, "coffee", "2026-10-31 22:00:00+00")
+    version = _keep(user, "any odd charges this month", "October's oddities.")
+    _keep(user, "any odd charges", "All of them.")
+    _kept_on(user, "any odd charges this month", "2026-10-31 22:00:00+00")
+    _kept_on(user, "any odd charges", "2026-10-31 22:00:00+00")
     monkeypatch.setattr(clock, "today", lambda: date(2026, 11, 1))
-    assert _ask(user, version, "coffee this month", match="words") is None
-    assert _ask(user, version, "coffee expenses in november", match="words") is None
-    assert _ask(user, version, "coffee expenses in october", match="words")["answer"] == "October's coffee."
-    assert _ask(user, version, "coffee expenses", match="words")["answer"] == "All coffee."     # no dates, no day
+    assert _ask(user, version, "any odd charges this month") is None
+    assert _ask(user, version, "any odd charges this month", match="similar", similarity=0.5) is None
+    assert _ask(user, version, "Any odd charges?")["answer"] == "All of them."                  # no dates, no day
     monkeypatch.setattr(clock, "today", lambda: date(2026, 10, 31))
-    assert _ask(user, version, "Coffee this month?", match="exact")["answer"] == "October's coffee."
+    assert _ask(user, version, "Any odd charges this month?")["answer"] == "October's oddities."
 
 
 @needs_db
@@ -700,45 +639,13 @@ def nothing_kept(shopper):
 
 
 @needs_db
-def test_a_merchant_of_ones_own_in_other_words_gets_the_answer(nothing_kept):
-    """ "starbucks", then "starbucks purchases": one question, like "coffee" and "coffee expenses"."""
-    version = _keep(nothing_kept, "starbucks", "Three at Starbucks.")
-    for asked in ("starbucks purchases", "show my Starbucks charges", "purchases at starbucks"):
-        hit = _ask(nothing_kept, version, asked, match="words")
-        assert hit and hit["answer"] == "Three at Starbucks." and (hit["question"], hit["match"]) == ("starbucks", "words")
-    assert _ask(nothing_kept, version, "starbucks purchases", match="exact") is None
-    assert _ask(nothing_kept, version, "starbucks purchases last month", match="words") is None
-    _keep(nothing_kept, "Trader Joe's purchases", "One at Trader Joe's.")
-    assert _ask(nothing_kept, version, "my trader joes charges", match="words")["answer"] == "One at Trader Joe's."
-
-
-@needs_db
-def test_a_name_that_is_nobodys_merchant_here_is_matched_word_for_word(nothing_kept):
-    """This user never bought at Ikea: what "ikea" asks is anybody's guess."""
-    version = _keep(nothing_kept, "ikea", "Nothing at Ikea.")
-    assert _ask(nothing_kept, version, "ikea purchases", match="words") is None
-    assert _ask(nothing_kept, version, "Ikea?", match="words")["match"] == "exact"
-    card_purchase(nothing_kept, "IKEA", "89.00", category="Shopping")       # now they have
-    version = _keep(nothing_kept, "ikea", "One at Ikea.")
-    assert _ask(nothing_kept, version, "ikea purchases", match="words")["answer"] == "One at Ikea."
-
-
-@needs_db
 def test_a_merchant_whose_name_begins_with_the_is_asked_for_with_or_without_it(nothing_kept):
     """The shape drops "the" in front of a name, and "The Home Depot" was no name it could find."""
     card_purchase(nothing_kept, "The Home Depot", "64.10", category="Shopping")
-    version = _keep(nothing_kept, "home depot", "One at The Home Depot.")
+    mine = C.merchants_of(nothing_kept, ledger.data_version(nothing_kept))
     for asked in ("the home depot purchases", "home depot purchases", "purchases at the home depot",
                   "show my Home Depot charges"):
-        assert _ask(nothing_kept, version, asked, match="words")["match"] == "words", asked
-
-
-@needs_db
-def test_a_bare_merchant_counts_where_a_bare_category_does(nothing_kept):
-    version = _keep(nothing_kept, "starbucks", "Starbucks, last month.", standalone=False, thread="another")
-    assert _ask(nothing_kept, version, "starbucks purchases", match="words") is None
-    assert _ask(nothing_kept, version, "starbucks purchases", match="words", standalone=False, previous="starbucks",
-                thread_id="another")["answer"] == "Starbucks, last month."
+        assert _asked(asked, is_merchant=mine) == ("@home depot", False), asked
 
 
 @needs_db
@@ -751,19 +658,19 @@ def test_a_users_merchants_are_read_once_for_each_state_of_their_money(nothing_k
         reads.append(user_id)
         return real(conn, user_id, region)
 
+    def mine():
+        return C.merchants_of(nothing_kept, lambda: ledger.data_version(nothing_kept))
+
     monkeypatch.setattr(C, "_merchant_names", counted)
     C.forget_merchants()
-    version = _keep(nothing_kept, "starbucks", "Three at Starbucks.")
-    assert _ask(nothing_kept, version, "Starbucks?", match="words")["match"] == "exact" and reads == []   # the same words
-    assert _ask(nothing_kept, version, "coffee expenses", match="words") is None and reads == []           # a category
-    assert _ask(nothing_kept, version, "starbucks purchases", match="exact") is None and reads == []       # not asked for
-    assert _ask(nothing_kept, version, "starbucks purchases", match="words")["match"] == "words" and len(reads) == 1
-    assert _ask(nothing_kept, version, "show my starbucks charges", match="words")["match"] == "words" and len(reads) == 1
+    assert _asked("coffee expenses", is_merchant=mine()) == ("coffee", False) and reads == []           # a category
+    assert _asked("my target", is_merchant=mine()) is None and reads == []                 # one of Banko's own words
+    assert _asked("starbucks purchases", is_merchant=mine()) == ("@starbucks", False) and len(reads) == 1
+    assert _asked("show my starbucks charges", is_merchant=mine()) == ("@starbucks", False) and len(reads) == 1
     card_purchase(nothing_kept, "Peet's Coffee", "4.75")               # another state of their money
-    version = _keep(nothing_kept, "peets coffee", "One at Peet's.")
-    assert _ask(nothing_kept, version, "peet's coffee purchases", match="words")["match"] == "words" and len(reads) == 2
+    assert _asked("peet's coffee purchases", is_merchant=mine()) == ("@peets coffee", False) and len(reads) == 2
     C.forget_merchants()
-    assert _ask(nothing_kept, version, "my peets coffee charges", match="words")["match"] == "words" and len(reads) == 3
+    assert _asked("my peets coffee charges", is_merchant=mine()) == ("@peets coffee", False) and len(reads) == 3
 
 
 @needs_db
@@ -793,29 +700,6 @@ def test_an_account_made_again_under_its_old_id_has_its_merchants_read_again():
         drop_user(uid)
 
 
-@needs_db
-def test_the_region_is_asked_for_before_a_connection_is_held(nothing_kept, monkeypatch):
-    """read_region may open a connection of its own. Asked for inside the
-    answer cache's transaction, a pool that is full would wait on itself."""
-    inside, asked, real = [False], [], C.run_transaction
-
-    def tracked(fn, **how):
-        def run(conn):
-            inside[0] = True
-            try:
-                return fn(conn)
-            finally:
-                inside[0] = False
-        return real(run, **how)
-
-    monkeypatch.setattr(C, "run_transaction", tracked)
-    monkeypatch.setattr(C, "read_region", lambda user, url: asked.append(inside[0]) or None)
-    C.forget_merchants()
-    version = _keep(nothing_kept, "starbucks", "Three at Starbucks.")
-    assert _ask(nothing_kept, version, "starbucks purchases", match="words")["match"] == "words"
-    assert asked == [False]
-
-
 # An answer is replayed only for settings that would have shaped it the same.
 
 @needs_db
@@ -829,22 +713,21 @@ def test_an_answer_kept_before_settings_were_recorded_counts_under_the_deploymen
     usual, mine = "page=10", "page=3"
     assert _ask(user, version, "coffee expenses", shape=usual) is None
     assert _ask(user, version, "coffee expenses", shape=usual, unshaped=True)["answer"] == "Kept before the upgrade."
-    assert _ask(user, version, "show my coffee purchases", match="words", shape=usual, unshaped=True)["match"] == "words"
     assert _ask(user, version, "coffee expenses", shape=mine) is None
     _keep(user, "coffee expenses", "Shaped by three a page.", shape=mine)
     assert _ask(user, version, "coffee expenses", shape=usual, unshaped=True)["answer"] == "Kept before the upgrade."
 
 
-
 @needs_db
 def test_an_answer_shaped_by_other_settings_is_not_replayed(user):
     """Three purchases a page make another answer than ten. Whoever has ten
-    must not get the three, in the same words or in other ones."""
+    must not get the three, for the same question or for a similar one."""
     version = _keep(user, "coffee", "Three of them.", shape="page=3")
     assert _ask(user, version, "coffee", shape="page=10") is None
-    assert _ask(user, version, "coffee expenses", shape="page=10") is None
+    assert _ask(user, version, "coffee expenses", match="similar", similarity=0.5, shape="page=10") is None
     assert _ask(user, version, "coffee") is None                                  # no shape named is not this shape
-    assert _ask(user, version, "coffee expenses", match="words", shape="page=3")["answer"] == "Three of them."
+    assert _ask(user, version, "coffee expenses", match="similar", similarity=0.5, shape="page=3")["answer"] == \
+        "Three of them."
     _keep(user, "coffee", "Ten of them.", shape="page=10")
     assert _ask(user, version, "coffee", shape="page=10")["answer"] == "Ten of them."
     assert _ask(user, version, "coffee", shape="page=3")["answer"] == "Three of them."
@@ -856,7 +739,7 @@ def test_an_answer_shaped_by_other_settings_is_not_replayed(user):
 def test_a_similar_question_gets_the_answer_when_similarity_is_asked_for(user):
     version = _keep(user, "any unusual charges lately")
     asked = "have there been any strange charges recently"
-    assert _ask(user, version, asked, match="words") is None
+    assert _ask(user, version, asked, match="exact") is None
     hit = _ask(user, version, asked, match="similar", similarity=0.75)
     assert hit and hit["match"] == "similar" and hit["question"] == "any unusual charges lately"
     assert 0.75 <= 1 - hit["distance"] < 1
@@ -917,7 +800,7 @@ def test_a_refused_neighbour_does_not_hide_a_similar_question_further_away(user)
     nearer is about today only and is refused, the farther one answers."""
     asked = "any unusual charges lately"
     near, far = "any unusual charges today", "have there been any strange charges recently"
-    assert C.ask_words(asked) not in (C.ask_words(near), C.ask_words(far))
+    assert C.normalize_question(asked) not in (C.normalize_question(near), C.normalize_question(far))
     version = _keep(user, near, "today's")
     _keep(user, far, "the recent ones")
     refused: list = []
@@ -929,15 +812,17 @@ def test_a_refused_neighbour_does_not_hide_a_similar_question_further_away(user)
 
 
 @needs_db
-def test_the_same_question_in_other_words_wins_over_a_nearer_similar_one(user):
-    """Both would answer: "coffee costs" is similar and nearer, the long
-    wording is the same question and farther. The same question wins."""
+def test_between_two_wordings_of_one_thing_only_similarity_counts(user):
+    """ "coffee costs" is similar to "coffee expenses" and near it. The long
+    wording asks for the same purchases and is farther: the answer cache
+    read both as the category's purchases and took the long one, as the same
+    question in other words. It reads no question that way any more. The
+    long one differs in "could" and is turned down; the near one answers."""
     asked, similar, same = "coffee expenses", "coffee costs", "could you please show me my coffee purchases"
-    assert C.other_ask(similar, asked) is None and C.ask_words(similar) != C.ask_words(asked) == C.ask_words(same)
+    assert C.other_ask(similar, asked) is None and "could" in C.other_ask(same, asked)
     version = _keep(user, similar, "what it costs")
     _keep(user, same, "the purchases")
     hit = _ask(user, version, asked, match="similar", similarity=0.5)
-    assert hit and hit["answer"] == "the purchases" and hit["match"] == "words"
+    assert hit and hit["answer"] == "what it costs" and hit["match"] == "similar"
     apart = _apart(user, asked)
-    assert apart[similar] < apart[same] <= 0.5, apart
-    assert _ask(user, version, "coffee outlay", match="similar", similarity=0.5)["match"] == "similar"
+    assert apart[similar] < apart[same] <= 0.5, apart                  # both were near enough to count
