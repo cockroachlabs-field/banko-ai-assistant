@@ -141,7 +141,7 @@ def get_recent_transactions(user_id: str, database_url: str,
             rows = conn.execute(text("""
                 SELECT expense_id, description, expense_amount,
                        shopping_type, expense_date
-                FROM expenses
+                FROM expenses@idx_expenses_user_date
                 WHERE user_id = :u
                   AND shopping_type = :c
                   AND expense_date >= :cutoff
@@ -153,7 +153,7 @@ def get_recent_transactions(user_id: str, database_url: str,
             rows = conn.execute(text("""
                 SELECT expense_id, description, expense_amount,
                        shopping_type, expense_date
-                FROM expenses
+                FROM expenses@idx_expenses_user_date
                 WHERE user_id = :u
                   AND expense_date >= :cutoff
                 ORDER BY expense_date DESC

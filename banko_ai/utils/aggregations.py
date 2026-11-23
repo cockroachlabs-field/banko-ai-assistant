@@ -12,7 +12,6 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
-from functools import lru_cache
 
 from sqlalchemy import text
 
@@ -58,24 +57,21 @@ class AggregationResult:
     top_categories: list[dict] = field(default_factory=list)
 
 
-@lru_cache(maxsize=4)
-def _distinct_categories(database_url: str) -> tuple[str, ...]:
-    from ..db.engine import get_engine
-    eng = get_engine(database_url)
-    with eng.connect() as c:
-        rows = c.execute(
-            text("SELECT DISTINCT shopping_type FROM expenses")).fetchall()
-    return tuple(r[0] for r in rows if r[0])
-
-
 _DETERMINER = re.compile(r"^(?:my|the|our)\s+")
 
 
-def resolve_category(subject: str | None, database_url: str) -> str | None:
-    """Map a question phrase to a real shopping_type: the catalog first, by
+def resolve_category(subject: str | None, database_url: str | None = None) -> str | None:
+    """Map a question phrase to a category's label: the catalog first, by
     key, label or alias ("dining" and "dining out" are Restaurant, "gas" is
-    Fuel), then a fuzzy match against the labels in the data ("restaurants").
-    None means neither found one."""
+    Fuel), then a near match against the labels people spend under
+    ("electronic", "entertainmant"). None means neither found one.
+
+    No statement is run. The near match used to be against every label in
+    the purchases table, read once per process: a scan of every user's
+    purchases in every region, for whoever first asked about something that
+    is no category ("how much did I spend at starbucks"). Purchases carry
+    the catalog's labels, so the catalog has the same list. database_url is
+    not used any more."""
     if not subject:
         return None
     from ..config.catalog import get_catalog
@@ -84,9 +80,7 @@ def resolve_category(subject: str | None, database_url: str) -> str | None:
         found = catalog.find(name)
         if found is not None:
             return found.label
-    cats = _distinct_categories(database_url)
-    if not cats:
-        return None
+    cats = catalog.spending_labels()
     subject_n = subject.lower().rstrip("s")
     for cat in cats:
         if cat.lower().rstrip("s") == subject_n:
@@ -102,7 +96,8 @@ def _merchants_of(user_id: str, database_url: str) -> list[str]:
     from ..db.engine import get_engine, routed
     with get_engine(routed(database_url, user_id)).connect() as c:
         return [r[0] for r in c.execute(text(
-            "SELECT DISTINCT merchant FROM expenses WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL"),
+            "SELECT DISTINCT merchant FROM expenses@idx_expenses_user_date "
+            "WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL"),
             {"u": user_id}) if r[0]]
 
 
@@ -211,7 +206,7 @@ def _by_amount_sql(where: str, order: str) -> str:
     amount come latest first, then by id: the same question, the same card."""
     return f"""
         SELECT expense_date, merchant, expense_amount, shopping_type
-        FROM expenses {where}
+        FROM expenses@idx_expenses_user_date {where}
         ORDER BY expense_amount {order}, expense_date DESC, expense_id
         LIMIT :n
     """
@@ -230,7 +225,7 @@ def _grouped(conn, column: str, where: str, params: dict, name: str | None = Non
     found = conn.execute(text(f"""
         SELECT {column}, SUM(expense_amount), COUNT(*),
                CASE WHEN count(DISTINCT shopping_type) = 1 THEN max(shopping_type) END
-        FROM expenses {where}
+        FROM expenses@idx_expenses_user_date {where}
         GROUP BY {column}
         ORDER BY 2 DESC, {column}
         LIMIT {BROKEN_DOWN}
@@ -266,7 +261,7 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
             SELECT COALESCE(SUM(expense_amount), 0),
                    COUNT(*),
                    MIN(expense_date), MAX(expense_date)
-            FROM expenses {where}
+            FROM expenses@idx_expenses_user_date {where}
         """), params).fetchone()
         top_merchants: list[dict] = []
         top_categories: list[dict] = []
@@ -278,7 +273,7 @@ def run_aggregation(intent: AggregationIntent, user_id: str,
             rows = [] if intent.operation == "purchases" else [
                 {"date": str(r[0]), "merchant": r[1], "amount": float(r[2])} for r in c.execute(text(f"""
                 SELECT expense_date, merchant, expense_amount
-                FROM expenses {where}
+                FROM expenses@idx_expenses_user_date {where}
                 ORDER BY expense_date DESC, expense_id
                 LIMIT {LATEST_LISTED}
             """), params).fetchall()]
@@ -334,7 +329,7 @@ def explain_aggregation(intent: AggregationIntent, user_id: str,
             SELECT COALESCE(SUM(expense_amount), 0),
                    COUNT(*),
                    MIN(expense_date), MAX(expense_date)
-            FROM expenses {_to_pyformat(where)}
+            FROM expenses@idx_expenses_user_date {_to_pyformat(where)}
         """
 
     from ..db.engine import get_engine, routed

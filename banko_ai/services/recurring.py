@@ -65,7 +65,7 @@ def detect_recurring(user_id: str, *, today: date | None = None, url: str | None
         rows = conn.execute(text("""
             SELECT lower(merchant) AS m, merchant, shopping_type, expense_date, expense_amount,
                    expense_date - lag(expense_date) OVER (PARTITION BY lower(merchant) ORDER BY expense_date) AS gap
-            FROM expenses
+            FROM expenses@idx_expenses_user_date
             WHERE user_id = CAST(:u AS UUID) AND merchant IS NOT NULL AND expense_date >= :since
             ORDER BY m, expense_date
         """), {"u": user_id, "since": today - timedelta(days=400)}).fetchall()
