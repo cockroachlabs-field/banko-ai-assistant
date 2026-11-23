@@ -161,10 +161,10 @@ def tables() -> tuple[Table, ...]:
             ("embedding", "VECTOR(384)"),
             ("created_at", "TIMESTAMPTZ DEFAULT now()"),
         ), primary_key="expense_id", indexes=(
-            Index("idx_expenses_embedding", "embedding vector_cosine_ops", vector=True),
+            # Every index on purchases leads with the user: the vector index by its prefix column, and
+            # the one every statement on one user's purchases names. No index here may hold every
+            # user's rows (see DROPPED_INDEXES).
             Index("idx_expenses_user_embedding", "user_id, embedding vector_cosine_ops", vector=True),
-            # One user's purchases are read through this one, and every statement on them names it.
-            # No plain index here may hold every user's rows (see DROPPED_INDEXES).
             Index("idx_expenses_user_date", "user_id ASC, expense_date DESC"),
         ), locality="REGIONAL BY ROW", regional_primary_key="crdb_region, expense_id"),
         Table("agent_state", _c(
@@ -629,13 +629,17 @@ def _vector_ops_upgrade(conn: Connection, topo: Topology) -> list[str]:
 
 
 # Indexes this registry once created and no longer does. Purchases are kept
-# apart by user, and by region on a multi-region database; these two held
-# every user's purchases, by merchant and by category. Nothing reads
-# purchases across users by either, each cost a write on every purchase, and
-# for a user it had no statistics on CockroachDB read one user's category or
-# merchant through them: everyone's rows, to answer for one.
+# apart by user, and by region on a multi-region database; these three held
+# every user's purchases: by merchant, by category, and the vector index
+# with no user in front of it. Nothing reads purchases across users by any
+# of them, and every purchase was written into each. For a user it had no
+# statistics on CockroachDB read one user's category or merchant through
+# the first two: everyone's rows, to answer for one. The vector index no
+# statement searched: every search by meaning is one user's and reads
+# idx_expenses_user_embedding, whose prefix column is the user.
 DROPPED_INDEXES: tuple[tuple[str, str], ...] = (("expenses", "idx_expenses_merchant"),
-                                                ("expenses", "idx_expenses_shopping_type"))
+                                                ("expenses", "idx_expenses_shopping_type"),
+                                                ("expenses", "idx_expenses_embedding"))
 
 
 def _dropped_index_upgrade(conn: Connection, topo: Topology) -> list[str]:

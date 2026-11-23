@@ -102,8 +102,8 @@ class TestVectorIndexUsage:
             ]
             
             assert len(vector_indexes) > 0, "No vector indexes found"
-            assert 'idx_expenses_embedding' in vector_indexes, \
-                "idx_expenses_embedding not found"
+            assert 'idx_expenses_user_embedding' in vector_indexes, \
+                "idx_expenses_user_embedding not found"
             
             print(f"\n   ✅ Found vector indexes: {vector_indexes}")
     
@@ -160,7 +160,7 @@ class TestVectorIndexUsage:
             # the vector index. Both are valid -- the index exists (tested
             # separately) and the optimizer picks the cheapest plan.
             plan_lower = plan_text.lower()
-            uses_vector_index = 'vector search' in plan_lower or 'idx_expenses_embedding' in plan_text
+            uses_vector_index = 'vector search' in plan_lower or 'idx_expenses_user_embedding' in plan_text
             uses_top_k = 'top-k' in plan_lower
             assert uses_vector_index or uses_top_k, \
                 f"Query plan uses neither vector index nor top-k sort:\n{plan_text}"

@@ -203,41 +203,46 @@ def _index_names(url: str, table: str) -> set[str]:
         return {str(r[0]) for r in conn.execute(text(f"SELECT index_name FROM [SHOW INDEXES FROM {table}]"))}
 
 
-# Two indexes on purchases held every user's rows, by merchant and by
-# category. Nothing reads purchases across users by either, and for a user
-# CockroachDB had no statistics on it read one user's category or merchant
-# through them: everyone's rows, to answer for one.
-EVERY_USERS = {"idx_expenses_merchant", "idx_expenses_shopping_type"}
+# Three indexes on purchases held every user's rows: by merchant, by
+# category, and the vector index with no user in front of it. Nothing reads
+# purchases across users by any of them. For a user CockroachDB had no
+# statistics on it read one user's category or merchant through the first
+# two: everyone's rows, to answer for one. The third no statement searched,
+# and every purchase was written into it.
+EVERY_USERS = {"idx_expenses_merchant", "idx_expenses_shopping_type", "idx_expenses_embedding"}
 
 
-def test_no_plain_index_on_purchases_holds_every_users_rows():
-    """Purchases are kept apart by user: every plain index on them leads
-    with the user, as the per-user vector index does with its prefix."""
+def test_no_index_on_purchases_holds_every_users_rows():
+    """Purchases are kept apart by user: every index on them leads with the
+    user, the plain one and the vector index, whose prefix column it is."""
     expenses = next(t for t in S.tables() if t.name == "expenses")
     assert not EVERY_USERS & {i.name for i in expenses.indexes}
-    plain = [i for i in expenses.indexes if not i.vector]
-    assert plain and all(i.columns.split(",")[0].split()[0] == "user_id" for i in plain), plain
+    assert expenses.indexes and all(i.columns.split(",")[0].split()[0] == "user_id" for i in expenses.indexes)
+    assert [i.name for i in expenses.indexes if i.vector] == ["idx_expenses_user_embedding"]
     for topo in (PLAIN, REGIONAL):
         assert not [name for name in EVERY_USERS if name in expenses.create_sql(topo)]
 
 
 def test_a_new_database_is_made_without_them(scratch_url):
     S.ensure_schema(scratch_url)
-    assert not EVERY_USERS & _index_names(scratch_url, "expenses")
-    assert "idx_expenses_user_date" in _index_names(scratch_url, "expenses")
+    names = _index_names(scratch_url, "expenses")
+    assert not EVERY_USERS & names
+    assert {"idx_expenses_user_date", "idx_expenses_user_embedding"} <= names
 
 
 def _as_the_release_before_left_it(url: str) -> None:
-    """A database an earlier release set up: the two indexes are there, a
+    """A database an earlier release set up: the three indexes are there, a
     purchase is in them, and the fingerprint is that release's."""
     S.ensure_schema(url)
     with get_engine(url).connect() as conn:
         conn.execution_options(isolation_level="AUTOCOMMIT")
         conn.execute(text("CREATE INDEX idx_expenses_merchant ON expenses (merchant ASC)"))
         conn.execute(text("CREATE INDEX idx_expenses_shopping_type ON expenses (shopping_type ASC)"))
+        conn.execute(text("CREATE VECTOR INDEX IF NOT EXISTS idx_expenses_embedding ON expenses "
+                          "(embedding vector_cosine_ops)"))
         conn.execute(text("INSERT INTO expenses (user_id, expense_date, expense_amount, shopping_type, merchant, "
-                          "payment_method) VALUES (gen_random_uuid(), current_date, 9.99, 'Coffee', 'Blue Bottle', "
-                          "'Credit Card')"))
+                          "payment_method, embedding) VALUES (:u, current_date, 9.99, 'Coffee', 'Blue Bottle', "
+                          "'Credit Card', :v)"), {"u": _USER, "v": _VECTOR})
         stored = json.loads(conn.execute(text("SELECT value FROM banko_meta WHERE key = 'schema_fingerprint'")).scalar())
         stored["fingerprint"] = "the-release-before"
         conn.execute(text("UPDATE banko_meta SET value = :v WHERE key = 'schema_fingerprint'"), {"v": json.dumps(stored)})
@@ -246,8 +251,10 @@ def _as_the_release_before_left_it(url: str) -> None:
 def test_a_database_that_has_them_loses_them_on_its_next_boot(scratch_url):
     """The registry only ever added what was missing, so taking an index out
     of it left the index in every database that already had it. An upgrade
-    drops the two, once: the purchases stay, the index that leads with the
-    user stays, and the boot after that runs nothing."""
+    drops the three, once: the purchases stay, the indexes that lead with
+    the user stay and still find them, and the boot after that runs nothing."""
+    from banko_ai.services._vector import nearest
+    from banko_ai.services.transactions import _EXPENSE_SEARCH
     _as_the_release_before_left_it(scratch_url)
     assert EVERY_USERS <= _index_names(scratch_url, "expenses")
     assert S.schema_state(scratch_url) == "outdated"
@@ -258,6 +265,7 @@ def test_a_database_that_has_them_loses_them_on_its_next_boot(scratch_url):
     assert {"idx_expenses_user_date", "idx_expenses_user_embedding"} <= names
     with get_engine(scratch_url).connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM expenses WHERE merchant = 'Blue Bottle'")).scalar() == 1
+        assert len(nearest(conn, user_id=_USER, qvec=_VECTOR, k=3, **_EXPENSE_SEARCH)) == 1    # by the per-user index
         assert S._dropped_index_upgrade(conn, PLAIN) == []         # nothing left for the next upgrade to do
     assert not S.ensure_schema(scratch_url).changed
 
@@ -277,7 +285,7 @@ def test_a_multi_region_database_that_has_them_loses_them_too():
         assert S.ensure_schema(url).changed
         print(f"registry applied again on a multi-region database in {time.monotonic() - started:.1f}s")
         assert not EVERY_USERS & _index_names(url, "expenses")
-        assert "idx_expenses_user_date" in _index_names(url, "expenses")
+        assert {"idx_expenses_user_date", "idx_expenses_user_embedding"} <= _index_names(url, "expenses")
         assert not S.ensure_schema(url).changed
     finally:
         _drop(MR_URL, name)
@@ -345,15 +353,16 @@ def _expense_vector_indexes(url: str) -> dict[str, str]:
 
 _L2 = {"idx_expenses_embedding": "cspann (embedding vector_l2_ops)",
        "idx_expenses_user_embedding": "cspann (user_id, embedding vector_l2_ops)"}
-_COSINE = {"idx_expenses_embedding": "cspann (embedding vector_cosine_ops)",
-           "idx_expenses_user_embedding": "cspann (user_id, embedding vector_cosine_ops)"}
+# The per-user index is built again with cosine. The one with no user in front is not: it is dropped.
+_COSINE = {"idx_expenses_user_embedding": "cspann (user_id, embedding vector_cosine_ops)"}
 
 
 def test_vector_indexes_from_before_the_cosine_change_are_rebuilt(scratch_url):
     """A database first created before 1.0.36 holds L2 vector indexes under
     the names the registry gives its cosine ones, and every 1.x release since
     created them IF NOT EXISTS, so they were never replaced. A cosine search
-    pinned to such an index is an error, so the upgrade builds them again."""
+    pinned to such an index is an error, so the upgrade builds the per-user
+    one again. The one that held every user's rows goes instead."""
     from banko_ai.services._vector import nearest
     from banko_ai.services.transactions import _EXPENSE_SEARCH
     _pre_cosine_expenses(scratch_url)
@@ -375,7 +384,8 @@ def test_a_database_an_earlier_build_of_2_0_stamped_is_repaired_on_its_next_boot
     _pre_cosine_expenses(scratch_url)
     with monkeypatch.context() as earlier:
         earlier.setattr(S, "REGISTRY_VERSION", 2)
-        earlier.setattr(S, "UPGRADES", tuple(u for u in S.UPGRADES if u is not S._vector_ops_upgrade))
+        earlier.setattr(S, "UPGRADES", tuple(u for u in S.UPGRADES
+                                             if u not in (S._vector_ops_upgrade, S._dropped_index_upgrade)))
         assert S.ensure_schema(scratch_url).changed
         assert not S.ensure_schema(scratch_url).changed  # that build's own next boot: current
     assert _expense_vector_indexes(scratch_url) == _L2

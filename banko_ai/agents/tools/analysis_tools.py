@@ -77,7 +77,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         MIN(expense_amount) as min_amount,
                         MAX(expense_amount) as max_amount,
                         STDDEV(expense_amount) as std_dev
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE {where_sql}
                 """), params)
                 
@@ -97,7 +97,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         shopping_type,
                         COUNT(*) as count,
                         SUM(expense_amount) as total
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE {where_sql}
                     GROUP BY shopping_type
                     ORDER BY total DESC
@@ -119,7 +119,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         merchant,
                         COUNT(*) as count,
                         SUM(expense_amount) as total
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE {where_sql}
                     GROUP BY merchant
                     ORDER BY total DESC
@@ -175,7 +175,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                     SELECT 
                         AVG(expense_amount) as mean,
                         STDDEV(expense_amount) as std_dev
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE user_id = :user_id
                 """), {'user_id': user_id})
                 
@@ -202,7 +202,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         expense_id, description, expense_amount, merchant,
                         shopping_type, expense_date,
                         (expense_amount - :mean) / :std_dev as z_score
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE user_id = :user_id
                     AND (expense_amount > :upper OR expense_amount < :lower)
                     ORDER BY ABS((expense_amount - :mean) / :std_dev) DESC
@@ -271,7 +271,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                             COUNT(*) as count,
                             ARRAY_AGG(expense_id) as expense_ids,
                             ARRAY_AGG(description) as descriptions
-                        FROM expenses
+                        FROM expenses@idx_expenses_user_date
                         WHERE user_id = :user_id
                         GROUP BY merchant, expense_amount, expense_date
                         HAVING COUNT(*) > 1
@@ -333,7 +333,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         COUNT(*) as count,
                         SUM(expense_amount) as total,
                         AVG(expense_amount) as average
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE user_id = :user_id
                     AND expense_date BETWEEN :start AND :end
                 """), {'user_id': user_id, 'start': period1_start, 'end': period1_end})
@@ -351,7 +351,7 @@ def create_analysis_tools(database_url: str) -> list[Tool]:
                         COUNT(*) as count,
                         SUM(expense_amount) as total,
                         AVG(expense_amount) as average
-                    FROM expenses
+                    FROM expenses@idx_expenses_user_date
                     WHERE user_id = :user_id
                     AND expense_date BETWEEN :start AND :end
                 """), {'user_id': user_id, 'start': period2_start, 'end': period2_end})
