@@ -163,9 +163,9 @@ def tables() -> tuple[Table, ...]:
         ), primary_key="expense_id", indexes=(
             Index("idx_expenses_embedding", "embedding vector_cosine_ops", vector=True),
             Index("idx_expenses_user_embedding", "user_id, embedding vector_cosine_ops", vector=True),
+            # One user's purchases are read through this one, and every statement on them names it.
+            # No plain index here may hold every user's rows (see DROPPED_INDEXES).
             Index("idx_expenses_user_date", "user_id ASC, expense_date DESC"),
-            Index("idx_expenses_merchant", "merchant ASC"),
-            Index("idx_expenses_shopping_type", "shopping_type ASC"),
         ), locality="REGIONAL BY ROW", regional_primary_key="crdb_region, expense_id"),
         Table("agent_state", _c(
             ("agent_id", "UUID NOT NULL DEFAULT gen_random_uuid()"),
@@ -626,8 +626,26 @@ def _vector_ops_upgrade(conn: Connection, topo: Topology) -> list[str]:
     return out
 
 
+# Indexes this registry once created and no longer does. Purchases are kept
+# apart by user, and by region on a multi-region database; these two held
+# every user's purchases, by merchant and by category. Nothing reads
+# purchases across users by either, each cost a write on every purchase, and
+# for a user it had no statistics on CockroachDB read one user's category or
+# merchant through them: everyone's rows, to answer for one.
+DROPPED_INDEXES: tuple[tuple[str, str], ...] = (("expenses", "idx_expenses_merchant"),
+                                                ("expenses", "idx_expenses_shopping_type"))
+
+
+def _dropped_index_upgrade(conn: Connection, topo: Topology) -> list[str]:
+    """The registry only adds what is missing, so an index taken out of it
+    stays in every database that has it. Each one still there is dropped."""
+    have = {(str(table), str(name)) for table, name in conn.execute(text(
+        "SELECT tablename, indexname FROM pg_indexes WHERE schemaname = 'public'")).fetchall()}
+    return [f"DROP INDEX {table}@{name}" for table, name in DROPPED_INDEXES if (table, name) in have]
+
+
 UPGRADES: tuple[Upgrade, ...] = (_naive_timestamp_upgrade, _users_ttl_upgrade, _ttl_drift_upgrade,
-                                 _scoped_transfer_key_upgrade, _vector_ops_upgrade)
+                                 _scoped_transfer_key_upgrade, _vector_ops_upgrade, _dropped_index_upgrade)
 
 
 @dataclass

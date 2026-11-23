@@ -2,16 +2,18 @@
 
 Purchases are kept apart by user, and on a multi-region database by region:
 idx_expenses_user_date leads with the user, as the vector index does with
-its prefix column. The table carries two more indexes that hold every
-user's purchases, by merchant and by category. Left to pick, CockroachDB
-read a category "since ever" or a merchant's visits through those, for any
-user it had no statistics on yet: every user's coffee, to answer for one.
-And a total about something that is no category read every label in the
-table once per process.
+its prefix column. The table used to carry two more indexes that held
+every user's purchases, by merchant and by category. Left to pick,
+CockroachDB read a category "since ever" or a merchant's visits through
+those, for any user it had no statistics on yet: every user's coffee, to
+answer for one. And a total about something that is no category read every
+label in the table once per process.
 
-So every statement on one user's purchases names the index. These tests
-take the statistics away, which is the state a new user is in, run what
-the assistant, the pages and the coach run, and read the plan of every
+Those two indexes are gone (tests/test_schema_registry.py), and every
+statement on one user's purchases names the index that leads with the
+user, so the next index someone adds cannot do the same. These tests take
+the statistics away, which is the state a new user is in, run what the
+assistant, the pages and the coach run, and read the plan of every
 statement on purchases they sent."""
 
 import os
