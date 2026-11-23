@@ -28,7 +28,7 @@ from banko_ai.db.engine import get_engine
 from banko_ai.services import threads
 from banko_ai.services import transactions as txns
 from banko_ai.services.preferences import Preferences
-from tests._chat import ScriptedChat
+from tests._chat import ScriptedChat, reworded
 from tests._money import card_purchase, drop_user, seeded_diner
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
@@ -216,7 +216,7 @@ def test_a_merchants_card_is_kept_the_same_way(ask, member, statements):
 
 
 def test_in_another_language_the_translation_is_kept_and_the_model_is_not_asked_again(ask, member):
-    spanish = lambda: ScriptedChat(lambda messages: "Gastaste ... en Restaurant")      # noqa: E731
+    spanish = lambda: ScriptedChat(reworded)      # noqa: E731
     first, _, chat = ask("my restaurant expenses", chat=spanish(), language_code="es-ES")
     assert len(chat.calls) == 1 and not first["cached"]
     again, _, chat = ask("restaurants", chat=spanish(), language_code="es-ES")
@@ -233,7 +233,7 @@ def test_a_card_the_model_could_not_translate_is_not_kept_as_the_translation(ask
         raise ConnectionError("the provider is out of reach")
     out, _, _ = ask("my restaurant expenses", chat=ScriptedChat(down), language_code="es-ES")
     assert out["answer"].startswith("You spent")
-    again, _, chat = ask("my restaurant expenses", chat=ScriptedChat(lambda m: "Gastaste ..."), language_code="es-ES")
+    again, _, chat = ask("my restaurant expenses", chat=ScriptedChat(reworded), language_code="es-ES")
     assert not again["cached"] and again["answer"].startswith("Gastaste") and len(chat.calls) == 1
 
 
@@ -510,7 +510,7 @@ def test_a_bare_name_inside_a_conversation_is_the_same_card(ask, member):
 
 def test_in_another_language_the_card_is_translated_and_nothing_else_is_asked(ask, member):
     total, _, _ = _sum(member)
-    chat = ScriptedChat(lambda messages: "Gastaste ... en Restaurant")
+    chat = ScriptedChat(reworded)
     out, _, chat = ask("my restaurant expenses", chat=chat, language_code="es-ES")
     assert out["answer"].startswith("Gastaste") and len(chat.calls) == 1
     assert f"You spent **${total:,.2f}** on Restaurant since " in chat.prompts()[-1]      # the card it was given

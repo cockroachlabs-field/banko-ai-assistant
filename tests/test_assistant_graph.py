@@ -17,7 +17,7 @@ from banko_ai.assistant import graph as G
 from banko_ai.db.engine import get_engine
 from banko_ai.services import memories, threads
 from banko_ai.services.seeding import seed_user
-from tests._chat import ScriptedChat
+from tests._chat import ScriptedChat, reworded
 from tests._money import drop_user, make_user, seeded_diner
 
 pytestmark = pytest.mark.skipif(not os.getenv("DATABASE_URL"), reason="DATABASE_URL not set")
@@ -848,9 +848,9 @@ def test_a_visit_window_counts_that_window_only(g, member, thread):
 
 def test_a_visit_card_is_translated_in_another_language(g, member, thread):
     merchant, visits, _ = _top_merchant(member)
-    chat = ScriptedChat(f"Fuiste a {merchant} {visits} veces.")
+    chat = ScriptedChat(reworded)
     out, _ = _turn(g, member, thread, f"have I been to {merchant}?", chat, language_code="es-ES")
-    assert out["answer"] == f"Fuiste a {merchant} {visits} veces." and len(chat.calls) == 1
+    assert out["answer"].startswith(f"Fuiste a **{merchant}** {visits} times since ") and len(chat.calls) == 1
 
 
 def test_a_place_that_is_not_a_merchant_goes_to_the_planner(g, member, thread):
@@ -1033,7 +1033,7 @@ def test_the_top_purchases_are_listed_in_order(g, member, thread):
 
 
 def test_the_biggest_purchase_in_another_language_is_translated_not_rewritten(g, member, thread):
-    chat = ScriptedChat(lambda messages: "Tu compra más grande ...")
+    chat = ScriptedChat(reworded)
     out, _ = _turn(g, member, thread, "what was my biggest purchase last month?", chat, language_code="es-ES")
     assert out["answer"].startswith("Tu compra más grande") and len(chat.calls) == 1
     assert "Your biggest purchase" in chat.prompts()[-1]            # the card it was asked to translate
@@ -1298,7 +1298,7 @@ def test_a_size_question_is_not_about_the_receipt_on_the_table(g, member, thread
     assert out["route"]["kind"] == "aggregate" and quiet.calls == []
     assert out["answer"].startswith("Your biggest purchase from ")
     about_it, _ = _turn(g, member, thread, "what was the biggest charge on that receipt?",
-                        ScriptedChat("The wine, at $12.99."))
+                        ScriptedChat("The wine, part of the $23.47 total."))
     assert about_it["route"]["kind"] == "receipt" and about_it["answer"].startswith("The wine")
 
 

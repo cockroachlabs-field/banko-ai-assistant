@@ -30,7 +30,8 @@ Every page also has a dark theme ([dashboard](https://github.com/cockroachlabs-f
   every provider. Visit questions ("when did I last go to Costco?") come
   straight from SQL, with no model call in English, and so does a category
   or one of your merchants named alone ("coffee", "my coffee expenses",
-  "starbucks purchases"). Open questions go to a planner that calls tools. Answers stream, and each one shows how it was
+  "starbucks purchases"). Open questions go to a planner that calls tools, and what the model then writes is read
+  before it is shown: a sentence with a figure that is not in the data it was given is left out. Answers stream, and each one shows how it was
   built: the steps, the database time and the EXPLAIN ANALYZE plan. That
   view opens in a window of its own, for a second screen.
 - **Read receipts.** Drop an image or PDF anywhere: OCR and field
