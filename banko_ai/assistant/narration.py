@@ -9,6 +9,7 @@ are printed without control characters."""
 from __future__ import annotations
 
 from ..config.settings import get_config
+from ..utils.intent_classifier import EVER
 
 
 def _say(line: str) -> None:
@@ -30,8 +31,8 @@ def _service() -> str:
 
 def aggregation(intent, region: str | None) -> None:
     _say("\n🧮 AGGREGATION (agentic routing):")
-    _say(f"1. Intent: {intent.operation} on '{_plain(intent.subject or 'all spending')}' | window "
-         f"{intent.window_start} to {intent.window_end}")
+    window = "all time" if intent.window_start == EVER else f"{intent.window_start} to {intent.window_end}"
+    _say(f"1. Intent: {intent.operation} on '{_plain(intent.subject or 'all spending')}' | window {window}")
     if region:
         _say(f"   Region-pruned to {region} (REGIONAL BY ROW)")
 

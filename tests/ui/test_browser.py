@@ -1316,22 +1316,51 @@ def _cached_from(found: dict) -> str:
 
 
 def test_a_cached_answer_written_for_other_words_says_whose_it_is(server, browser):
-    """ "coffee", then "coffee expenses": the second answer is the first
-    one's, and the line under it says so. A similar question's also says how
-    similar the two are."""
+    """Someone who lets the cache take similar questions gets another
+    question's answer now and then: the line under it says whose it is and
+    how similar the two are."""
     ctx, page, errors = _page(browser, "light")
     try:
-        api = _PanelApi(page, answer=_cached_from({"question": "coffee", "match": "words"}))
+        _PanelApi(page, answer=_cached_from({"question": "any unusual charges lately", "match": "similar",
+                                             "similarity": 0.9}))
         _login(page, server, "sam")
-        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "coffee expenses")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "have there been any strange charges recently")
         bots = page.locator(".b-panel .b-msg-bot")
         expect(bots.nth(0).locator(".b-meta")).to_contain_text(
-            "cached: the answer to “coffee” · about 350 tokens saved")
-        api.answer = _cached_from({"question": "any unusual charges lately", "match": "similar", "similarity": 0.9})
-        page.locator(".b-panel textarea").fill("have there been any strange charges recently")
-        page.keyboard.press("Enter")
-        expect(bots.nth(1).locator(".b-meta")).to_contain_text(
             "cached: the answer to “any unusual charges lately”, 90% similar · about 350 tokens saved")
+        assert not errors, errors
+    finally:
+        ctx.close()
+
+
+def test_show_more_under_a_categorys_card_asks_for_its_next_purchases(server, browser):
+    """A category's card is read from SQL, with no words to search by. Show
+    more asks the transactions API for the category's next purchases, as
+    the Transactions page lists them, and not for a search."""
+    ctx, page, errors = _page(browser, "light")
+    try:
+        _PanelApi(page, answer=_paged_answer("You spent **$141.20** on Coffee since 2026-05-23 (23 transactions).",
+                                             "aggregate", {"q": "", "category": "Coffee", "from": None, "to": None,
+                                                           "next": "bzEw", "size": 10}))
+        asked = []
+
+        def listing(route):
+            asked.append(urllib.parse.parse_qs(urllib.parse.urlparse(route.request.url).query, keep_blank_values=True))
+            route.fulfill(json={"items": [_match(1), _match(2)], "next_cursor": None})
+
+        page.route("**/api/v1/transactions?q=*", listing)
+        _login(page, server, "sam")
+        page.evaluate("(q) => Banko.emit('banko:ask', { text: q })", "my coffee expenses")
+        bot = page.locator(".b-panel .b-msg-bot")
+        more = bot.get_by_role("button", name="Show 10 more")
+        more.click()
+        chips = bot.locator(".b-more .b-cite")
+        expect(chips).to_have_count(2)
+        expect(chips.nth(0)).to_contain_text("Cafe 1")
+        expect(more).to_be_hidden()
+        sent = asked[-1]
+        assert sent["q"] == [""] and sent["category"] == ["Coffee"], sent      # no words: the category's own list
+        assert sent["cursor"] == ["bzEw"] and sent["limit"] == ["10"] and "from" not in sent and "to" not in sent, sent
         assert not errors, errors
     finally:
         ctx.close()
@@ -1922,8 +1951,9 @@ def test_settings_holds_ones_own_assistant_settings(server, browser):
         match, similar = page.get_by_label("Reuse an answer for"), page.get_by_label("How similar")
         size = page.get_by_label("Purchases per page")
         save, reset = card.get_by_role("button", name="Save"), card.get_by_role("button", name="Back to the defaults")
-        expect(match).to_have_value("words")
-        expect(card.get_by_text("\"coffee expenses\" and \"show my coffee purchases\" are one question")).to_be_visible()
+        expect(match).to_have_value("exact")
+        expect(match.locator("option")).to_have_count(2)       # the same question, or a similar one
+        expect(card.get_by_text("The same words only, give or take capitals and punctuation.")).to_be_visible()
         expect(similar).to_be_disabled()                   # it matters only for a similar question
         expect(save).to_be_disabled()
         expect(reset).to_be_disabled()                     # nothing of one's own yet
@@ -1944,7 +1974,7 @@ def test_settings_holds_ones_own_assistant_settings(server, browser):
         expect(size).to_have_value("5")
         # What was changed says what it would otherwise be; what was not, says nothing.
         expect(card.locator(".b-pref", has=size).get_by_text("Default: 10", exact=True)).to_be_visible()
-        expect(card.get_by_text("Default: Also a category or merchant in other words", exact=True)).to_be_visible()
+        expect(card.get_by_text("Default: The same question", exact=True)).to_be_visible()
         expect(card.locator(".b-pref", has=page.get_by_label("Memories per question"))
                .get_by_text("Default:")).to_be_hidden()
 
@@ -1959,7 +1989,7 @@ def test_settings_holds_ones_own_assistant_settings(server, browser):
         expect(size).to_have_value("5")                    # the refused value changed nothing
         reset.click()
         expect(card.get_by_text("Back to the defaults.")).to_be_visible()
-        expect(match).to_have_value("words")
+        expect(match).to_have_value("exact")
         expect(size).to_have_value("10")
         expect(similar).to_be_disabled()
         assert not errors, errors

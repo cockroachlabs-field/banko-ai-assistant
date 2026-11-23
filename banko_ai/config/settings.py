@@ -200,7 +200,7 @@ class Settings(BaseSettings):
     embedding_device: str = _field("cpu", group="embeddings", env="EMBEDDING_DEVICE", description="Torch device for embeddings. cpu is fastest for one query at a time and avoids MPS reserving a gigabyte on Macs.")
 
     # Caching
-    cache_match: str = _field("words", group="cache", env="CACHE_MATCH", description="Which earlier question's answer the assistant may replay: exact (the same question), words (also a spending category or one of the user's merchants asked for in other words: \"coffee\", \"coffee expenses\" and \"show my coffee purchases\" are one question) or similar (also, for a conversation's first question, any question at least CACHE_SIMILARITY_THRESHOLD similar that names the same dates and numbers). People can choose their own in Settings.")
+    cache_match: str = _field("exact", group="cache", env="CACHE_MATCH", description="Which earlier question's answer the assistant may replay: exact (the same question) or similar (also, for a conversation's first question, any question at least CACHE_SIMILARITY_THRESHOLD similar that names the same dates and numbers). A spending category or one of the user's merchants asked for in other words (\"coffee\", \"coffee expenses\", \"show my coffee purchases\") is read from SQL and never reaches the cache; words, which matched those, is still accepted and means exact. People can choose their own in Settings.")
     cache_similarity_threshold: float = _field(0.75, group="cache", env="CACHE_SIMILARITY_THRESHOLD", aliases=("CACHE_THRESHOLD",), description="With similar matching: how similar a question must be to reuse a cached answer, from 0 to 1.")
     cache_ttl_hours: int = _field(24, group="cache", env="CACHE_TTL_HOURS", description="Hours a cached answer stays valid.")
     cache_strict_mode: bool = _field(True, group="cache", env="CACHE_STRICT_MODE", description="Only reuse an answer when the underlying expense rows are identical.")
@@ -352,8 +352,13 @@ class Settings(BaseSettings):
     @classmethod
     def _check_cache_match(cls, v: str) -> str:
         v = (v or "").strip().lower()
-        if v not in ("exact", "words", "similar"):
-            raise ValueError("CACHE_MATCH must be exact, words or similar")
+        if v == "words":
+            # What it matched (a category or merchant in other words) is read
+            # from SQL now and never cached: for every other question words
+            # was the same question, word for word.
+            return "exact"
+        if v not in ("exact", "similar"):
+            raise ValueError("CACHE_MATCH must be exact or similar")
         return v
 
     @field_validator("checkpoint_pool_size")

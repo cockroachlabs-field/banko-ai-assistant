@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
+from ..utils import clock
 from ..utils.intent_classifier import (
+    EVER,
     AggregationIntent,
     classify_aggregation,
     extract_window,
@@ -170,12 +173,37 @@ def _a_total_of_a_category(intent: AggregationIntent | None) -> bool:
     return category is not None and category.key != "other"
 
 
+def _asked_for(text: str, today: date | None, is_merchant: Callable[[str], bool] | None):
+    """A spending category or one of the user's merchants, asked for alone
+    or as its purchases and nothing else (caches.subject_asked), or None.
+    Not "show me movies", which asks for the films themselves."""
+    from ..services.caches import subject_asked
+    found = subject_asked(text, today, is_merchant)
+    return None if found is None or found.shown_only else found
+
+
+def _from_sql(asked, today: date | None) -> Route:
+    """The route that reads what was asked for from SQL: a category's
+    purchases through the totals, for the days named or for all time, and a
+    merchant's through the visits. Code writes both cards, so the answer is
+    the same on every model. Left to the planner, "coffee" was a search on
+    one model and a total of 31 days on another."""
+    if asked.kind == "merchant":
+        return Route("visits", "purchases at one of your merchants, answered by SQL", payload=asked.name)
+    start, end = asked.window or (EVER, (today or clock.today()) + timedelta(days=1))
+    return Route("aggregate", "a category's purchases, answered by SQL",
+                 intent=AggregationIntent("purchases", asked.name, start, end))
+
+
 def route(message: str, *, active_receipt: dict | None = None, context: dict | None = None,
           today: date | None = None, last_route: str | None = None, has_history: bool = False,
-          last_search: dict | None = None) -> Route:
+          last_search: dict | None = None, is_merchant: Callable[[str], bool] | None = None) -> Route:
     """last_route is the route of the thread's previous turn ("receipt" right
     after an upload); has_history says whether the thread has messages;
-    last_search is the search the previous turn showed, if it ran one."""
+    last_search is the search the previous turn showed, if it ran one;
+    is_merchant says whether a name is one of the user's merchants (the
+    router knows nobody's purchases), and is asked only for a few words
+    that could be a name."""
     # One space between words: nothing here reads a run of them, and the
     # patterns below took minutes over ten thousand.
     text = " ".join((message or "").split())
@@ -215,10 +243,20 @@ def route(message: str, *, active_receipt: dict | None = None, context: dict | N
         # "which one was the biggest?", "thanks!": not off topic mid-conversation.
         if has_history and (len(text.split()) <= _SHORT_WORDS or reads_as_follow_up(text)):
             return Route("plan", "follow-up in this conversation", follow_up=True)
-        if not _a_category_asked_for(text) and not _a_total_of_a_category(intent):
-            return Route("offtopic", "not a money question")
+    asked = _asked_for(text, today, is_merchant)
+    if not is_financial_query(text) and asked is None and not _a_category_asked_for(text) \
+            and not _a_total_of_a_category(intent):
+        return Route("offtopic", "not a money question")
     if intent is not None:
         return Route("aggregate", f"{intent.operation} answered by SQL", intent=intent)
+    # Bare ("coffee") it is a whole question only where it opens a
+    # conversation. After another question, or beside a receipt, it may be
+    # the short form of something else: that takes the conversation, so it
+    # is the planner's, and what it is told is never kept under these words.
+    if asked is not None and asked.bare and in_conversation:
+        return Route("plan", "a name alone leans on this conversation", follow_up=True)
+    if asked is not None:
+        return _from_sql(asked, today)
     if in_conversation and classify_aggregation(text, today=today) is not None:
         # "What was the biggest purchase?": an SQL question as a first
         # message, here the biggest of what the conversation was about.

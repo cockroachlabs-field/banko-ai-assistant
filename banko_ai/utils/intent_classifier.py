@@ -191,9 +191,15 @@ def is_financial_query(query: str) -> bool:
 # stays lexical on purpose: no extra model calls, identical behavior on
 # every provider, works airgapped.
 
+# The start of a window nobody named: every purchase there is. A category
+# asked for alone ("coffee", "my coffee expenses") names no days, and none
+# are assumed for it; its card says since when.
+EVER = date.min
+
+
 @dataclass(frozen=True)
 class AggregationIntent:
-    operation: str          # sum | count | average | largest | smallest
+    operation: str          # sum | count | average | largest | smallest | purchases (a category's, listed)
     subject: str | None     # raw category phrase, None means all categories
     window_start: date      # inclusive
     window_end: date        # exclusive

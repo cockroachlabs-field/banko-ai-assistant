@@ -91,7 +91,7 @@ services:
       - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-8192}
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
       - CDC_WEBHOOK_HMAC_SECRET=${CDC_WEBHOOK_HMAC_SECRET:-airgap-demo-secret}
-      - CACHE_MATCH=${CACHE_MATCH:-words}
+      - CACHE_MATCH=${CACHE_MATCH:-exact}
       - CACHE_SIMILARITY_THRESHOLD=${CACHE_SIMILARITY_THRESHOLD:-0.75}
       - CACHE_TTL_HOURS=${CACHE_TTL_HOURS:-24}
       # Never call out to Hugging Face; the model is baked into the image

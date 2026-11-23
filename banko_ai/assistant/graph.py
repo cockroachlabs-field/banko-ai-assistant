@@ -41,7 +41,7 @@ from ..services import transactions as txns
 from ..services.preferences import Preferences
 from ..utils import clock
 from ..utils.embeddings import note_skipped
-from ..utils.intent_classifier import extract_window
+from ..utils.intent_classifier import EVER, extract_window
 from ..utils.request_trace import serving_regions, trace_step
 from . import answers, background, narration
 from .planner import first_object, parse_plan, plan_and_act
@@ -203,10 +203,8 @@ def route_node(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
     t0 = time.perf_counter()
     r = decide(state["message"], active_receipt=state.get("active_receipt"), context=state.get("context"),
                last_route=state.get("last_route"), has_history=bool(state.get("messages")),
-               last_search=state.get("last_search"))
-    if r.kind == "offtopic" and _names_own_merchant(state, runtime.context):
-        r = Route("plan", "one of your merchants")
-    elif r.kind == "offtopic" and (total := _total_at_own_merchant(state, runtime.context)) is not None:
+               last_search=state.get("last_search"), is_merchant=_own_merchants(state, runtime.context))
+    if r.kind == "offtopic" and (total := _total_at_own_merchant(state, runtime.context)) is not None:
         r = Route("aggregate", f"{total.operation} answered by SQL", intent=total)
     _step("Intent routing", f"{r.kind}: {r.detail}", ms=(time.perf_counter() - t0) * 1000)
     return {"route": r.as_dict()}
@@ -252,28 +250,25 @@ def _total_at_own_merchant(state: TurnState, deps: TurnDeps):
         return None
 
 
-def _names_own_merchant(state: TurnState, deps: TurnDeps) -> bool:
-    """ "netflix" says nothing about money, and the router, which knows
-    nobody's purchases, turns it away. For someone who has bought there it
-    asks for those purchases: the message is one of the user's merchants,
-    named alone or as its purchases, and nothing else. By the router's rule
-    for a category: "show me netflix" asks for the thing itself.
+def _own_merchants(state: TurnState, deps: TurnDeps) -> Callable[[str], bool]:
+    """Whether a name is one of this user's merchants, for the router, which
+    knows nobody's purchases: "netflix" says nothing about money, and for
+    someone who has bought there it asks for those purchases.
 
-    A message of more words than a name has, or one that asks to be shown,
-    reads nothing. A few words that could be a name ("hello") cost one read
-    of the user's data version and, once for each state of their money, of
-    their merchants."""
-    try:
-        shape = caches.asked_subject(state["message"], deps.day)
-        if shape is None or shape.shown_only:
+    The router asks only for a few words that could be a name. Then it costs
+    one read of the user's data version and, once for each state of their
+    money, of their merchants. A read that fails says no: the message gets
+    the reply it had before."""
+    user_id = state["user_id"]
+    known = caches.merchants_of(user_id, lambda: ledger.data_version(user_id, deps.url), deps.url)
+
+    def is_merchant(name: str) -> bool:
+        try:
+            return known(name)
+        except Exception as exc:
+            note_skipped(log, "merchant lookup", exc)
             return False
-        user_id = state["user_id"]
-        is_merchant = caches.merchants_of(user_id, lambda: ledger.data_version(user_id, deps.url), deps.url)
-        found = caches.subject_ask(state["message"], deps.day, is_merchant)
-        return found is not None and found[0].startswith("@")
-    except Exception as exc:  # the reply it had before
-        note_skipped(log, "merchant lookup", exc)
-        return False
+    return is_merchant
 
 
 NOT_FOUND = "I couldn't find a category or merchant called '{subject}'."
@@ -346,6 +341,8 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
           f"({agg.merchant or agg.category or 'all categories'}), computed by CockroachDB", ms=db_ms, status="success",
           key="sql")
     language = state.get("language") or "English"
+    if intent.operation == "purchases":
+        return _purchases_listed(state, deps, intent, agg, region, db_ms, url)
     if by_size:
         # The largest or smallest purchases: SQL ordered them and code writes
         # the card, so no model picks one. Nothing is narrated, so nothing
@@ -389,6 +386,41 @@ def aggregate(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
                                   region)
     return {"answer": text, "cached": cached, "streamed": streamed, "saved_tokens": saved,
             "meta": {"region": served, "db_ms": int(db_ms), "explain": explain}}
+
+
+def _purchases_listed(state: TurnState, deps: TurnDeps, intent, agg, region: str | None, db_ms: float,
+                      url: str) -> dict:
+    """A category asked for alone or as its purchases ("coffee", "show my
+    coffee purchases"): its figure and breakdown from the totals statement,
+    its latest purchases as the Transactions page lists them, and the card
+    from code. No model writes it, narrates it or picks what it is: the
+    planner gave this question a search on one model and a total of 31 days
+    on another.
+
+    The purchases come a page at a time, as long as the asker set a page.
+    Show more asks the transactions API for the next one, and a typed "show
+    more" the more route: the page names the category and the days, with no
+    words to search by."""
+    from ..utils.aggregations import explain_aggregation
+    user_id, size = state["user_id"], deps.prefs.search_page_size
+    days = ({} if intent.window_start == EVER else
+            {"date_from": intent.window_start, "date_to": intent.window_end - timedelta(days=1)})
+    first: dict = {"items": [], "next_cursor": None}
+    if agg.count:
+        t0 = time.perf_counter()
+        first = txns.list_transactions(user_id, limit=size, category=agg.category, url=deps.url, **days)
+        db_ms += _since(t0)
+    agg = replace(agg, rows=[{"date": str(i["posted_at"])[:10], "merchant": i["merchant"],
+                              "amount": _positive(i["amount"])} for i in first["items"]])
+    page = {"q": "", "category": agg.category, "from": str(days["date_from"]) if days else None,
+            "to": str(days["date_to"]) if days else None, "next": first["next_cursor"], "size": size}
+    explain, served = _query_plan(lambda: explain_aggregation(intent, user_id, url, region=region), region)
+    meta: dict[str, Any] = {"region": served, "db_ms": int(db_ms), "explain": explain}
+    if page["next"]:
+        meta["search"] = page  # the chat's Show more pages it
+    return {"answer": answers.translate(answers.render_aggregation_markdown(agg),
+                                        state.get("language") or "English", deps.chat),
+            "meta": meta, "page": page}
 
 
 def _to_planner(state: TurnState, why: str) -> dict:
@@ -785,31 +817,45 @@ def _page(results: list[dict], size: int) -> dict | None:
 
 MORE_LINE = "Here are {n} more matches for “{q}”."
 ALL_SHOWN = "That's every match I found for “{q}”."
+MORE_LISTED = "Here are {n} more {what} purchases."
+ALL_LISTED = "That's every {what} purchase."
 
 
 def more(state: TurnState, runtime: Runtime[TurnDeps]) -> dict:
-    """The next page of the previous turn's search, straight from the
-    database: no planner and no model, a fixed line plus the purchases."""
+    """The next page of what the previous turn showed, straight from the
+    database: no planner and no model, a fixed line plus the purchases. A
+    search goes on by its words; a category's purchases, which were listed
+    with no words to search by, go on as the Transactions page lists them."""
     deps, last = runtime.context, state.get("last_search") or {}
     language = state.get("language") or "English"
+    listed = not last.get("q") and bool(last.get("category"))
+    what = last.get("category") if listed else f"'{last.get('q', '')}'"
+    done = ALL_LISTED.format(what=last.get("category")) if listed else ALL_SHOWN.format(q=last.get("q", ""))
     if not last.get("next"):
-        _step("Next page", f"nothing after the last page of '{last.get('q', '')}'")
-        return {"answer": answers.translate(ALL_SHOWN.format(q=last.get("q", "")), language, deps.chat),
-                "page": last}
+        _step("Next page", f"nothing after the last page of {what}")
+        return {"answer": answers.translate(done, language, deps.chat), "page": last}
     _running("tool:1", _TOOL_PHASES["search_transactions"])
     t0 = time.perf_counter()
     size = deps.prefs.search_page_size
-    found = txns.semantic_search(state["user_id"], last["q"], limit=size, cursor=last["next"],
-                                 category=last.get("category"),
-                                 date_from=date.fromisoformat(last["from"]) if last.get("from") else None,
-                                 date_to=date.fromisoformat(last["to"]) if last.get("to") else None, url=deps.url)
+    since = date.fromisoformat(last["from"]) if last.get("from") else None
+    until = date.fromisoformat(last["to"]) if last.get("to") else None
+    if listed:
+        found = txns.list_transactions(state["user_id"], limit=size, cursor=last["next"], category=last["category"],
+                                       date_from=since, date_to=until, url=deps.url)
+    else:
+        found = txns.semantic_search(state["user_id"], last["q"], limit=size, cursor=last["next"],
+                                     category=last.get("category"), date_from=since, date_to=until, url=deps.url)
     db_ms = _since(t0)
     items = [{"expense_id": i["expense_id"], "merchant": i["merchant"], "amount": _positive(i["amount"]),
               "date": i["posted_at"]} for i in found["items"]]
-    _step("Next page", f"{len(items)} more for '{last['q']}'", ms=db_ms, status="success", key="tool:1")
+    _step("Next page", f"{len(items)} more for {what}", ms=db_ms, status="success", key="tool:1")
     page = {**last, "next": found["next_cursor"], "size": size}
     home = home_region_of(state["user_id"], deps.url)
-    line = MORE_LINE.format(n=len(items), q=last["q"]) if items else ALL_SHOWN.format(q=last["q"])
+    if not items:
+        line = done
+    else:
+        line = MORE_LISTED.format(n=len(items), what=last["category"]) if listed else \
+            MORE_LINE.format(n=len(items), q=last["q"])
     return {"answer": answers.translate(line, language, deps.chat), "page": page,
             "meta": {"region": home, "db_ms": int(db_ms), "search": {**page, "items": items}}}
 
