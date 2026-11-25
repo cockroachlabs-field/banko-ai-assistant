@@ -239,6 +239,16 @@ bills, goals, transfers with idempotency keys), scoped to the signed-in
 user. `/api/health`, `/api/health/live` and `/api/health/ready` report the
 app's state. Routes and examples are in [`docs/API.md`](https://github.com/cockroachlabs-field/banko-ai-assistant/blob/main/docs/API.md).
 
+## Upgrading from 2.0.0
+
+- Point 2.0.1 at the same database. The first boot drops three indexes on
+  `expenses` that held every user's rows and that nothing read; it takes
+  seconds.
+- The answer cache replays an answer for the same question. In 2.0.0 a
+  similar question was enough; `CACHE_MATCH=similar`, or the choice on the
+  Settings page, allows that again for the first question of a
+  conversation. Answers cached by 2.0.0 are not replayed.
+
 ## Upgrading from 1.3
 
 - Python 3.11 or later.
