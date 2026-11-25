@@ -7,7 +7,7 @@ py-modules = []
 
 [project]
 name = "banko-ai-assistant"
-version = "2.0.0"
+version = "2.0.1"
 description = "A demo bank with an AI assistant on CockroachDB: per-user vector search, a LangGraph assistant checkpointed in the database, a CDC-driven spending coach, a multi-region load simulator, and five LLM providers (watsonx, OpenAI, AWS Bedrock, Gemini, Ollama)"
 authors = [
     { name="Virag Tripathi", email="virag.tripathi@gmail.com" }
